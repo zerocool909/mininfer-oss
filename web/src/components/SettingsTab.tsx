@@ -55,6 +55,7 @@ export function SettingsTab() {
         reply?: string | null
         error_class?: string | null
         error_detail?: string | null
+        key_source?: 'custom' | 'env' | 'none'
       }
     >
   >({})
@@ -582,6 +583,17 @@ export function SettingsTab() {
                         </div>
                         <div className="text-[10px] opacity-90 line-clamp-1 font-mono">
                           Model: {res.model} {res.is_free && <span className="text-emerald-600 dark:text-emerald-400 font-bold">(FREE)</span>}
+                        </div>
+                        {/* Which key was actually tried. "Connectivity failed" with no
+                            indication of the credential sends you hunting: a missing
+                            Authorization header means *no key*, not a bad one. */}
+                        <div className="text-[10px] opacity-80">
+                          Key:{' '}
+                          {res.key_source === 'custom'
+                            ? 'your saved key'
+                            : res.key_source === 'env'
+                              ? 'project default (from .env)'
+                              : 'none configured'}
                         </div>
                         {res.reply && (
                           <div className="text-[10.5px] italic opacity-95 line-clamp-2 bg-background/50 p-1 rounded">

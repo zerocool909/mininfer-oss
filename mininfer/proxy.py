@@ -1056,7 +1056,7 @@ async def local_register(request: Request) -> dict:
     return {"ok": True, "registered": registered}
 
 
-async def _probe_provider(provider_id: str, custom_key: str) -> dict:
+async def _probe_provider(provider_id: str, custom_key: str, key_source: str = "none") -> dict:
     """Connectivity check for a provider with no model in the registry.
 
     Calls the provider's own `GET /models`, so it verifies DNS/TLS reachability
@@ -1071,6 +1071,7 @@ async def _probe_provider(provider_id: str, custom_key: str) -> dict:
         "ok": False, "provider": provider_id, "deploy_id": None,
         "model": f"{provider_id} (no model ingested)", "is_free": False,
         "latency_ms": None, "reply": None, "error_class": None, "error_detail": None,
+        "key_source": key_source,
     }
     if not key:
         out["error_class"] = "no_api_key"
@@ -1122,6 +1123,14 @@ async def test_provider_connectivity(request: Request) -> dict:
     if not provider_id:
         raise HTTPException(status_code=400, detail="Missing 'provider' in request payload")
 
+    # Which credential the call will actually use. "Connectivity failed" that does
+    # not say *which* key was tried sends the operator hunting; a missing
+    # Authorization header means "none", not "a bad one".
+    key_env = (ENDPOINTS.get(provider_id) or (None, None, None))[1]
+    key_source = ("custom" if custom_key
+                  else "env" if (key_env and os.environ.get(key_env))
+                  else "none")
+
     store = _store()
     deps = store.deployments()
     store.close()
@@ -1152,7 +1161,7 @@ async def test_provider_connectivity(request: Request) -> dict:
         # provider to list its own models instead: that checks exactly what this
         # endpoint promises (reachability, and that the key is accepted) and needs
         # no model id.
-        return await _probe_provider(provider_id, custom_key)
+        return await _probe_provider(provider_id, custom_key, key_source)
     else:
         # Sort: free models first, then cheapest price_in
         candidates.sort(key=lambda x: (not (x.get("zero_price") or x.get("free_variant") or x.get("price_in") == 0),
@@ -1212,6 +1221,7 @@ async def test_provider_connectivity(request: Request) -> dict:
         "reply": res.text[:120] if res.text else None,
         "error_class": res.error_class if not res.ok else None,
         "error_detail": res.error_detail if not res.ok else None,
+        "key_source": key_source,
     }
 
 

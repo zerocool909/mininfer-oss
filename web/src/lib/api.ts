@@ -469,6 +469,8 @@ export const api = {
       deploy_id: string
       model: string
       is_free: boolean
+      /** Which credential the test used: 'custom' | 'env' | 'none'. */
+      key_source?: 'custom' | 'env' | 'none'
       latency_ms: number | null
       reply: string | null
       error_class: string | null
