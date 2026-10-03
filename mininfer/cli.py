@@ -90,9 +90,27 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+def _default_source_names() -> list[str]:
+    """The sources a bare `mi ingest` / `mi verify` pulls.
+
+    Every source that is *available*, which the docstring of `_ingest_all` always
+    claimed but the code did not do: it filtered on `tier == 0`, so a provider key
+    the user had exported (Groq, Gemini, Mistral, …) only enabled the *call* and
+    never widened the *catalogue*. Bringing your own key is supposed to do both.
+
+    Tier-2 local runtimes are still left out of the default sweep: pinging
+    `localhost:11434` on every scheduled refresh logs a failure whenever the
+    runtime is not up. Naming one (`mi ingest ollama`) is the operator saying it
+    is running. URL-less sources (Cloudflare, which needs an account id) are
+    skipped for the same reason `run_source` rejects them.
+    """
+    return [n for n, s in ing.SOURCES.items()
+            if s.url and s.tier != 2 and s.available]
+
+
 def _ingest_all(store, args) -> None:
     """Run every available source into `store`. Shared by `ingest` and `verify`."""
-    names = args.sources or [n for n, s in ing.SOURCES.items() if s.tier == 0 and s.url]
+    names = args.sources or _default_source_names()
     for name in names:
         spec = ing.SOURCES.get(name)
         if spec is None:
@@ -360,6 +378,34 @@ def cmd_verify(args) -> int:
         print("  decide with: mi review <deploy_id> --approve | --reject")
     store.close()
     return 0
+
+
+def cmd_refresh(args) -> int:
+    """Re-ingest every available source, then re-derive the registry.
+
+    The single entry point a scheduler runs. It is `verify` (re-read every source
+    and report drift), then `reconcile` (re-derive canonical prices from the new
+    evidence), then `metrics` (roll provider performance in). The order matters,
+    and a crontab that repeats three commands is a copy of an order that drifts
+    the first time someone edits one of them.
+
+    `verify` always forces the fetch here: a cached payload cannot verify
+    anything, which is why its own `--force` defaults to on.
+    """
+    verify_args = argparse.Namespace(**vars(args))
+    verify_args.force = True
+    rc = cmd_verify(verify_args)
+    if rc:
+        return rc
+    rc = cmd_reconcile(args)
+    if rc:
+        return rc
+    # `metrics` takes `--dry-run`; a refresh always writes, so it is pinned here
+    # rather than exposed as a flag that would write half the pipeline and not the
+    # rest.
+    metrics_args = argparse.Namespace(**vars(args))
+    metrics_args.dry_run = False
+    return cmd_metrics(metrics_args)
 
 
 def cmd_sources(args) -> int:
@@ -1263,6 +1309,20 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--report", default="",
                    help="write the drift report as JSON to this path")
     v.set_defaults(fn=cmd_verify)
+
+    rf = sub.add_parser("refresh",
+                        help="re-ingest every available source and re-derive the registry")
+    rf.add_argument("sources", nargs="*")
+    rf.add_argument("--no-endpoints", action="store_true",
+                    help="skip OpenRouter per-endpoint pricing")
+    rf.add_argument("--endpoints-top", type=int, default=25)
+    rf.add_argument("--limit", type=int, default=0)
+    rf.add_argument("--report", default="",
+                    help="write the drift report as JSON to this path")
+    rf.add_argument("--source", default="vercel", help="metrics source")
+    rf.add_argument("--force", action="store_true", default=False,
+                    help="ignore the raw cache for metrics (verify always forces)")
+    rf.set_defaults(fn=cmd_refresh)
 
     sg = sub.add_parser("seed-google",
                         help="add the current direct Gemini deployments")

@@ -77,9 +77,11 @@ services:
     command:
       - sh
       - -c
+      # One command, not three joined with `||`. `mi refresh` is verify ->
+      # reconcile -> metrics in the order that contract requires, so the
+      # schedule cannot quietly drift from the pipeline it is supposed to run.
       - >-
-        while true; do mi verify --report /data/verify.json || true;
-        mi reconcile || true; mi metrics || true; sleep 86400; done
+        while true; do mi refresh --report /data/verify.json || true; sleep 86400; done
     environment:
       - MI_DB=/data/mininfer.db
       - MI_POLICY=/app/config/policy.yaml
@@ -91,7 +93,6 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
-      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-}
       - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
     volumes:
       # Same volume as the web service: one registry, two processes.

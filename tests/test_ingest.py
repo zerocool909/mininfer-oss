@@ -270,3 +270,36 @@ def test_a_declared_key_gates_availability_whatever_the_tier(monkeypatch):
         "a source with a key_env must be unavailable without it, tier notwithstanding")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
     assert SOURCES["deepseek"].available is True
+
+
+# --------------------------------------------------------------------------- #
+# the default sweep
+# --------------------------------------------------------------------------- #
+
+
+def test_the_default_sweep_widens_when_a_provider_key_is_configured(monkeypatch):
+    """Bringing a key must widen the *catalogue*, not only enable the *call*.
+
+    `_ingest_all` filtered its default on `tier == 0`, so a user who exported
+    GROQ_API_KEY still got none of Groq's models after a refresh: the key made a
+    call possible, but the model was never ingested, so the router could never
+    rank it. The default now follows `SourceSpec.available`, which is already
+    key-aware.
+    """
+    from mininfer import cli
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    assert "groq" not in cli._default_source_names()
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    assert "groq" in cli._default_source_names()
+
+
+def test_the_default_sweep_leaves_out_local_runtimes():
+    """A scheduled refresh must not ping `localhost` for a runtime that is down.
+
+    Naming one explicitly (`mi ingest ollama`) is the operator saying it is up.
+    """
+    from mininfer import cli
+
+    assert {"ollama", "lmstudio", "vllm"}.isdisjoint(cli._default_source_names())

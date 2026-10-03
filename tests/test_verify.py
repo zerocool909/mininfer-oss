@@ -93,3 +93,55 @@ def test_the_report_is_written_as_json(tmp_path, monkeypatch):
     data = json.loads(report.read_text())
     assert data["free_flips"] == ["p:free"]
     assert data["checked"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# `mi refresh` — the single command a scheduler runs
+# --------------------------------------------------------------------------- #
+
+
+def _refresh_args(**over):
+    base = dict(sources=[], force=False, no_endpoints=False, endpoints_top=25,
+                limit=0, report="", source="vercel")
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_refresh_runs_verify_then_reconcile_then_metrics(monkeypatch):
+    calls: list = []
+
+    def rec(name, **kw):
+        def fn(_a):
+            calls.append((name, kw))
+            return 0
+        return fn
+
+    monkeypatch.setattr(cli, "cmd_verify", rec("verify"))
+    monkeypatch.setattr(cli, "cmd_reconcile", rec("reconcile"))
+    monkeypatch.setattr(cli, "cmd_metrics", rec("metrics"))
+
+    assert cli.cmd_refresh(_refresh_args()) == 0
+    # The order is the contract: reconcile re-derives from the evidence verify
+    # just wrote, and metrics enriches what reconcile settled.
+    assert [c[0] for c in calls] == ["verify", "reconcile", "metrics"]
+
+
+def test_refresh_forces_the_fetch_for_verify_and_writes_for_metrics(monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(cli, "cmd_verify", lambda a: seen.update(v_force=a.force) or 0)
+    monkeypatch.setattr(cli, "cmd_reconcile", lambda a: 0)
+    monkeypatch.setattr(cli, "cmd_metrics", lambda a: seen.update(m_dry=a.dry_run) or 0)
+
+    assert cli.cmd_refresh(_refresh_args(force=False)) == 0
+    assert seen["v_force"] is True     # a cached payload cannot verify anything
+    assert seen["m_dry"] is False      # a refresh writes
+
+
+def test_refresh_stops_when_verify_fails(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(cli, "cmd_verify", lambda a: calls.append("verify") or 3)
+    monkeypatch.setattr(cli, "cmd_reconcile", lambda a: calls.append("reconcile") or 0)
+    monkeypatch.setattr(cli, "cmd_metrics", lambda a: calls.append("metrics") or 0)
+
+    assert cli.cmd_refresh(_refresh_args()) == 3
+    assert calls == ["verify"]   # a failed fetch must not reconcile stale data

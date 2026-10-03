@@ -444,6 +444,7 @@ Gateway + upstream separation achieved
 | `mi leaderboards [SUBSTR]` | Compare ingested benchmark sources                      |
 | `mi metrics`               | Enrich deployments with performance metrics             |
 | `mi add-url URL`           | Ingest evidence from an arbitrary webpage               |
+| `mi refresh`               | Re-ingest every available source and re-derive (the cron target) |
 | `mi proxy`                 | Start the OpenAI-compatible routing proxy               |
 
 ---
@@ -482,6 +483,125 @@ The dashboard includes:
 * Playground
 * Arena Compare
 * routing explanations
+
+## Bring your own keys
+
+MinInfer never needs to hold a provider key. There are two ways to supply one,
+and they compose:
+
+**Operator keys (environment).** Set any provider's variable and that provider
+becomes callable for every request:
+
+```bash
+export OPENROUTER_API_KEY="..."
+export GROQ_API_KEY="..."
+```
+
+**Caller keys (per request).** A caller can send their own key, which is used for
+that request only and never stored server-side:
+
+```bash
+curl http://127.0.0.1:8765/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-API-Keys: {"openrouter":"sk-or-..."}' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+```
+
+The dashboard's **Providers** tab does this for you: keys you type there live in
+your browser's `localStorage` and are forwarded on each call. On a shared or
+public deployment that is the point — the operator holds no credentials and pays
+for nothing.
+
+A configured key also **widens the catalogue**: `mi ingest` (and `mi refresh`)
+now fetch every source whose key is present, so the providers you brought appear
+in routing instead of only being callable.
+
+## Keeping the catalogue current
+
+Prices change, free tiers end, and a registry that still says "free" after a
+provider started charging is worse than an empty one — the router keeps choosing
+that arm and every request quietly costs money. One command re-reads everything
+and re-derives the registry:
+
+```bash
+mi refresh          # verify -> reconcile -> metrics, in that order
+```
+
+* **verify** re-fetches every available source and reports what changed price or
+  free status (it never trusts the 6-hour raw cache — a cache cannot verify);
+* **reconcile** re-derives each deployment's canonical price from the new
+  evidence, cross-checked against a market median across independent sources;
+* **metrics** folds provider throughput / latency into the registry.
+
+Run it by hand, or on a schedule. Either:
+
+```bash
+# a plain cron entry — nightly at 03:00, logging to a file
+0 3 * * * cd /path/to/mininfer && mi refresh >> /tmp/mininfer-refresh.log 2>&1
+```
+
+```bash
+# or the container's built-in job (refreshes nightly, writes /data/verify.json)
+docker compose --profile jobs up -d
+```
+
+The registry is always **re-derivable**: every upstream payload is snapshotted to
+`raw/<source>/<date>/<sha>.json` before it is parsed, so a corrected parser is a
+re-run of `mi refresh`, not a data migration. (`raw/` is a local stand-in for an
+R2/S3 bucket — see `mininfer/fetch.py`.)
+
+## Exposing the API beyond localhost
+
+`mi proxy` binds `127.0.0.1` by default, so nothing is reachable off your
+machine until you say so. To let other machines or agents use it, tunnel it:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8765     # or: ngrok http 8765
+```
+
+or bind all interfaces directly (only behind your own firewall/TLS):
+
+```bash
+mi proxy --host 0.0.0.0 --port 8000
+```
+
+**Before you expose it, turn on access control.** With nothing configured the
+proxy is open — the dashboard, the registry, and `/v1/search` (which spends
+money) are all reachable:
+
+```bash
+export MI_API_KEYS="$(openssl rand -hex 24):me"   # who may call; tenant key
+export MI_ADMIN_TOKEN="$(openssl rand -hex 32)"    # the dashboard / stats / plan surface
+export MI_RATE_LIMIT_RPM=120                       # per tenant
+export MI_MAX_BODY_BYTES=1048576                   # 1 MiB
+```
+
+With **caller keys** the operator holds no provider credentials, so a public
+instance does not put your spend at risk — each caller pays with their own key.
+You still want `MI_API_KEYS` (an invite gate) and the rate/body caps (abuse
+protection). TLS terminates at the tunnel, and the caller's key travels in a
+request header, so always expose over `https://`.
+
+If you would rather not run anything, `deploy/modal/app.py` hosts the same code
+on Modal (it needs a Postgres, because serverless containers have no persistent
+local disk — see below).
+
+## Storage: SQLite by default, Postgres only to scale
+
+`MI_DB` accepts a path **or** a DSN, and that is the only switch:
+
+| `MI_DB` | Engine | Replicas |
+|---|---|---|
+| `mininfer.db` (default) | SQLite | **1** — every request writes, and SQLite is single-writer |
+| `postgresql://user:pw@host/db` | Postgres | as many as you like |
+
+For a local tool — one process, one operator — **SQLite is enough, and it is the
+default.** Postgres exists for one reason and it is not correctness: every
+request appends a decision plus an observation per attempt, and a single SQLite
+file cannot take that from several processes at once. So reach for Postgres only
+when you run more than one replica, or a serverless host with no persistent disk.
+`deploy/local/docker-compose.postgres.yml` runs that shape on a laptop if you
+want to try it.
 
 ---
 
