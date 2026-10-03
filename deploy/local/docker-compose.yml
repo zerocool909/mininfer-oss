@@ -54,7 +54,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      # Long enough for the first-run catalogue ingest the entrypoint does on an
+      # empty registry; a container that is ingesting is not "unhealthy".
+      start_period: 180s
 
   # =========================================================================
   # The nightly registry refresh — opt-in, via `--profile jobs`:

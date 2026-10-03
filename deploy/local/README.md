@@ -17,6 +17,12 @@ docker compose -f deploy/local/docker-compose.yml up -d --build
 docker compose up -d --build
 ```
 
+On first run the container finds an empty registry and **ingests the provider
+catalogues once** before starting, so the dashboard has data instead of zeroes.
+It is a one-time cost on a fresh volume; set `MI_BOOTSTRAP=0` to skip it when the
+catalogue arrives another way (a restored volume, a scheduled job, a Postgres you
+already maintain).
+
 Default is SQLite — one file, one replica. To run the *cloud* shape locally
 (registry in Postgres, limits in Redis, auth on):
 

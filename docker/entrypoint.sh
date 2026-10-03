@@ -45,6 +45,30 @@ if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
 
+# --- first-run catalogue ---------------------------------------------------
+# The image ships NO registry: it is derived from provider APIs, so a fresh
+# volume starts empty and every dashboard panel reads zero. Populate it once here
+# so `docker compose up` shows a working dashboard instead of a blank one.
+#
+# Skippable with MI_BOOTSTRAP=0 — for a deployment whose catalogue arrives by
+# another route (a restored volume, a scheduled job, a seeded Postgres), the
+# ingest is pointless work on every boot.
+if [ "${MI_BOOTSTRAP:-1}" != "0" ]; then
+    count=$(MI_DB="$TARGET_DB" python -c \
+        "import os; from mininfer.store import Store; s=Store(os.environ['MI_DB']); print(len(s.deployments())); s.close()" \
+        2>/dev/null || echo unknown)
+    if [ "$count" = "0" ]; then
+        echo "==> Registry is empty — ingesting provider catalogues (one time)…"
+        if mi ingest; then
+            echo "==> Catalogue populated."
+            mi quota seed >/dev/null 2>&1 || true
+        else
+            echo "==> Warning: ingest failed (no network, or a missing CA bundle)."
+            echo "    The server will start empty; run 'mi refresh' when ready."
+        fi
+    fi
+fi
+
 echo "==> Launching MinInfer Proxy on http://${BIND_HOST}:${BIND_PORT}"
 echo "    Database: $TARGET_DB"
 echo "    Policy:   ${MI_POLICY:-config/policy.yaml}"
