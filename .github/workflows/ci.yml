@@ -1,0 +1,141 @@
+name: CI
+
+# Every check here is one that caught a real bug on this tree, run by hand
+# first and only then automated — that is the rule for adding a job:
+#
+#   * the Postgres leg is what found the SQLite-only `datetime()` that aborted
+#     the transaction, and the non-total sort key that made the same registry
+#     pick a different arm per engine;
+#   * the container leg is what found the `COPY mininfer.db` that failed a fresh
+#     clone, and the `.dockerignore` line that excluded the very file it needed;
+#   * the frontend leg is what found `MiFrame.event` missing `'route'`, which
+#     `npm run build` does not catch (Vite does not typecheck).
+#
+# A job nobody has watched fail is a job that will fail on someone else's PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A work-in-progress PR does not need its superseded runs to finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The engine. Both storage backends are first-class, so both are required:
+  # `mininfer/db.py` is the only file that knows the difference, and a change
+  # that quietly assumes SQLite passes here without the `test-postgres` job.
+  # ---------------------------------------------------------------------------
+  test:
+    name: pytest (${{ matrix.store }}, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - store: sqlite
+            python: "3.11"
+          - store: sqlite
+            python: "3.12"
+          - store: postgres
+            python: "3.11"
+    services:
+      # Only the postgres leg connects, but a service cannot be conditional on a
+      # matrix value without splitting the job in two. An idle container on the
+      # sqlite legs is cheaper than two near-identical jobs to keep in step.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mininfer
+          POSTGRES_PASSWORD: mininfer
+          POSTGRES_DB: mininfer
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mininfer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # An empty DSN is falsy in tests/conftest.py, so the sqlite legs run SQLite
+      # unchanged rather than needing a second code path.
+      MI_TEST_PG_DSN: ${{ matrix.store == 'postgres' && 'postgresql://mininfer:mininfer@127.0.0.1:5432/mininfer' || '' }}
+      PGGSSENCMODE: disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      # `agents` so the LangGraph ingest tests run instead of skipping; `sync`
+      # for psycopg2 on the postgres leg. `understanding` is deliberately omitted
+      # — it pulls PyTorch and the real-checkpoint tests are designed to skip.
+      - run: pip install -e '.[server,dev,agents,sync]'
+      - name: pytest
+        run: python -m pytest -q
+
+  # ---------------------------------------------------------------------------
+  # The dashboard. `npm run build` does not typecheck — Vite strips types — so
+  # `typecheck` is its own step, because that is where the last frontend bug
+  # (a missing SSE event in a union) was actually caught.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Both deployment profiles, on a real socket. `test_auth` covers the guard's
+  # logic; this proves the two profile files still produce the two behaviours
+  # end to end (local open, cloud fail-closed).
+  # ---------------------------------------------------------------------------
+  acceptance:
+    name: acceptance (both profiles, live)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e '.[server,dev]'
+      - run: bash scripts/validate-phase0.sh
+
+  # ---------------------------------------------------------------------------
+  # One image, two process types. This is the leg that would have caught the
+  # `COPY mininfer.db` failure on a fresh clone: there is no `mininfer.db` in a
+  # clone, and the Dockerfile must build anyway.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker (images build from a fresh clone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build web (runner) image
+        run: docker build --target runner -t mininfer:ci-web .
+      - name: build worker image
+        run: docker build --target worker -t mininfer:ci-worker .
+      - name: worker image dispatches a batch command
+        run: docker run --rm mininfer:ci-worker mi --help

@@ -1,5 +1,8 @@
 # MinInfer
 
+[![CI](https://github.com/YOUR_ORG/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_ORG/mininfer-oss/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > **Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
 
 MinInfer is an open-source **model intelligence registry and economic constraint router**.
