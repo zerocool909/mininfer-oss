@@ -304,12 +304,16 @@ def test_proxy_falls_through_when_the_local_backend_is_missing(monkeypatch):
 
 
 def test_ingest_node_is_off_by_default(monkeypatch):
+    pytest.importorskip("bs4")
+    pytest.importorskip("langgraph")
     import mininfer.agent_ingest as ai
     monkeypatch.setattr(ai, "EXTRACT_BACKEND", "")
     assert ai.understanding_node({"text": "anything"}) == {}
 
 
 def test_ingest_node_extracts_and_makes_the_llm_node_a_no_op(monkeypatch, loaded):
+    pytest.importorskip("bs4")
+    pytest.importorskip("langgraph")
     import mininfer.agent_ingest as ai
     loaded(FakeModel(records={"models": [
         {"model_name": "Gemini 3.7 Flash", "provider": "google"},
@@ -324,6 +328,8 @@ def test_ingest_node_extracts_and_makes_the_llm_node_a_no_op(monkeypatch, loaded
 
 
 def test_ingest_node_falls_through_when_the_model_finds_nothing(monkeypatch, loaded):
+    pytest.importorskip("bs4")
+    pytest.importorskip("langgraph")
     import mininfer.agent_ingest as ai
     loaded(FakeModel(records={"models": []}))
     monkeypatch.setattr(ai, "EXTRACT_BACKEND", "gliner")
@@ -331,6 +337,8 @@ def test_ingest_node_falls_through_when_the_model_finds_nothing(monkeypatch, loa
 
 
 def test_ingest_node_never_runs_after_an_error(monkeypatch, loaded):
+    pytest.importorskip("bs4")
+    pytest.importorskip("langgraph")
     import mininfer.agent_ingest as ai
     loaded(FakeModel(records={"models": [{"model_name": "x"}]}))
     monkeypatch.setattr(ai, "EXTRACT_BACKEND", "gliner")
@@ -338,6 +346,8 @@ def test_ingest_node_never_runs_after_an_error(monkeypatch, loaded):
 
 
 def test_the_graph_contains_the_understanding_stage():
+    pytest.importorskip("bs4")
+    pytest.importorskip("langgraph")
     import mininfer.agent_ingest as ai
     nodes = set(ai.build_graph().get_graph().nodes)
     assert "understanding" in nodes
