@@ -38,8 +38,9 @@ from . import db as db_mod
 from . import intent as intent_mod
 from .env import load_env
 from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
-                      open_stream, resolve_endpoint, ENDPOINTS, available_providers)
-from .fetch import utcnow
+                      open_stream, resolve_endpoint, ENDPOINTS, available_providers,
+                      _network_class, _TLS_HINT)
+from .fetch import utcnow, _verify as _tls_verify
 from .quota import classify_429, describe as quota_describe, record_from_headers
 from . import search as search_mod
 from .router import DEFAULT_TASK, Policy, rank_for_compare, route
@@ -1055,6 +1056,62 @@ async def local_register(request: Request) -> dict:
     return {"ok": True, "registered": registered}
 
 
+async def _probe_provider(provider_id: str, custom_key: str) -> dict:
+    """Connectivity check for a provider with no model in the registry.
+
+    Calls the provider's own `GET /models`, so it verifies DNS/TLS reachability
+    and that the key is accepted, without inventing a chat model. A key that works
+    still leaves the registry empty — the reply says so and names the command that
+    fixes it, because "connected" with no usable model is the confusing half-state
+    this replaces.
+    """
+    base, key_env, headers = ENDPOINTS[provider_id]
+    key = custom_key or (os.environ.get(key_env) if key_env else "")
+    out = {
+        "ok": False, "provider": provider_id, "deploy_id": None,
+        "model": f"{provider_id} (no model ingested)", "is_free": False,
+        "latency_ms": None, "reply": None, "error_class": None, "error_detail": None,
+    }
+    if not key:
+        out["error_class"] = "no_api_key"
+        out["error_detail"] = (
+            f"no {provider_id} model is in the registry. Set "
+            f"{key_env or provider_id.upper() + '_API_KEY'} and run `mi refresh` to add them"
+        )
+        return out
+
+    url = base.rstrip("/") + "/models"
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=_tls_verify()) as http_c:
+            r = await http_c.get(url, headers={**headers, "Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as exc:
+        kind = _network_class(exc)
+        out["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        out["error_class"] = kind
+        out["error_detail"] = _TLS_HINT if kind == "tls_error" else str(exc)
+        return out
+
+    out["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    if r.status_code in (401, 403):
+        out["error_class"] = "auth_error"
+        out["error_detail"] = f"the provider rejected the key (HTTP {r.status_code})"
+        return out
+    if r.status_code >= 400:
+        out["error_class"] = f"http_{r.status_code}"
+        out["error_detail"] = r.text[:200]
+        return out
+
+    try:
+        n = len((r.json() or {}).get("data") or [])
+    except Exception:
+        n = 0
+    out["ok"] = True
+    out["reply"] = (f"key accepted — {n} model(s) available. "
+                    f"Run `mi refresh` to add {provider_id} to the registry.")
+    return out
+
+
 @app.post("/v1/providers/test")
 async def test_provider_connectivity(request: Request) -> dict:
     """Test connectivity to a provider using its free model or cheapest deployment."""
@@ -1088,7 +1145,14 @@ async def test_provider_connectivity(request: Request) -> dict:
     if not candidates:
         if provider_id not in ENDPOINTS:
             raise HTTPException(status_code=404, detail=f"No deployments found for provider '{provider_id}'")
-        candidate = {"deploy_id": f"{provider_id}:test", "provider": provider_id, "provider_model_id": "test"}
+        # Nothing is ingested for this provider, so there is no model to route a
+        # completion to. The old fallback invented `{provider}:test` and called it
+        # — a model id that can only ever 404, which is the "Connectivity failed …
+        # Model: test / The model `test` does not exist" a user saw. Ask the
+        # provider to list its own models instead: that checks exactly what this
+        # endpoint promises (reachability, and that the key is accepted) and needs
+        # no model id.
+        return await _probe_provider(provider_id, custom_key)
     else:
         # Sort: free models first, then cheapest price_in
         candidates.sort(key=lambda x: (not (x.get("zero_price") or x.get("free_variant") or x.get("price_in") == 0),
