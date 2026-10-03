@@ -68,7 +68,10 @@ export function SettingsTab() {
       return next
     })
     try {
-      const activeKey = userKeys[providerId] || keyInputs[providerId]
+      // Prefer what was just typed. The old order (`userKeys || keyInputs`) meant
+      // a stale saved key silently won over the new one being tested — you would
+      // paste a fresh key, press Test, and be told about the old key's failure.
+      const activeKey = keyInputs[providerId]?.trim() || userKeys[providerId]
       const res = await api.testProvider(providerId, activeKey)
       setTestResult((prev) => ({
         ...prev,
