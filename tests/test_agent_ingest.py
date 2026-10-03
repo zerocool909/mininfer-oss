@@ -15,6 +15,12 @@ import os
 
 import pytest
 
+# The agent graph is the optional `[agents]` extra (langgraph + bs4). Skip when
+# it is absent instead of failing collection: `pip install -e .` — the README's
+# install — must still be able to run the rest of the suite.
+pytest.importorskip("bs4")
+pytest.importorskip("langgraph")
+
 import mininfer.agent_ingest as ai
 from mininfer.store import Store
 

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+# Optional `[agents]` extra; see test_agent_ingest.py.
+pytest.importorskip("bs4")
+pytest.importorskip("langgraph")
+
 import mininfer.agent_resolve as ar
 from mininfer.resolve import Proposal
 from mininfer.schema import Deployment, Weights
