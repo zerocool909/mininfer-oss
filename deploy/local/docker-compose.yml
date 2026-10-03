@@ -18,6 +18,19 @@ services:
       # is the repo root so the Dockerfile's COPY paths resolve.
       context: ../..
       dockerfile: Dockerfile
+    # Load the repo-root `.env` however compose is invoked. With
+    # `-f deploy/local/docker-compose.yml` the project directory becomes
+    # `deploy/local/`, so compose would look for `deploy/local/.env` and silently
+    # drop every provider key — the container then routes to nothing, or calls a
+    # provider with no Authorization header. `required: false` keeps a bare
+    # checkout (no `.env` yet) working.
+    env_file:
+      # Relative to THIS file, so it resolves the same however compose is
+      # invoked (`docker compose up` from the repo root, or
+      # `-f deploy/local/docker-compose.yml` from anywhere). `required: false`
+      # keeps a bare checkout — which has no `.env` yet — working.
+      - path: ../../.env
+        required: false
     image: mininfer:latest
     container_name: mininfer-router
     restart: unless-stopped
@@ -29,18 +42,16 @@ services:
       - MI_DB=/data/mininfer.db
       - MI_POLICY=/app/config/policy.yaml
       - LOG_LEVEL=info
-      # Access control: deliberately OFF here, matching config/profiles/local.env.
-      # To run the cloud variant locally, use deploy/cloud/ — not this file.
-      - MI_API_KEYS=${MI_API_KEYS:-}
-      - MI_ADMIN_TOKEN=${MI_ADMIN_TOKEN:-}
-      # Provider keys. Any provider in mininfer/execute.py:ENDPOINTS enables
-      # itself when its key is present.
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
-      - HF_TOKEN=${HF_TOKEN:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      # Credentials come from `.env` via `env_file` above, NOT from here.
+      # An `environment:` entry takes precedence over `env_file:`, so listing
+      # `OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}` here pinned every key to the
+      # *empty string* whenever the shell had not exported it — which silently
+      # beat the `.env` file, so the container called providers with no
+      # Authorization header ("Missing Authentication header").
+      #
+      # Access control stays OFF here (matching config/profiles/local.env); set
+      # MI_API_KEYS / MI_ADMIN_TOKEN in `.env` to turn it on. To run the cloud
+      # variant locally, use deploy/cloud/ — not this file.
       # Corporate/macOS root CA. The host path is mounted at /certs and the
       # bundle is read from there; `scripts/make_ca_bundle.sh` writes
       # .certs/bundle.pem. Absent, the directory is empty and the code falls
@@ -73,6 +84,19 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+    # Load the repo-root `.env` however compose is invoked. With
+    # `-f deploy/local/docker-compose.yml` the project directory becomes
+    # `deploy/local/`, so compose would look for `deploy/local/.env` and silently
+    # drop every provider key — the container then routes to nothing, or calls a
+    # provider with no Authorization header. `required: false` keeps a bare
+    # checkout (no `.env` yet) working.
+    env_file:
+      # Relative to THIS file, so it resolves the same however compose is
+      # invoked (`docker compose up` from the repo root, or
+      # `-f deploy/local/docker-compose.yml` from anywhere). `required: false`
+      # keeps a bare checkout — which has no `.env` yet — working.
+      - path: ../../.env
+        required: false
     image: mininfer:latest
     container_name: mininfer-verify
     restart: unless-stopped
