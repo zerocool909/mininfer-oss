@@ -1,6 +1,6 @@
 # MinInfer
 
-[![CI](https://github.com/YOUR_ORG/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_ORG/mininfer-oss/actions/workflows/ci.yml)
+[![CI](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
@@ -318,8 +318,8 @@ X-MI-Candidates
 ## 1. Install
 
 ```bash
-git clone <your-repository-url>
-cd <repository>
+git clone https://github.com/zerocool909/mininfer-oss.git
+cd mininfer-oss
 
 python3 -m venv .venv
 source .venv/bin/activate

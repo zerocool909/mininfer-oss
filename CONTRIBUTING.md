@@ -7,7 +7,7 @@ validation scripts — read those before a large change.
 ## Development setup
 
 ```bash
-git clone https://github.com/YOUR_ORG/mininfer-oss
+git clone https://github.com/zerocool909/mininfer-oss
 cd mininfer-oss
 
 python3 -m venv .venv
