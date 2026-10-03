@@ -284,6 +284,10 @@ def resolve_endpoint(
     built-in map, which is how the operator routes around a provider we do not
     know about yet without editing code.
     """
+    # A blank or whitespace-only key is "no key", wherever it came from. Normalise
+    # once so every branch below (and `_auth_headers`) agrees.
+    api_key = (api_key or "").strip() or None
+
     provider, _, pid = deploy_id.partition(":")
     if not pid:
         return Endpoint("", "", None, error="bad_deploy_id")
@@ -291,8 +295,14 @@ def resolve_endpoint(
     head = provider.split("/")[0]
     entry = ENDPOINTS.get(head)
 
+    # An empty string is not a credential. A browser's stored keys, or a caller,
+    # can hand us `api_key=""`; treating that as an explicit override produced a
+    # request with no `Authorization` header — "Missing Authentication header"
+    # from the provider, which reads as a *bad* key rather than a missing one, and
+    # silently shadowed the key that was configured in the environment. Empty now
+    # falls back exactly like None.
     if base_url:
-        key = api_key if api_key is not None else ("local" if head in ("ollama", "llamacpp") else _any_key())
+        key = api_key or ("local" if head in ("ollama", "llamacpp") else _any_key())
         return Endpoint(base_url.rstrip("/"), model or pid, key,
                         _auth_headers(key))
 
@@ -300,7 +310,7 @@ def resolve_endpoint(
         return Endpoint("", "", None,
                         error=f"no endpoint for provider {provider!r} (override with --base-url)")
     base, key_env, extra = entry
-    key = api_key if api_key is not None else (os.environ.get(key_env) if key_env else None)
+    key = api_key or (os.environ.get(key_env) if key_env else None)
     if head in ("ollama", "llamacpp") and not key:
         key = "local"
     headers = dict(extra)

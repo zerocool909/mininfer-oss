@@ -121,6 +121,13 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -e '.[server,dev]'
+      - name: no credentials committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::.env is tracked — credentials must never be committed (it is gitignored; .env.example is the template)"
+            exit 1
+          fi
+          echo "no .env tracked"
       - run: bash scripts/validate-phase0.sh
 
   # ---------------------------------------------------------------------------

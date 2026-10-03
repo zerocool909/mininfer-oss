@@ -209,3 +209,39 @@ def test_a_malformed_user_keys_header_is_ignored(tmp_path, monkeypatch):
                     json={"model": "t", "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 503
     assert r.json()["error"]["type"] == "no_api_key"
+
+
+# ------------------------------------------------------- blank keys are absent
+#
+# An empty string is not a credential. A browser's stored keys (or any caller)
+# can send `api_key=""`; treating it as an explicit override produced a request
+# with no `Authorization` header at all — the provider answers "Missing
+# Authentication header", which reads as a *bad* key rather than a missing one,
+# and silently shadowed the key configured in the environment.
+
+
+def test_a_blank_key_falls_back_to_the_environment(monkeypatch):
+    from mininfer.execute import resolve_endpoint
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+    for blank in (None, "", "   "):
+        ep = resolve_endpoint("openrouter:m", api_key=blank)
+        assert ep.api_key == "env-key", blank
+        assert ep.headers["Authorization"] == "Bearer env-key"
+
+
+def test_a_real_key_still_overrides_the_environment(monkeypatch):
+    from mininfer.execute import resolve_endpoint
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+    ep = resolve_endpoint("openrouter:m", api_key=" mine ")
+    assert ep.api_key == "mine"          # stripped, and it wins
+
+
+def test_a_blank_key_with_no_environment_key_is_simply_absent(monkeypatch):
+    from mininfer.execute import resolve_endpoint
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    ep = resolve_endpoint("openrouter:m", api_key="")
+    assert ep.api_key is None
+    assert "Authorization" not in ep.headers
