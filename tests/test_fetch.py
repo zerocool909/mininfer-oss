@@ -130,3 +130,56 @@ def test_persist_false_returns_the_bytes_without_writing(monkeypatch):
     written = F.fetch_raw("demo", "https://x/y", ext="html", persist=True)
     assert written.persisted is True
     assert F._find_recent("demo", "https://x/y", ttl_s=3600) is not None
+
+
+# --------------------------------------------------------------------------- #
+# TLS trust is per-machine configuration, never per-device code
+# --------------------------------------------------------------------------- #
+
+_CA_VARS = ("MI_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+
+def _clear_ca(monkeypatch):
+    for v in _CA_VARS:
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_a_normal_network_needs_no_ca_configuration(monkeypatch):
+    """The property that makes a fresh clone work anywhere.
+
+    With nothing set, `_verify` returns `True` and httpx verifies against certifi
+    (the Mozilla roots), which already trusts every public provider. No device- or
+    machine-specific file is required for the common case.
+    """
+    _clear_ca(monkeypatch)
+    assert F._verify() is True
+
+
+@pytest.mark.parametrize("var", ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"])
+def test_the_standard_ca_variables_are_honoured(monkeypatch, tmp_path, var):
+    """`requests`/`curl` users already export one of these.
+
+    httpx only reads `SSL_CERT_FILE`; the other two are not honoured by it, which
+    is why "it worked with curl" used to be untrue here. `_verify` maps them.
+    """
+    _clear_ca(monkeypatch)
+    bundle = tmp_path / "bundle.pem"
+    bundle.write_text("x")
+    monkeypatch.setenv(var, str(bundle))
+    assert F._verify() == str(bundle)
+
+
+def test_a_missing_bundle_path_falls_back_to_the_default(monkeypatch):
+    """A stale path must not be handed to httpx — that would fail every request."""
+    _clear_ca(monkeypatch)
+    monkeypatch.setenv("MI_CA_BUNDLE", "/does/not/exist.pem")
+    assert F._verify() is True
+
+
+def test_mi_ca_bundle_wins_over_the_standard_variables(monkeypatch, tmp_path):
+    _clear_ca(monkeypatch)
+    a, b = tmp_path / "a.pem", tmp_path / "b.pem"
+    a.write_text("x"); b.write_text("x")
+    monkeypatch.setenv("MI_CA_BUNDLE", str(a))
+    monkeypatch.setenv("SSL_CERT_FILE", str(b))
+    assert F._verify() == str(a)

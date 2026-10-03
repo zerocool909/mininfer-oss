@@ -606,6 +606,38 @@ when you run more than one replica, or a serverless host with no persistent disk
 `deploy/local/docker-compose.postgres.yml` runs that shape on a laptop if you
 want to try it.
 
+## TLS: corporate proxies and corporate roots
+
+**A normal network needs no configuration.** MinInfer verifies TLS against
+`certifi` (the Mozilla root store), which already trusts every public provider,
+so a fresh checkout talks to them out of the box. Nothing here is device- or
+machine-specific.
+
+You only need a bundle when **`curl` works and `mi` does not**:
+
+```text
+[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+unable to get local issuer certificate
+```
+
+That means your network does TLS interception, and the intercepting root CA sits
+in the OS trust store where `certifi` cannot see it. Generate a bundle **on that
+machine** and point MinInfer at it:
+
+```bash
+./scripts/make_ca_bundle.sh                    # writes .certs/bundle.pem
+export MI_CA_BUNDLE="$PWD/.certs/bundle.pem"   # or put it in .env
+```
+
+`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` are honoured too, so a
+machine already configured for Python or `curl` needs nothing MinInfer-specific.
+
+**Why this is never committed.** The bundle contains *your* network's
+interception root — a trust anchor specific to your organisation. Committing it
+would make every clone trust your employer's proxy, which is both a security
+problem and wrong for anyone else. So `.certs/` is gitignored and each machine
+generates its own if it needs one. Never disable verification instead.
+
 ---
 
 # Using MinInfer with OpenAI Clients

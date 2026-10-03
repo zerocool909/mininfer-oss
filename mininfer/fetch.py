@@ -23,17 +23,33 @@ RAW_ROOT = pathlib.Path(os.environ.get("MI_RAW", "raw"))
 _UA = "MinInfer/0.1 (+model-intelligence-registry)"
 
 
-def _verify() -> str | bool:
-    """TLS trust.
+#: Environment variables that point at a CA bundle, most specific first; the
+#: first whose path exists wins. `SSL_CERT_FILE` is honoured by OpenSSL/httpx
+#: anyway; `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` are **not**, and they are
+#: exactly the names a `requests`/`curl` user already has exported — honouring
+#: them here is what makes "it worked with curl" carry over.
+_CA_BUNDLE_VARS = ("MI_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+                   "CURL_CA_BUNDLE")
 
-    Corporate proxies and some macOS setups keep their root CA in the system
-    keychain, which `certifi` doesn't see — curl works and Python doesn't. Point
-    MI_CA_BUNDLE (or MI_CA_BUNDLE) at a generated bundle (see scripts/make_ca_bundle.sh) rather
-    than disabling verification. Never set this to False.
+
+def _verify() -> str | bool:
+    """TLS trust store: a bundle path, or `True` for httpx's own default.
+
+    **A normal network needs no configuration.** With nothing set this returns
+    `True`, so httpx verifies against `certifi` (the Mozilla roots), which already
+    trusts every public provider. Nothing here is machine- or device-specific.
+
+    A bundle is only needed behind a TLS-intercepting proxy, where the root CA is
+    the *organisation's own* and therefore exists on that machine and nowhere
+    else. That is why `.certs/` is gitignored and never shipped: committing one
+    machine's trust store would make every clone trust *its* interception root.
+    Generate one where it is needed (see `scripts/make_ca_bundle.sh`) and leave
+    the code alone. Never disable verification.
     """
-    bundle = os.environ.get("MI_CA_BUNDLE")
-    if bundle and pathlib.Path(bundle).exists():
-        return bundle
+    for name in _CA_BUNDLE_VARS:
+        value = os.environ.get(name)
+        if value and pathlib.Path(value).exists():
+            return value
     return True
 
 
