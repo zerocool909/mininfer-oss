@@ -1201,14 +1201,23 @@ async def test_provider_connectivity(request: Request) -> dict:
         except Exception:
             pass
 
-    deploy_id = candidate["deploy_id"]
-
     # Build runner with custom key (if provided) or fallback to env
     user_keys = {provider_id: custom_key} if custom_key else {}
     runner = Runner(user_keys=user_keys, timeout=15.0, max_tokens=10)
 
+    # Try a few arms. A shared `:free` model is routinely rate-limited, and a 429
+    # *proves* connectivity — the request authenticated and the provider answered —
+    # rather than disproving it. Stopping at the first arm made this button report
+    # "Connectivity failed" for a provider that was working.
     test_messages = [{"role": "user", "content": "ping"}]
-    res = runner(deploy_id, test_messages)
+    res = None
+    for cand in candidates[:4]:
+        res = runner(cand["deploy_id"], test_messages)
+        candidate = cand
+        if res.ok or res.error_class not in ("429", "http_429"):
+            break
+
+    deploy_id = candidate["deploy_id"]
 
     # Architectural enhancement: If upstream returns 404 ("no longer available" / not found),
     # turn this into real runtime evidence and retire the deployment so the router never calls it again!

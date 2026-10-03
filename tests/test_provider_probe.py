@@ -187,3 +187,44 @@ def test_a_body_key_still_wins_over_the_header(tmp_path, monkeypatch):
         json={"provider": "cerebras", "api_key": "typed-key"},
     ).json()
     assert body["key_source"] == "custom"
+
+
+def test_a_rate_limited_free_arm_is_retried_not_reported_as_failure(tmp_path, monkeypatch):
+    """A 429 proves connectivity — authenticated, and the provider answered.
+
+    The endpoint used to call a single arm, so a shared `:free` model being
+    rate-limited read as "Connectivity failed" for a provider that was fine.
+    """
+    from mininfer.execute import CallResult
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    client = _client(tmp_path, monkeypatch)
+    s = Store(tmp_path / "p.db")
+    s.upsert_weights(Weights("hf:cerebras/m", "m", params_b=7.0))
+    for i in range(3):
+        s.upsert_deployment(Deployment(f"cerebras:m{i}", "hf:cerebras/m", "cerebras",
+                                       f"m{i}", price_in=0.0, price_out=0.0,
+                                       context_window=1000))
+    s.commit()
+    s.close()
+
+    import mininfer.proxy as proxy
+    calls: list[str] = []
+
+    class _Runner:
+        def __init__(self, **kw):
+            pass
+
+        def __call__(self, did, msgs, **kw):
+            calls.append(did)
+            if len(calls) < 3:
+                return CallResult(did, error_class="429", error_detail="Provider returned error")
+            return CallResult(did, text="pong", ok=True)
+
+    monkeypatch.setattr(proxy, "Runner", _Runner)
+
+    body = client.post("/v1/providers/test", json={"provider": "cerebras"}).json()
+
+    assert body["ok"] is True
+    assert len(calls) == 3          # it walked past the two rate-limited arms
