@@ -152,3 +152,38 @@ def test_a_provider_with_an_ingested_model_still_routes_normally(tmp_path, monke
     assert body["ok"] is True
     assert body["model"] == "real-model"
     assert body["deploy_id"] == "cerebras:real-model"
+
+
+def test_a_saved_key_from_the_header_is_used(tmp_path, monkeypatch):
+    """The dashboard sends saved keys in `X-User-API-Keys`, like the chat path.
+
+    This endpoint read only the request body, so a key showing as "Custom Key
+    Active" in the UI was invisible to Test: it exercised the *environment* key
+    instead, and with none configured sent no credential at all — which the
+    provider reports as "Missing Authentication header".
+    """
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    client = _client(tmp_path, monkeypatch)
+    _stub_models(monkeypatch, _Resp(200, {"data": [{"id": "a"}, {"id": "b"}]}))
+
+    body = client.post(
+        "/v1/providers/test",
+        headers={"X-User-API-Keys": json.dumps({"cerebras": "sk-saved-in-browser"})},
+        json={"provider": "cerebras"},
+    ).json()
+
+    assert body["key_source"] == "custom"
+    assert body["ok"] is True
+
+
+def test_a_body_key_still_wins_over_the_header(tmp_path, monkeypatch):
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    client = _client(tmp_path, monkeypatch)
+    _stub_models(monkeypatch, _Resp(200, {"data": []}))
+
+    body = client.post(
+        "/v1/providers/test",
+        headers={"X-User-API-Keys": json.dumps({"cerebras": "header-key"})},
+        json={"provider": "cerebras", "api_key": "typed-key"},
+    ).json()
+    assert body["key_source"] == "custom"

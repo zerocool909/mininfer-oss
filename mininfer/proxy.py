@@ -1119,6 +1119,19 @@ async def test_provider_connectivity(request: Request) -> dict:
     payload = await request.json()
     provider_id = (payload.get("provider") or "").strip().lower()
     custom_key = (payload.get("api_key") or "").strip()
+    if not custom_key:
+        # The dashboard keeps keys in the browser and forwards them as
+        # `X-User-API-Keys` — the same header the chat path reads. This endpoint
+        # read only the body, so a saved key ("Custom Key Active") was invisible to
+        # Test: it exercised the *environment* key instead, and with none set sent
+        # no credential at all, which a provider reports as "Missing
+        # Authentication header".
+        raw = request.headers.get("x-user-api-keys")
+        if raw:
+            try:
+                custom_key = str((json.loads(raw) or {}).get(provider_id) or "").strip()
+            except Exception:
+                custom_key = ""
 
     if not provider_id:
         raise HTTPException(status_code=400, detail="Missing 'provider' in request payload")
