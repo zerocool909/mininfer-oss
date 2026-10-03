@@ -157,3 +157,55 @@ def test_free_arms_exempt_from_the_quality_floor(tmp_path, monkeypatch):
     assert exempt.free_kind == "zero_price"
     assert exempt.rejected is None
     store.close()
+
+
+# ------------------------------------------------------------------ BYO keys
+#
+# A user may bring their own provider key instead of the operator setting one in
+# the environment. The dashboard keeps such keys in the browser and sends them
+# per request in `X-User-API-Keys`; the proxy treats that provider as callable
+# for that request only. There was no test for this path, so a regression would
+# have silently broken "use your own key" without failing anything.
+
+
+def test_a_user_supplied_key_makes_an_uncredentialed_provider_callable(tmp_path, monkeypatch):
+    client = _setup(tmp_path, monkeypatch)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("mininfer.proxy.Runner", _fake_runner)
+
+    r = client.post("/v1/chat/completions",
+                    headers={"X-User-API-Keys": '{"openrouter": "sk-user-supplied"}'},
+                    json={"model": "t", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 200, r.text[:200]
+    body = r.json()
+    assert body["mi"]["selected_model"] == "openrouter:m"
+    assert body["mi"]["reason"]["skipped_no_key"] == []
+
+
+def test_byo_keys_are_scoped_to_the_request_that_sends_them(tmp_path, monkeypatch):
+    client = _setup(tmp_path, monkeypatch)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("mininfer.proxy.Runner", _fake_runner)
+    payload = {"model": "t", "messages": [{"role": "user", "content": "hi"}]}
+
+    ok = client.post("/v1/chat/completions",
+                     headers={"X-User-API-Keys": '{"openrouter": "sk-user-supplied"}'},
+                     json=payload)
+    assert ok.status_code == 200
+    # The next caller without the header is back to "no key": the key is never
+    # stored server-side, only forwarded from the browser per request.
+    nope = client.post("/v1/chat/completions", json=payload)
+    assert nope.status_code == 503
+    assert nope.json()["error"]["type"] == "no_api_key"
+
+
+def test_a_malformed_user_keys_header_is_ignored(tmp_path, monkeypatch):
+    """A bad header must degrade to "no user keys", not 500 the request."""
+    client = _setup(tmp_path, monkeypatch)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    r = client.post("/v1/chat/completions",
+                    headers={"X-User-API-Keys": "not-json"},
+                    json={"model": "t", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 503
+    assert r.json()["error"]["type"] == "no_api_key"
