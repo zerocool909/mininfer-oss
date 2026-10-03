@@ -791,23 +791,54 @@ def _diversify(ordered: list[Candidate], policy: Policy) -> tuple[list[Candidate
     """
     if not policy.require_distinct_provider:
         return ordered[:policy.top_k], "none"
-    passes = [(True, True, "gateway+upstream"), (False, True, "upstream"),
-              (False, False, "none")]
-    for need_gw, need_up, label in passes:
-        chosen: list[Candidate] = []
-        gws: set[str] = set()
-        ups: set[str] = set()
-        for c in ordered:
+
+    # Pass 1 — strict: every arm a distinct gateway *and* a distinct upstream.
+    chosen: list[Candidate] = []
+    gws: set[str] = set()
+    ups: set[str] = set()
+    for c in ordered:
+        if len(chosen) >= policy.top_k:
+            break
+        if chosen and (c.provider_family in gws or c.upstream in ups):
+            continue
+        chosen.append(c)
+        gws.add(c.provider_family)
+        ups.add(c.upstream)
+    if len(chosen) >= min(policy.top_k, len(ordered)):
+        return chosen, "gateway+upstream"
+
+    # Pass 2 — round-robin across gateways, repeating one only once every gateway
+    # has an arm.
+    #
+    # This pass used to be "distinct upstream", which is not separation at all
+    # when one gateway aggregates many upstreams: with fewer than `top_k` gateways
+    # eligible (a small free-tier pool is the normal case) it returned three arms
+    # of the *same* gateway. One expired key or one outage there then failed the
+    # whole request, even though another gateway in the very same list was
+    # callable — the chain looked like three options and behaved like one.
+    buckets: dict[str, list[Candidate]] = {}
+    for c in ordered:
+        buckets.setdefault(c.provider_family, []).append(c)
+    chosen = []
+    seen: set[tuple[str, str]] = set()
+    while len(chosen) < policy.top_k:
+        progressed = False
+        for fam, bucket in buckets.items():
+            for c in bucket:
+                if (fam, c.upstream) in seen:
+                    continue
+                chosen.append(c)
+                seen.add((fam, c.upstream))
+                progressed = True
+                break
             if len(chosen) >= policy.top_k:
                 break
-            if chosen and ((need_gw and c.provider_family in gws)
-                           or (need_up and c.upstream in ups)):
-                continue
-            chosen.append(c)
-            gws.add(c.provider_family)
-            ups.add(c.upstream)
-        if len(chosen) >= min(policy.top_k, len(ordered)):
-            return chosen, label
+        if not progressed:
+            break
+    if chosen:
+        return chosen, "gateway round-robin"
+
+    # Pass 3 — nothing to spread; take the ranked order as-is.
     return ordered[:policy.top_k], "none"
 
 

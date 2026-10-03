@@ -498,3 +498,79 @@ def test_the_shipped_policy_gates_the_tasks_where_silence_is_the_failure(tmp_pat
     # and tasks that require nothing are untouched either way
     for name in ("general_chat", "summarise", "hard_reasoning"):
         assert not tasks[name].require
+
+
+# ------------------------------------------------- fallback separation is real
+#
+# `require_distinct_provider` exists so a fallback chain survives one provider
+# failing. The relaxation used to be "distinct upstream", which is no separation
+# at all when a gateway aggregates many upstreams: with fewer than `top_k`
+# gateways eligible — the normal free-tier case — it returned every arm from the
+# *same* gateway. One expired key there failed the whole request while another
+# gateway in the same list was callable.
+
+
+def _cand(deploy_id, family, upstream, cost_per_success):
+    from mininfer.schema import Candidate
+
+    return Candidate(
+        deploy_id=deploy_id, provider=family, provider_family=family, upstream=upstream,
+        vendor=upstream, weights_id="hf:x", display_name=deploy_id,
+        price_in=cost_per_success, price_out=cost_per_success,
+        free_kind="zero_price" if cost_per_success == 0 else None,
+        p_prior=0.6, prior_key="aa_intelligence", n_obs=0, wins=0, p_lb=0.5,
+        availability=1.0, headroom=1.0, headroom_src="configured",
+        cost_per_call=cost_per_success, cost_per_success=cost_per_success,
+        context_window=100_000, latency_ms=None, prior_tags=[],
+    )
+
+
+def test_three_distinct_gateways_are_still_preferred():
+    from mininfer.router import _diversify
+
+    ordered = [
+        _cand("openrouter:a:m1", "openrouter", "a", 0.0),
+        _cand("openrouter:b:m2", "openrouter", "b", 0.0),
+        _cand("groq:m3", "groq", "groq", 0.0),
+        _cand("vercel:m4", "vercel", "vercel", 0.0),
+    ]
+    chosen, label = _diversify(ordered, Policy(top_k=3, require_distinct_provider=True))
+
+    assert label == "gateway+upstream"
+    assert {c.provider_family for c in chosen} == {"openrouter", "groq", "vercel"}
+
+
+def test_the_chain_spreads_across_gateways_when_there_are_fewer_than_top_k():
+    """Two gateways, top_k 3: the second arm must reach the *other* gateway.
+
+    This is the shape that failed in practice: 263 openrouter arms and 7 vercel,
+    an expired openrouter key, and a chain of three openrouter arms that all died
+    together.
+    """
+    from mininfer.router import _diversify
+
+    ordered = [
+        _cand("openrouter:a:m1", "openrouter", "a", 0.0),
+        _cand("openrouter:b:m2", "openrouter", "b", 0.0),
+        _cand("openrouter:c:m3", "openrouter", "c", 0.0),
+        _cand("openrouter:d:m4", "openrouter", "d", 0.0),
+        _cand("vercel:m9", "vercel", "vercel", 0.001),
+    ]
+    chosen, label = _diversify(ordered, Policy(top_k=3, require_distinct_provider=True))
+
+    assert label == "gateway round-robin"
+    fams = [c.provider_family for c in chosen]
+    assert fams[1] == "vercel", fams          # a fallback actually reaches it
+    assert len(chosen) == 3
+
+
+def test_the_cheapest_arm_still_leads_the_chain():
+    from mininfer.router import _diversify
+
+    ordered = [
+        _cand("openrouter:a:free", "openrouter", "a", 0.0),
+        _cand("openrouter:b:cheap", "openrouter", "b", 0.001),
+        _cand("vercel:pricier", "vercel", "vercel", 0.5),
+    ]
+    chosen, _ = _diversify(ordered, Policy(top_k=3, require_distinct_provider=True))
+    assert chosen[0].deploy_id == "openrouter:a:free"
