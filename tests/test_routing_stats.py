@@ -161,3 +161,17 @@ def test_a_tls_error_does_not_look_like_a_model_trial(tmp_path):
     s.commit()
     assert s.stats("t")["prov:m0"]["n"] == 0
     s.close()
+
+
+def test_the_tls_hint_is_actionable_not_a_raw_ssl_string():
+    """The detail a user sees must name the fix, not echo OpenSSL.
+
+    The dashboard surfaces `error_detail` as "Connectivity failed … Reason:",
+    where `unable to get local issuer certificate` is a dead end. The hint points
+    at the one command that fixes it, and stays short enough to sit in
+    `observations.error_detail`.
+    """
+    assert "make_ca_bundle.sh" in execute._TLS_HINT
+    assert "MI_CA_BUNDLE" in execute._TLS_HINT
+    assert "unable to get local issuer certificate" not in execute._TLS_HINT
+    assert len(execute._TLS_HINT) < 200

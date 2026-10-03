@@ -180,6 +180,16 @@ def _refine_error_class(err: str | None, detail: str | None) -> str | None:
     return "not_api_callable" if any(m in text for m in _UNCALLABLE_MARKERS) else err
 
 
+#: A TLS failure is almost always *our* trust store, not the provider: the root
+#: CA is in the OS keychain (which `curl` reads) and not in `certifi`. The raw
+#: `SSLCertVerificationError` text ("unable to get local issuer certificate")
+#: tells an operator nothing actionable; this does. It replaces the raw detail
+#: rather than wrapping it, so it also fits `observations.error_detail`.
+_TLS_HINT = ("certificate verify failed — the root CA is missing from Python's "
+             "trust store. Run scripts/make_ca_bundle.sh and set MI_CA_BUNDLE "
+             "(README: TLS / corporate root CAs)")
+
+
 def _network_class(exc: BaseException) -> str:
     """Tell "we could not verify the provider" from "the provider is unreachable".
 
@@ -387,9 +397,11 @@ def call_body(
                           latency_ms=(time.perf_counter() - t0) * 1000,
                           error_detail=f"Request timed out after {timeout}s")
     except httpx.HTTPError as exc:
-        return CallResult(deploy_id, error_class=_network_class(exc),
+        kind = _network_class(exc)
+        return CallResult(deploy_id, error_class=kind,
                           latency_ms=(time.perf_counter() - t0) * 1000,
-                          error_detail=str(exc), raw={"exc": str(exc)})
+                          error_detail=_TLS_HINT if kind == "tls_error" else str(exc),
+                          raw={"exc": str(exc)})
     latency_ms = (time.perf_counter() - t0) * 1000
 
     err = _classify(r.status_code)
@@ -464,7 +476,9 @@ def open_stream(
         return StreamSession(0, "timeout")
     except httpx.HTTPError as exc:
         client.close()
-        return StreamSession(0, _network_class(exc))
+        kind = _network_class(exc)
+        return StreamSession(0, kind,
+                             error_detail=_TLS_HINT if kind == "tls_error" else str(exc))
 
     err = _classify(resp.status_code)
     if err:
