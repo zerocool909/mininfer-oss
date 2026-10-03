@@ -10,6 +10,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ConnectModal } from '@/components/ConnectModal'
 import { CommandPalette, type PaletteCommand } from '@/components/CommandPalette'
 import { emitCommand } from '@/lib/bus'
+import { api, type Stats } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
 const NAV = [
@@ -25,6 +26,10 @@ export function App() {
     return NAV.some((n) => n.id === h) ? h : 'playground'
   })
   const [healthy, setHealthy] = useState<boolean | null>(null)
+  // Live registry counts for the footer. It used to be a hardcoded "23,799
+  // models indexed" plus "Local SQLite registry" — a number that was never true
+  // of any actual registry, and an engine claim that is wrong on Postgres.
+  const [stats, setStats] = useState<Stats | null>(null)
   const [connectOpen, setConnectOpen] = useState(false)
   /** A model handed over from the Overview's "Test" button, consumed by the chat. */
   const [testTarget, setTestTarget] = useState<TestTarget | null>(null)
@@ -33,6 +38,10 @@ export function App() {
     fetch('/healthz')
       .then((r) => setHealthy(r.ok))
       .catch(() => setHealthy(false))
+  }, [])
+
+  useEffect(() => {
+    api.stats().then(setStats).catch(() => undefined)
   }, [])
 
   // Deep-linkable tabs: /#playground survives a refresh and is screenshot-able.
@@ -225,9 +234,13 @@ export function App() {
             <span>Free first — pay only when free isn’t good enough</span>
           </div>
           <div className="flex items-center gap-3 text-[11.5px]">
-            <span>23,799 models indexed</span>
-            <span className="text-border">•</span>
-            <span>Local SQLite registry</span>
+            {stats && (
+              <span>
+                {stats.counts.weights.toLocaleString()} models{' '}
+                <span className="text-border">·</span>{' '}
+                {stats.counts.deployments.toLocaleString()} deployments
+              </span>
+            )}
           </div>
         </footer>
       )}
