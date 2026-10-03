@@ -1,0 +1,27 @@
+{
+  "providers": {
+    "mininfer": {
+      "name": "MinInfer (local router)",
+      "baseUrl": "http://127.0.0.1:8765/v1",
+      "api": "openai-completions",
+      "apiKey": "mininfer",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        { "id": "auto", "name": "MinInfer · auto (default task)", "input": ["text"], "contextWindow": 200000, "maxTokens": 16000 },
+        { "id": "general_chat", "name": "MinInfer · general chat", "input": ["text"], "contextWindow": 128000, "maxTokens": 8000 },
+        { "id": "code_edit", "name": "MinInfer · code edit", "input": ["text"], "contextWindow": 200000, "maxTokens": 16000 },
+        { "id": "agent_tools", "name": "MinInfer · agent tools", "input": ["text"], "contextWindow": 200000, "maxTokens": 16000 },
+        { "id": "sql_generation", "name": "MinInfer · SQL generation", "input": ["text"], "contextWindow": 128000, "maxTokens": 8000 },
+        { "id": "extraction", "name": "MinInfer · extraction", "input": ["text"], "contextWindow": 128000, "maxTokens": 8000 },
+        { "id": "summarise", "name": "MinInfer · summarise", "input": ["text"], "contextWindow": 200000, "maxTokens": 8000 },
+        { "id": "hard_reasoning", "name": "MinInfer · hard reasoning", "input": ["text"], "contextWindow": 128000, "maxTokens": 16000 },
+        { "id": "shelf_image_audit", "name": "MinInfer · shelf image audit", "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8000 }
+      ]
+    }
+  }
+
+}

@@ -1,0 +1,94 @@
+# ===========================================================================
+# The CLOUD shape, run locally: registry in Postgres, limits in Redis.
+#
+#   docker compose -f deploy/local/docker-compose.postgres.yml up -d --build
+#
+# This exists so the multi-replica path is exercisable on a laptop before it is
+# exercised in production. Two services matter here:
+#
+#   * Postgres — every request writes (a decision, plus an observation per
+#     attempt), and SQLite is single-writer. Replicas > 1 is only safe once the
+#     registry is shared, so `mininfer` below is given a `postgresql://` MI_DB.
+#   * Redis — the rate limiter counts here, so `MI_RATE_LIMIT_RPM` is a real
+#     limit across replicas instead of per-process, and the benchmark-norms
+#     cache (mininfer/cache.py) is shared so replicas do one scan per window.
+#
+# Access control is ON, matching config/profiles/cloud.env: exposing Postgres
+# behind an open proxy would be a strictly worse mistake than exposing SQLite.
+# ===========================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mininfer
+      POSTGRES_PASSWORD: mininfer
+      POSTGRES_DB: mininfer
+    volumes:
+      - mininfer_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mininfer -d mininfer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Not published: only the app needs it.
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mininfer:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: mininfer:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      # A `postgresql://` URL selects the Postgres backend; a path selects SQLite.
+      - MI_DB=postgresql://mininfer:mininfer@postgres:5432/mininfer
+      - MI_REDIS_URL=redis://redis:6379/0
+      - MI_POLICY=/app/config/policy.yaml
+      - LOG_LEVEL=info
+      # Access control ON — see config/profiles/cloud.env for the real values.
+      - MI_API_KEYS=${MI_API_KEYS:-sk-local-dev:local}
+      - MI_ADMIN_TOKEN=${MI_ADMIN_TOKEN:-local-admin}
+      - MI_RATE_LIMIT_RPM=${MI_RATE_LIMIT_RPM:-120}
+      - MI_MAX_BODY_BYTES=${MI_MAX_BODY_BYTES:-1048576}
+      # Provider keys. This stack is the cloud shape, so it has to be able to make
+      # a real call — without these it can only serve 401s and `no_api_key`
+      # failures, which is not a test of the Postgres write path at all. Same
+      # passthrough as deploy/local/docker-compose.yml.
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      # Corporate/MITM root CA. The host path is mounted at /certs below; see
+      # scripts/make_ca_bundle.sh. Absent, it degrades to certifi.
+      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
+    volumes:
+      - ../../.certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mininfer_pg:
+    name: mininfer_pg

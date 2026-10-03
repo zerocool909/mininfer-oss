@@ -1,0 +1,44 @@
+[project]
+name = "mininfer"
+version = "0.1.0"
+description = "MinInfer — the cheapest capable model for every task"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+server = ["fastapi>=0.100", "uvicorn>=0.23"]
+agents = ["langgraph>=0.2", "langchain-openai>=0.2", "beautifulsoup4>=4.12"]
+sync = ["psycopg2-binary>=2.9", "python-dotenv>=1.0"]
+# What the CLOUD variant needs at runtime, beyond [server]: the shared registry
+# (a `postgresql://` MI_DB needs psycopg2) and shared rate-limit counters
+# (`MI_REDIS_URL` needs a Redis client). Without these the image still *starts* —
+# it just cannot connect to Postgres, and the limiter silently falls back to
+# per-process counting, which on several replicas is not a limit at all. Both
+# are declared here so the lockfile and the image carry them.
+cloud = ["psycopg2-binary>=2.9", "redis>=5.0"]
+# The local understanding layer (GLiNER2.5) — Phase 2.0, deferred. Optional, and
+# deliberately NOT in the default image or `requirements.lock`. It pulls in
+# PyTorch, which turns the 60 MB image into a multi-GB one, and a torch pin is
+# platform-specific so it cannot live in the `--universal` lock. The seam is
+# declared here so Phase 2.0 can opt in without a code change; see
+# CLOUD_ACTIVITY.md §2.0.
+understanding = ["gliner2[local]>=2.0"]
+
+[project.scripts]
+mi = "mininfer.cli:main"
+mininfer = "mininfer.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# `packages = ["mininfer"]` shipped only the top-level modules, so the wheel was
+# missing `mininfer/web/` and `mininfer/ingest/` — `pip install .` produced a
+# package whose own CLI could not import `ingest` and whose proxy could not import
+# `web.legacy`. discover() includes the subpackages; `include` keeps it to this
+# project and `exclude` keeps test/build litter out.
+include = ["mininfer*"]
+exclude = ["tests*", "graphify-out*"]
+

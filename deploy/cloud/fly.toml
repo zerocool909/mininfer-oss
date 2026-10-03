@@ -1,0 +1,102 @@
+# ===========================================================================
+# CLOUD variant — Fly.io
+#
+# Fly expects this file at the app root because the app root is the build
+# context, and the Dockerfile COPYs `web/`, `mininfer/` and `config/` from it.
+# Two ways to use it:
+#
+#   cp deploy/cloud/fly.toml fly.toml      # then `fly deploy`
+#   fly deploy --config deploy/cloud/fly.toml   # run from the repo root
+#
+# The environment here is `config/profiles/cloud.env`: access control on, limits
+# on, state on a mounted volume. Secrets are NOT in this file — see the
+# `fly secrets set` block in deploy/cloud/README.md.
+# ===========================================================================
+app = "mininfer-router"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8000"
+  # Single-replica default. For replicas > 1 the registry must be shared, so
+  # set the DSN as a secret instead — Fly secrets take precedence over `[env]`:
+  #   fly secrets set MI_DB="postgresql://…"
+  #   fly secrets set MI_REDIS_URL="redis://…"
+  # MI_REDIS_URL moves the rate limiter AND the benchmark-norms cache out of the
+  # process (mininfer/auth.py, mininfer/cache.py); without it both are
+  # per-replica, so "120 rpm" becomes "120 rpm per replica".
+  MI_DB = "/data/mininfer.db"
+  MI_POLICY = "/app/config/policy.yaml"
+  # Optional corporate/MITM root CA for outbound provider TLS. The code ignores
+  # the path when it is absent, so this is safe to leave set. Put the bundle on
+  # the volume: `fly ssh sftp shell` then upload to /data/ca-bundle.pem.
+  MI_CA_BUNDLE = "/data/ca-bundle.pem"
+  # Limits from config/profiles/cloud.env. Non-secret, so they belong here.
+  MI_RATE_LIMIT_RPM = "120"
+  MI_MAX_BODY_BYTES = "1048576"
+  # MI_API_KEYS / MI_API_KEYS_FILE / MI_ADMIN_TOKEN are secrets:
+  #   fly secrets set MI_ADMIN_TOKEN=... MI_API_KEYS_FILE=/run/secrets/keys.json
+
+[mounts]
+  # With MI_DB on Postgres this volume holds the raw evidence lake (and the
+  # optional CA bundle above), not the registry.
+  source = "mininfer_data"
+  destination = "/data"
+
+# ---------------------------------------------------------------------------
+# One image, three process types (PRODUCTIZATION.md §5 layer ⑤).
+#
+# `web`    — the stateless API. Scale this with request volume.
+# `worker` — the registry's batch jobs (ingest / metrics). One machine, looping;
+#            it must NOT scale with requests, so it is a separate process rather
+#            than a second service. The same image is deliberate: a fix to the
+#            router has to land in both, which is the argument against a fork.
+# `verify` — the daily drift check: re-read every catalogue and report what
+#            changed price or free status. Separate from `worker` because a
+#            cached ingest cannot verify anything, so it needs its own cadence.
+#
+# `entrypoint.sh` runs a passed command instead of the web server, so these
+# commands reuse the seeding step above and need no second Dockerfile.
+# ---------------------------------------------------------------------------
+[processes]
+  web = "uvicorn mininfer.proxy:app --host 0.0.0.0 --port 8000"
+  # `mi ingest` reconciles at the end of its own run, so the explicit
+  # `mi reconcile` is belt-and-braces for the case where *every* source failed:
+  # nothing was written, so nothing would have triggered it, and the state machine
+  # and belief timeline would sit on six-hour-old beliefs.
+  worker = "sh -c 'while true; do mi ingest --force || true; mi reconcile || true; mi metrics || true; sleep 21600; done'"
+  # Daily, not every six hours: re-reading the catalogues is what proves a "free"
+  # label is still true and a price is still that price. `--report` leaves the
+  # drift list on the volume so it outlives the machine.
+  verify = "sh -c 'while true; do mi verify --report /data/verify.json || true; sleep 86400; done'"
+
+[http_service]
+  internal_port = 8000
+  # HTTP only reaches the API. The worker listens on nothing, so scoping the
+  # service to `web` keeps its health checks off the batch process.
+  processes = ["web"]
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 150
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+
+[[http_service.checks]]
+  # /healthz is deliberately public: the platform has no credential to send, and
+  # auth.classify() keeps it reachable without one.
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/healthz"
+  timeout = "5s"

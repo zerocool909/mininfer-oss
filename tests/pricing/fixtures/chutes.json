@@ -1,0 +1,14 @@
+{
+  "_note": "Shape of GET https://llm.chutes.ai/v1/models. `pricing.*` is treated as USD/Mtok, preserved from the original adapter's assumption. The contract marks this validated=false: if a peer ever disagrees by ~1000x, this unit is the first suspect.",
+  "data": [
+    {
+      "id": "deepseek-ai/DeepSeek-V3",
+      "pricing": {
+        "prompt": 0.3,
+        "completion": 1.2,
+        "input_cache_read": 0.15
+      },
+      "max_model_len": 163840
+    }
+  ]
+}

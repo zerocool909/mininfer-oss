@@ -1,0 +1,22 @@
+# ===========================================================================
+# CLOUD variant — continuous SQLite replication to object storage.
+#
+# Only needed if the platform gives you an ephemeral filesystem (Cloud Run,
+# autoscaling groups) instead of a durable volume. On Fly/K8s with a real volume
+# this is belt-and-braces, not a requirement.
+#
+#   litestream restore -if-replica-exists /data/mininfer.db
+#   litestream replicate -exec "uvicorn mininfer.proxy:app --host 0.0.0.0 --port 8000"
+#
+# Phase 1 supersedes this: once Postgres is primary, the registry replicates
+# itself and only the raw evidence lake still needs object storage.
+# ===========================================================================
+dbs:
+  - path: /data/mininfer.db
+    replicas:
+      - type: s3
+        bucket: my-mininfer-backups
+        path: mininfer.db
+        endpoint: https://<account-id>.r2.cloudflarestorage.com
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}

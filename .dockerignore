@@ -1,0 +1,26 @@
+.git
+.github
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+web/node_modules/
+web/dist/
+*.egg-info/
+# Only `mininfer.db` is needed (the image seeds /app/seed.db from it). The
+# maintenance backups and pre-migration snapshots are ~340 MB and were being
+# sent to the daemon on every build; `*.db.*` matches them but not `*.db`.
+# `!mininfer.db` re-includes the one file `COPY mininfer.db /app/seed.db` needs;
+# a bare `mininfer.db` here excluded it, so the worker/web image could not build.
+*.db.*
+*.bak
+!mininfer.db
+*.db-journal
+*.db-wal
+*.db-shm
+.venv/
+venv/
+graphify-out/
+raw/

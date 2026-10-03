@@ -1,0 +1,15 @@
+{
+  "name": "mininfer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Convenience wrappers for the MinInfer web dashboard. Python deps live in pyproject.toml; the app itself is in web/.",
+  "scripts": {
+    "dev": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "typecheck": "npm --prefix web run typecheck",
+    "preview": "npm --prefix web run preview",
+    "install:web": "npm --prefix web install",
+    "test": "npm --prefix web run test",
+    "check": "npm --prefix web run typecheck && npm --prefix web run test"
+  }
+}

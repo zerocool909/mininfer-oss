@@ -1,0 +1,30 @@
+{
+  "_note": "Shape of GET https://api.deepinfra.com/v1/openai/models. `metadata.pricing.*` is already USD/Mtok — the contract scales by 1.0. This unit is NOT yet independently cross-validated (contract validated=False).",
+  "data": [
+    {
+      "id": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "metadata": {
+        "context_length": 131072,
+        "max_tokens": 8192,
+        "tags": [],
+        "pricing": {
+          "input_tokens": 0.03,
+          "output_tokens": 0.05,
+          "cache_read_tokens": 0.015
+        }
+      }
+    },
+    {
+      "id": "Qwen/Qwen2.5-72B-Instruct",
+      "metadata": {
+        "context_length": 32768,
+        "max_tokens": 8192,
+        "tags": ["reasoning_effort"],
+        "pricing": {
+          "input_tokens": 0.35,
+          "output_tokens": 0.4
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,106 @@
+# Declared free-tier limits (Phase 3).
+#
+# These are claims from provider documentation, not measurements — seeded into
+# `quota_buckets` with source: configured. The proxy charges every real call to
+# these buckets and exhausts the minute bucket on an observed 429, so the router
+# demotes a free arm as its headroom drains (PLAN.md §2).
+#
+# Provider limits change. Re-run `mi quota seed` after editing.
+
+quotas:
+  # --- Tier 1: free API key = real free quota ------------------------------
+  # Groq: per-model limits exist; this is the provider-level default.
+  - provider: groq
+    window: minute
+    limit: 30
+  - provider: groq
+    window: day
+    limit: 1000
+
+  # Google AI Studio free tier
+  - provider: google
+    window: minute
+    limit: 15
+  - provider: google
+    window: day
+    limit: 1500
+
+  # Cerebras free tier
+  - provider: cerebras
+    window: minute
+    limit: 30
+  - provider: cerebras
+    window: day
+    limit: 1000
+
+  # Mistral free experimental tier
+  - provider: mistral
+    window: minute
+    limit: 5
+  - provider: mistral
+    window: day
+    limit: 1000
+
+  # GitHub Models (fine-grained PAT)
+  - provider: github
+    window: minute
+    limit: 15
+  - provider: github
+    window: day
+    limit: 150
+
+  # Cloudflare Workers AI: 10k neurons/day
+  - provider: cloudflare
+    window: day
+    limit: 10000
+
+  # --- Aggregator free tiers: only the free variants are rationed ----------
+  # OpenRouter free models share a 20/min, 50/day pool on the free tier.
+  - provider: openrouter
+    free_only: true
+    window: minute
+    limit: 20
+  - provider: openrouter
+    free_only: true
+    window: day
+    limit: 50
+
+  # NVIDIA Build / NIM free trial API
+  - provider: nvidia
+    free_only: true
+    window: minute
+    limit: 40
+  - provider: nvidia
+    free_only: true
+    window: day
+    limit: 1000
+
+  # SambaNova free tier
+  - provider: sambanova
+    free_only: true
+    window: minute
+    limit: 20
+  - provider: sambanova
+    free_only: true
+    window: day
+    limit: 500
+
+  # Novita free trial tier
+  - provider: novita
+    free_only: true
+    window: minute
+    limit: 20
+  - provider: novita
+    free_only: true
+    window: day
+    limit: 500
+
+  # Vercel AI SDK free tier
+  - provider: vercel
+    free_only: true
+    window: minute
+    limit: 20
+  - provider: vercel
+    free_only: true
+    window: day
+    limit: 500

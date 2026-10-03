@@ -1,0 +1,14 @@
+{
+  "_note": "Shape of GET https://api.sambanova.ai/v1/models. `pricing.*` is USD per token. SambaNova's free allowance is a deployment-level `trial` flag, not a zero price — the two are modelled separately.",
+  "data": [
+    {
+      "id": "Meta-Llama-3.3-70B-Instruct",
+      "pricing": {
+        "prompt": "0.0000006",
+        "completion": "0.0000012"
+      },
+      "context_length": 131072,
+      "max_completion_tokens": 8192
+    }
+  ]
+}

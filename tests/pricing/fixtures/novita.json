@@ -1,0 +1,47 @@
+{
+  "_note": "Shape of GET https://api.novita.ai/v3/openai/models. `*_price_per_m` is 1e-4 USD/Mtok. The five paid models below are exactly the values the /10000 fix was cross-validated against: raw/10000 equals the OpenRouter USD/Mtok for each. This capture is the *feed*, not the marketing page — Novita's page currently lists Ling 3.0 Flash Fin as free, which is a multi-source reconciliation question for a later phase, not a unit question.",
+  "data": [
+    {
+      "id": "inclusionai/ling-3.0-flash-fin",
+      "input_token_price_per_m": 750,
+      "output_token_price_per_m": 2200,
+      "context_size": 262144
+    },
+    {
+      "id": "hy4/hy4-preview",
+      "input_token_price_per_m": 8340,
+      "output_token_price_per_m": 25010,
+      "context_size": 131072
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "input_token_price_per_m": 13200,
+      "output_token_price_per_m": 39600,
+      "context_size": 131072
+    },
+    {
+      "id": "meta-llama/llama-3.3-70b-instruct",
+      "input_token_price_per_m": 1500,
+      "output_token_price_per_m": 1500,
+      "context_size": 131072
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "input_token_price_per_m": 4200,
+      "output_token_price_per_m": 4200,
+      "context_size": 262144
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "input_token_price_per_m": 20000,
+      "output_token_price_per_m": 20000,
+      "context_size": 131072
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash",
+      "input_token_price_per_m": 600,
+      "output_token_price_per_m": 1800,
+      "context_size": 131072
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+# ===========================================================================
+# LOCAL variant — the whole stack in one container on your machine.
+#
+#   docker compose -f deploy/local/docker-compose.yml up -d --build
+#
+# ...or just `docker compose up` from the repo root, which includes this file.
+#
+# This is the local profile (config/profiles/local.env) with one deliberate
+# difference: inside a container the bind address must be 0.0.0.0 for the port
+# mapping to reach it. On the host the profile keeps 127.0.0.1, which is the
+# safer default when there is no container boundary.
+# ===========================================================================
+services:
+  mininfer:
+    build:
+      # The image is shared by both variants — the cloud stack runs the same
+      # artifact with different environment and orchestration. The build context
+      # is the repo root so the Dockerfile's COPY paths resolve.
+      context: ../..
+      dockerfile: Dockerfile
+    image: mininfer:latest
+    container_name: mininfer-router
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - MI_DB=/data/mininfer.db
+      - MI_POLICY=/app/config/policy.yaml
+      - LOG_LEVEL=info
+      # Access control: deliberately OFF here, matching config/profiles/local.env.
+      # To run the cloud variant locally, use deploy/cloud/ — not this file.
+      - MI_API_KEYS=${MI_API_KEYS:-}
+      - MI_ADMIN_TOKEN=${MI_ADMIN_TOKEN:-}
+      # Provider keys. Any provider in mininfer/execute.py:ENDPOINTS enables
+      # itself when its key is present.
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      # Corporate/macOS root CA. The host path is mounted at /certs and the
+      # bundle is read from there; `scripts/make_ca_bundle.sh` writes
+      # .certs/bundle.pem. Absent, the directory is empty and the code falls
+      # back to certifi rather than failing. See deploy/local/README.md.
+      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
+    volumes:
+      - mininfer_data:/data
+      - ../../.certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # =========================================================================
+  # The nightly registry refresh — opt-in, via `--profile jobs`:
+  #
+  #   docker compose --profile jobs up -d
+  #
+  # Default `docker compose up` is unchanged (one web process), because a laptop
+  # does not always want a container that wakes up at night. Without it nothing
+  # refreshes the registry: prices and "free" labels are whatever the last
+  # manual `mi ingest` saw, which is how a five-day-old catalogue went unnoticed.
+  # =========================================================================
+  verify:
+    profiles: ["jobs"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: mininfer:latest
+    container_name: mininfer-verify
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        while true; do mi verify --report /data/verify.json || true;
+        mi reconcile || true; mi metrics || true; sleep 86400; done
+    environment:
+      - MI_DB=/data/mininfer.db
+      - MI_POLICY=/app/config/policy.yaml
+      - LOG_LEVEL=info
+      # The provider keys the refresh needs. Without them a source is skipped.
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
+      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-}
+      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
+    volumes:
+      # Same volume as the web service: one registry, two processes.
+      - mininfer_data:/data
+      - ../../.certs:/certs:ro
+
+volumes:
+  mininfer_data:
+    name: mininfer_data

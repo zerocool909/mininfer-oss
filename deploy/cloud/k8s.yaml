@@ -1,0 +1,288 @@
+# ===========================================================================
+# CLOUD variant — Kubernetes / K3s. Postgres + Redis, replicas > 1.
+#
+#   # 1. the secrets (never commit real values)
+#   kubectl create secret generic mininfer-secrets \
+#     --from-literal=admin-token="$(openssl rand -hex 32)" \
+#     --from-literal=database-url="postgresql://mininfer:…@db.internal:5432/mininfer" \
+#     --from-literal=redis-url="redis://redis.internal:6379/0" \
+#     --from-file=keys.json=./keys.json
+#   # 2. optional: a corporate/MITM root CA for outbound provider TLS
+#   kubectl create configmap mininfer-ca --from-file=ca-bundle.pem=.certs/bundle.pem
+#   # 3. apply
+#   kubectl apply -f deploy/cloud/k8s.yaml
+#
+# `replicas` is no longer pinned to 1. That pin existed because every request
+# writes (a decision, plus an observation per attempt) and SQLite is
+# single-writer — see PRODUCTIZATION.md §4a. With `MI_DB` a Postgres DSN and the
+# rate limiter in Redis, N replicas share one registry and one limit. The
+# remaining shared state the web pods touch is the evidence lake; it lives on the
+# worker's volume, and the API stays stateless.
+#
+# The CA bundle is mounted **optional**: a cluster without the ConfigMap still
+# starts, and only outbound TLS to a corporate-proxied provider needs it. Set
+# MI_CA_BUNDLE to the mount path below after creating the ConfigMap (7.4).
+# ===========================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mininfer-secrets
+type: Opaque
+stringData:
+  # Replace before applying, or create this Secret out of band (preferred) and
+  # delete this stanza. `keys.json` is the MI_API_KEYS_FILE format; see
+  # keys.example.json.
+  admin-token: "REPLACE-ME"
+  database-url: "postgresql://mininfer:REPLACE-ME@db.internal:5432/mininfer"
+  redis-url: "redis://redis.internal:6379/0"
+  keys.json: |
+    [{"tenant": "REPLACE-ME", "key_sha256": "REPLACE-ME", "rpm": 120}]
+---
+# The evidence lake (`raw/`) is the worker's, not the API's. A ReadWriteOnce
+# volume is fine because one CronJob mounts it at a time; object storage is the
+# production answer (fetch.py records `storage_uri` for exactly that move).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mininfer-evidence
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mininfer
+  labels: {app: mininfer}
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: mininfer}
+  template:
+    metadata:
+      labels: {app: mininfer}
+    spec:
+      containers:
+        - name: mininfer
+          image: mininfer:latest
+          ports:
+            - containerPort: 8000
+          env:
+            # --- the cloud profile, config/profiles/cloud.env -------------
+            - {name: HOST, value: "0.0.0.0"}
+            - {name: PORT, value: "8000"}
+            - {name: MI_POLICY, value: "/app/config/policy.yaml"}
+            - {name: MI_RATE_LIMIT_RPM, value: "120"}
+            - {name: MI_MAX_BODY_BYTES, value: "1048576"}
+            # --- shared state: Postgres registry + Redis limits/cache ------
+            - name: MI_DB
+              valueFrom:
+                secretKeyRef: {name: mininfer-secrets, key: database-url}
+            - name: MI_REDIS_URL
+              valueFrom:
+                secretKeyRef: {name: mininfer-secrets, key: redis-url}
+            # --- outbound TLS to a corporate-proxied provider (optional) ---
+            - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
+            # --- secrets --------------------------------------------------
+            - name: MI_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: {name: mininfer-secrets, key: admin-token}
+            - name: MI_API_KEYS_FILE
+              value: /run/secrets/mininfer/keys.json
+            # --- provider keys (only needed if MinInfer pays for upstreams) -
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef: {name: mininfer-secrets, key: openrouter-key, optional: true}
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
+          volumeMounts:
+            - {name: keys, mountPath: /run/secrets/mininfer, readOnly: true}
+            - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
+            # The web pod does not hold the registry (Postgres does); this is
+            # scratch space for the admin-only `/v1/local/probe`.
+            - {name: scratch, mountPath: /data}
+          startupProbe:
+            httpGet: {path: /healthz, port: 8000}
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "250m", memory: "512Mi"}
+            limits: {cpu: "1000m", memory: "1536Mi"}
+      volumes:
+        - name: keys
+          secret: {secretName: mininfer-secrets, optional: true}
+        # optional: absent unless `kubectl create configmap mininfer-ca` ran
+        - name: ca
+          configMap: {name: mininfer-ca, optional: true}
+        - name: scratch
+          emptyDir: {}
+---
+# ---------------------------------------------------------------------------
+# The worker: the registry's batch jobs (PRODUCTIZATION.md §5 layer ⑤). It is a
+# CronJob, not a Deployment — it must never scale with requests, and `Forbid`
+# makes an overrunning previous run the only reason to skip one.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mininfer-worker
+  labels: {app: mininfer, role: worker}
+spec:
+  schedule: "0 */6 * * *"          # ingest/metrics every six hours
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: worker
+              image: mininfer:latest
+              # No `command:` override: the image ENTRYPOINT (entrypoint.sh) gets
+              # these as its argv, runs the idempotent Postgres schema step, and
+              # then execs them — the same path as the Fly `[processes]` worker.
+              # `mi ingest` reconciles at the end of its own run, so the explicit
+              # `mi reconcile` covers the case where *every* source failed: nothing
+              # was written, nothing triggered it, and the state machine would sit on
+              # stale beliefs until the next tick.
+              args: ["sh", "-c", "mi ingest --force || true; mi reconcile || true; mi metrics || true"]
+              env:
+                - {name: MI_ROLE, value: "worker"}
+                - {name: HOST, value: "0.0.0.0"}
+                - {name: MI_POLICY, value: "/app/config/policy.yaml"}
+                - name: MI_DB
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: database-url}
+                - name: MI_REDIS_URL
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: redis-url}
+                - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
+                - name: MI_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: admin-token}
+                # Provider keys, for the ingest/resolver legs that call upstream.
+                - name: OPENROUTER_API_KEY
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: openrouter-key, optional: true}
+                - name: GROQ_API_KEY
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
+              volumeMounts:
+                - {name: evidence, mountPath: /data}
+                - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
+              resources:
+                requests: {cpu: "250m", memory: "512Mi"}
+                limits: {cpu: "1000m", memory: "1536Mi"}
+          volumes:
+            - name: evidence
+              persistentVolumeClaim: {claimName: mininfer-evidence}
+            - name: ca
+              configMap: {name: mininfer-ca, optional: true}
+---
+# ---------------------------------------------------------------------------
+# Daily drift check. `mi verify` re-reads every catalogue (bypassing the raw
+# cache — a cache cannot verify anything) and reports which deployments changed
+# price or lost/gained free status. A registry that still says "free" after a
+# provider started charging is worse than an empty one: the router keeps
+# choosing that arm and every request quietly costs money.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mininfer-verify
+  labels: {app: mininfer, role: verify}
+spec:
+  schedule: "0 3 * * *"           # daily
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: verify
+              image: mininfer:latest
+              # No `command:` override, so the image ENTRYPOINT runs the registry
+              # step first and then execs this.
+              args: ["mi", "verify", "--report", "/data/verify.json"]
+              env:
+                - {name: MI_ROLE, value: "verify"}
+                - {name: HOST, value: "0.0.0.0"}
+                - {name: MI_POLICY, value: "/app/config/policy.yaml"}
+                - name: MI_DB
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: database-url}
+                - name: MI_REDIS_URL
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: redis-url}
+                - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
+                - name: MI_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: admin-token}
+                - name: OPENROUTER_API_KEY
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: openrouter-key, optional: true}
+                - name: GROQ_API_KEY
+                  valueFrom:
+                    secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
+              volumeMounts:
+                - {name: evidence, mountPath: /data}
+                - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
+              resources:
+                requests: {cpu: "250m", memory: "512Mi"}
+                limits: {cpu: "1000m", memory: "1536Mi"}
+          volumes:
+            - name: evidence
+              persistentVolumeClaim: {claimName: mininfer-evidence}
+            - name: ca
+              configMap: {name: mininfer-ca, optional: true}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mininfer-svc
+spec:
+  selector: {app: mininfer}
+  ports:
+    - {port: 80, targetPort: 8000}
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mininfer-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Streaming is the product: buffering turns SSE into one delayed blob.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [router.example.com]
+      secretName: mininfer-tls
+  rules:
+    - host: router.example.com
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: mininfer-svc, port: {number: 80}}}}

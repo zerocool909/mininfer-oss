@@ -1,0 +1,259 @@
+# Routing policy. Declarative on purpose: the same file is consumed by the CLI,
+# the future HTTP proxy, and any agent that wants routing without embedding
+# model-selection logic (PLAN.md §7, Phase 4).
+
+policy:
+  name: free_first
+  top_k: 3
+
+  # Fallbacks must not share a gateway: 429s and outages correlate by provider,
+  # not by model.
+  require_distinct_provider: true
+
+  objective: cost_per_success   # cost_per_success | quality | latency
+
+  # What to do when no source ever reported a required capability.
+  #   reject -> safe, costs coverage (default)
+  #   allow  -> better coverage, relies on post-hoc output validation
+  on_unverified_capability: allow
+
+  # --- hard constraints. Nothing below this line is recoverable by a score. ---
+  require: {}
+  min_context: 0
+  min_success_lb: 0.0
+  # max_cost_in: 1.0
+  # max_cost_out: 5.0
+  # max_cost_per_success: 0.02
+
+  # Price "unknown" is not price "zero". Flip to true to allow deployments that
+  # expose no pricing at all (NVIDIA, most /v1/models listings).
+  allow_unknown_price: false
+  allow_subscription: true
+
+  # A `subscription=True` deployment (a monthly plan) is NOT free: its marginal
+  # cost is ~0 only for an operator who already pays for it, and the registry
+  # cannot know that. Off, so a paid plan is priced at list and competes on
+  # merit. "Marginal cost ~0" without this is how Featherless's 22k subscription
+  # models were counted as free eligible.
+  subscription_is_free: false
+
+  # A deployment behind a provider we hold no key for cannot be called, so it is
+  # not a candidate — a free arm we cannot reach is not "free", it is noise. This
+  # keeps the funnel honest about what is actually reachable, and stops a free
+  # arm from topping the list only to fail on contact. `mi route/explain
+  # --include-uncredentialed` shows the theoretical ranking instead.
+  require_callable: true
+
+  # A free arm is worth trying even when no benchmark covers it: being wrong costs
+  # a retry, not money, and the attempt becomes evidence. Capability and context
+  # constraints still apply. This is what makes "free first" actually reachable —
+  # without it, most free arms are dropped for having no benchmark yet.
+  free_floor_exempt: true
+
+  # How long a free arm's trial lasts. After this many observations it is held to
+  # the quality floor like any other arm, so one that keeps failing stops winning
+  # on price alone. Observations feed p(success), so demotion is automatic.
+  free_trial_obs: 3
+
+  # Benchmark prior expressed as pseudo-observations. This is what stops an
+  # untried arm from being treated as worthless, i.e. it prevents the
+  # rich-get-richer lock-in described in PLAN.md §4c.
+  #
+  # Calibration matters: a benchmark measured on hundreds of tasks is stronger
+  # evidence than a handful of our own calls, and at 6 the Wilson bound collapsed
+  # every strong model to p=0.55, which erased the quality signal entirely and
+  # made a 'min_success_lb' threshold a near-arbitrary binary cut.
+  prior_strength: 25.0
+
+  # A free arm with no configured quota bucket is discounted, not trusted.
+  unknown_headroom_factor: 0.90
+
+  # Fraction of traffic sent to an untried or runner-up arm (Cold-Start Lane).
+  exploration_eps: 0.05
+
+  # Anti-fixation traffic cap: no single model may exceed this share of routed calls
+  # within a task window (60%). If exceeded, traffic shifts to the next-best eligible arm.
+  max_model_share_pct: 0.60
+
+  # Manual model pins expire after this many hours (24h) unless explicitly refreshed.
+  pin_ttl_hours: 24.0
+
+  # UCB bonus for the primary pick, on p(success), for arms we have barely
+  # observed. It can only reorder arms that cost the same (cost-per-success is
+  # compared first), so free-first still holds and a paid arm can never win on
+  # curiosity. This is what stops one free arm from answering every request: with
+  # every free arm at cost-per-success 0, the ranking used to collapse to the
+  # benchmark prior and lock onto a single model.
+  explore_c: 0.15
+  # Only arms within this much of the best p(success) are eligible for the bonus,
+  # so exploration tests the near-misses rather than the unknown floor.
+  explore_band: 0.25
+
+  # Hard ceiling on the tokens one session may spend, enforced server-side before
+  # each call (see `_session_block`). A client names its session with an
+  # `X-MI-Session` header or the OpenAI `user` field; a request that names none
+  # is a one-shot and is not counted, so the proxy stays stateless for callers
+  # that do not opt in. 0 disables the cap.
+  #
+  # The check reserves `prompt estimate + max_tokens` rather than only looking at
+  # what has already been spent, so the ceiling is a ceiling: checking `used >=
+  # limit` lets a session overshoot by one whole call every time.
+  session_token_limit: 1000000
+
+  # Hard ceiling on money one session may spend, in USD. Separate from the token
+  # cap because the two bound different things: a search costs ~$0.008 and a
+  # routed call on a free arm costs $0, so a token-only budget bounds the cheap
+  # half of a request and ignores the expensive one. 0 disables it. Overridable
+  # with MI_SESSION_COST_LIMIT, and the per-search rate with
+  # MI_SEARCH_COST_USD.
+  session_cost_limit: 0.0
+
+# What a workload needs, and what one call costs in tokens. Cost-per-success is
+# computed per task, so the same registry produces different rankings per task.
+#
+# `benchmark_keys` names the leaderboards that inform the prior. Each is
+# normalised to its own p5/p95 across the registry, so scales never need
+# converting (see `mi/leaderboards.py` for what each key is). `benchmark_weights`
+# is the weightage: every listed key contributes, defaulting to 1.0, so a task can
+# favour whichever leaderboard actually predicts its kind of work.
+tasks:
+  # The catch-all. Without it, a prompt that trips no cue falls through to
+  # `code_edit` — which demands 32K context, a 0.55 quality floor and tool support
+  # — so "Hello, how are you?" was routed as a coding task. `confidence` is 0.0
+  # whenever no cue matched at all, which is exactly the case this task exists for,
+  # so the cues below matter more than they look: they decide whether a greeting is
+  # *classified* as conversation (source=cue, confidence 1.0) or merely *defaulted*
+  # into it.
+  general_chat:
+    description: general conversation, creative writing, Q&A
+    tokens_in: 800
+    tokens_out: 1200
+    require: {}
+    min_context: 4000
+    min_success_lb: 0.4
+    benchmark_keys: [aa_intelligence]
+    benchmark_weights: {aa_intelligence: 1.0}
+    # Deliberately no `summarise` / `in a nutshell`: those belong to the
+    # `summarise` task, which has a different cost profile. A catch-all that eats
+    # another task's cues is not a catch-all, it is a regression.
+    # No bare `write`: it matched "write me a query to get the top 10 customers"
+    # and stole it from `sql_generation` (1.00 -> 0.50, wrong task). A catch-all
+    # cue has to be a word that implies *nothing else*, and "write" implies code,
+    # SQL and prose equally.
+    cues: [hello, hi, hey, thanks, please, explain, "tell me", "what is", "how does",
+           "who is", chat, conversation, "can you", joke, poem, story]
+
+  sql_generation:
+    description: natural language / schema -> SQL
+    # `reject` for capabilities no source has reported. Measured: this costs 5 of
+    # ~210 eligible arms here and excludes ~130 arms that merely *might* support it,
+    # while a model that cannot emit a structured output fails silently — nothing errors, the
+    # call just does not do the thing. Not set on `shelf_image_audit`, where the
+    # same setting costs 108 of 161 arms and changes the chosen model not at all,
+    # and where a bad answer is visible to whoever asked.
+    on_unverified_capability: reject
+    tokens_in: 1800
+    tokens_out: 400
+    require: {structured: true}
+    min_context: 16000
+    min_success_lb: 0.55
+    benchmark_keys: [coding, aa_intelligence]
+    benchmark_weights: {coding: 1.5, aa_intelligence: 1.0}
+    cues: [sql, query, "select *", "select from", "group by", "order by", "insert into",
+           "delete from", "count rows", "table called", "table named", postgres, sqlite,
+           "write a query"]
+
+  code_edit:
+    description: locate and patch a function in a repo
+    # `reject` for capabilities no source has reported. Measured: this costs 5 of
+    # ~210 eligible arms here and excludes ~130 arms that merely *might* support it,
+    # while a model that cannot emit a tool call fails silently — nothing errors, the
+    # call just does not do the thing. Not set on `shelf_image_audit`, where the
+    # same setting costs 108 of 161 arms and changes the chosen model not at all,
+    # and where a bad answer is visible to whoever asked.
+    on_unverified_capability: reject
+    tokens_in: 6000
+    tokens_out: 900
+    require: {tools: true}
+    min_context: 32000
+    min_success_lb: 0.55
+    # Design Arena is arena Elo over real UI/code bouts, so it is a genuine
+    # second opinion on coding work — weighted below the AA coding index.
+    benchmark_keys: [coding, design_arena_elo, aa_intelligence]
+    benchmark_weights: {coding: 2.0, design_arena_elo: 1.0, aa_intelligence: 1.0}
+    cues: [refactor, function, patch, traceback, "stack trace", compile, bug,
+           "unit test", "pull request", "fix the", "def ", "class ", repo, codebase]
+
+  extraction:
+    description: schema-constrained field extraction from text
+    # `reject` for capabilities no source has reported. Measured: this costs 5 of
+    # ~210 eligible arms here and excludes ~130 arms that merely *might* support it,
+    # while a model that cannot emit a structured output fails silently — nothing errors, the
+    # call just does not do the thing. Not set on `shelf_image_audit`, where the
+    # same setting costs 108 of 161 arms and changes the chosen model not at all,
+    # and where a bad answer is visible to whoever asked.
+    on_unverified_capability: reject
+    tokens_in: 2500
+    tokens_out: 300
+    require: {structured: true}
+    min_context: 8000
+    min_success_lb: 0.6
+    benchmark_keys: [aa_intelligence, coding]
+    benchmark_weights: {aa_intelligence: 1.5, coding: 1.0}
+    cues: [extract, "pull out", "parse the", invoice, receipt, "into json",
+           "structured output", "key-value", "schema for", fields]
+
+  summarise:
+    description: high-volume summarisation, cost dominated
+    tokens_in: 12000
+    tokens_out: 600
+    require: {}
+    min_context: 32000
+    min_success_lb: 0.5
+    benchmark_keys: [aa_intelligence]
+    benchmark_weights: {aa_intelligence: 1.0}
+    cues: [summarise, summarize, "tl;dr", tldr, "key points", "in one paragraph",
+           shorten, recap, "brief summary"]
+
+  agent_tools:
+    description: multi-step tool calling loop
+    # `reject` for capabilities no source has reported. Measured: this costs 5 of
+    # ~210 eligible arms here and excludes ~130 arms that merely *might* support it,
+    # while a model that cannot emit a tool call fails silently — nothing errors, the
+    # call just does not do the thing. Not set on `shelf_image_audit`, where the
+    # same setting costs 108 of 161 arms and changes the chosen model not at all,
+    # and where a bad answer is visible to whoever asked.
+    on_unverified_capability: reject
+    tokens_in: 9000
+    tokens_out: 1200
+    require: {tools: true}
+    min_context: 32000
+    min_success_lb: 0.6
+    benchmark_keys: [agentic, aa_intelligence, coding]
+    benchmark_weights: {agentic: 2.0, aa_intelligence: 1.0, coding: 1.0}
+    cues: ["use the tool", "tool call", "call the api", "multi-step", agent,
+           "search the web", browse, "plan and execute"]
+
+  shelf_image_audit:
+    description: FMCG shelf image -> structured planogram audit
+    tokens_in: 2000
+    tokens_out: 700
+    require: {vision: true, structured: true}
+    min_context: 8000
+    min_success_lb: 0.5
+    benchmark_keys: [aa_intelligence]
+    benchmark_weights: {aa_intelligence: 1.0}
+    cues: [shelf, planogram, screenshot, "the image", "the photo", "the picture",
+           "attached image"]
+
+  hard_reasoning:
+    description: maths / multi-step analysis, quality dominated
+    tokens_in: 1200
+    tokens_out: 2500
+    require: {}
+    min_context: 16000
+    min_success_lb: 0.6
+    benchmark_keys: [aa_intelligence, coding]
+    benchmark_weights: {aa_intelligence: 2.0, coding: 0.5}
+    cues: [prove, derive, theorem, "step by step", calculate, "how many",
+           probability, integral, "math problem", "reason carefully"]

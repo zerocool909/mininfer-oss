@@ -1,0 +1,13 @@
+# Compatibility entry point.
+#
+# The local stack is defined in deploy/local/docker-compose.yml. This file exists
+# only so that the command everyone already types from the repo root keeps
+# working:
+#
+#   docker compose up -d --build      # same services, defined in deploy/local/
+#   docker compose -f deploy/local/docker-compose.yml up -d --build   # explicit
+#
+# It deliberately contains no service definitions: two copies of a manifest drift,
+# and that is the whole reason the variants live under deploy/.
+include:
+  - deploy/local/docker-compose.yml

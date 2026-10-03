@@ -1,0 +1,70 @@
+{
+  "_note": "Shape of GET https://openrouter.ai/api/v1/models. `pricing.*` is USD per token as a string. The paid variants of the five cross-check models carry the same effective price as the Novita fixture, so test_cross_provider_identity can join on id and assert the two units agree. `openrouter/auto` carries the -1/-1000000 sentinel: a meta-router whose price depends on what it routes to — unknown, never free.",
+  "data": [
+    {
+      "id": "inclusionai/ling-3.0-flash-fin",
+      "name": "Ling 3.0 Flash Fin",
+      "pricing": {
+        "prompt": "0.000000075",
+        "completion": "0.00000022",
+        "input_cache_read": "0.0000000375"
+      }
+    },
+    {
+      "id": "hy4/hy4-preview",
+      "name": "Hy4 Preview",
+      "pricing": {
+        "prompt": "0.000000834",
+        "completion": "0.000002501"
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "name": "DeepSeek V4 Pro 0813",
+      "pricing": {
+        "prompt": "0.00000132",
+        "completion": "0.00000396"
+      }
+    },
+    {
+      "id": "meta-llama/llama-3.3-70b-instruct",
+      "name": "Llama 3.3 70B Instruct",
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.00000015"
+      }
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "name": "Qwen3.8 27B",
+      "pricing": {
+        "prompt": "0.00000042",
+        "completion": "0.00000042"
+      }
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "name": "GPT-OSS 120B",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000002"
+      }
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-fin:free",
+      "name": "Ling 3.0 Flash Fin (free)",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "id": "openrouter/auto",
+      "name": "Auto Router",
+      "pricing": {
+        "prompt": "-1",
+        "completion": "-1000000"
+      }
+    }
+  ]
+}

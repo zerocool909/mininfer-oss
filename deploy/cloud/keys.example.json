@@ -1,0 +1,12 @@
+[
+  {
+    "tenant": "acme",
+    "key_sha256": "REPLACE_WITH_sha256_of_the_issued_key",
+    "rpm": 120
+  },
+  {
+    "tenant": "beta",
+    "key_sha256": "REPLACE_WITH_sha256_of_the_issued_key",
+    "rpm": 60
+  }
+]

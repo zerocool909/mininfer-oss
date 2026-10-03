@@ -1,0 +1,493 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agentic Flow — Architecture and Touch Points",
+    "output": "diagrams/agentic-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "ingest-agent",
+        "label": "Ingest agent touch points",
+        "focus": [
+          "operator",
+          "cli",
+          "ingest",
+          "fetch",
+          "lake",
+          "llm",
+          "model",
+          "store",
+          "quarantine"
+        ],
+        "note": "mi add-url: fetch a page, extract with the LLM, guard, then commit or quarantine."
+      },
+      {
+        "id": "resolve-agent",
+        "label": "Resolver agent touch points",
+        "focus": [
+          "operator",
+          "cli",
+          "resolve",
+          "store",
+          "ingest",
+          "llm",
+          "model"
+        ],
+        "note": "mi resolve --adjudicate: the LLM reviews near matches; the guard runs last."
+      },
+      {
+        "id": "model-access",
+        "label": "Model access and state",
+        "focus": [
+          "llm",
+          "endpoint",
+          "registry",
+          "store",
+          "quarantine"
+        ],
+        "note": "Model access is resolved from the registry plus environment credentials."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "page",
+      "type": "external",
+      "label": "Target Webpage",
+      "sublabel": "arbitrary URL",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "untrusted input"
+    },
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator / Cron",
+      "sublabel": "mi add-url · mi resolve",
+      "pos": [
+        40,
+        210
+      ],
+      "size": [
+        168,
+        64
+      ]
+    },
+    {
+      "id": "fetch",
+      "type": "backend",
+      "label": "fetch_raw",
+      "sublabel": "mi/fetch.py",
+      "pos": [
+        340,
+        60
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "ttl cache"
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI Entry",
+      "sublabel": "mi/cli.py",
+      "pos": [
+        340,
+        210
+      ],
+      "size": [
+        168,
+        68
+      ],
+      "tag": "cmd_add_url · cmd_resolve"
+    },
+    {
+      "id": "lake",
+      "type": "database",
+      "label": "Evidence Lake",
+      "sublabel": "raw/ sha256",
+      "pos": [
+        640,
+        60
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "snapshot first"
+    },
+    {
+      "id": "ingest",
+      "type": "backend",
+      "label": "Agent Ingest",
+      "sublabel": "mi/agent_ingest.py",
+      "pos": [
+        640,
+        210
+      ],
+      "size": [
+        188,
+        78
+      ],
+      "tag": "LangGraph · 7 nodes"
+    },
+    {
+      "id": "model",
+      "type": "external",
+      "label": "Agent Model",
+      "sublabel": "Groq / OpenRouter",
+      "pos": [
+        940,
+        60
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "OpenAI-compatible"
+    },
+    {
+      "id": "llm",
+      "type": "backend",
+      "label": "LLM Client",
+      "sublabel": "langchain-openai",
+      "pos": [
+        940,
+        210
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "temp 0 · JSON only"
+    },
+    {
+      "id": "resolve",
+      "type": "backend",
+      "label": "Agent Resolve",
+      "sublabel": "mi/agent_resolve.py",
+      "pos": [
+        340,
+        360
+      ],
+      "size": [
+        188,
+        78
+      ],
+      "tag": "adjudicator · 3 nodes"
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Store API",
+      "sublabel": "mi/store.py",
+      "pos": [
+        640,
+        360
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "upsert · quarantine"
+    },
+    {
+      "id": "endpoint",
+      "type": "backend",
+      "label": "Endpoint Resolver",
+      "sublabel": "mi/execute.py",
+      "pos": [
+        940,
+        360
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "base_url + api_key"
+    },
+    {
+      "id": "quarantine",
+      "type": "security",
+      "label": "Quarantine",
+      "sublabel": "held, never merged",
+      "pos": [
+        640,
+        495
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "disagreement"
+    },
+    {
+      "id": "registry",
+      "type": "database",
+      "label": "Registry",
+      "sublabel": "mininfer.db · SQLite",
+      "pos": [
+        940,
+        495
+      ],
+      "size": [
+        168,
+        64
+      ],
+      "tag": "source of truth"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Credentials & TLS — MI_AGENT_MODEL · CA bundle",
+      "wraps": [
+        "llm",
+        "endpoint"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "operator-cli",
+      "from": "operator",
+      "to": "cli",
+      "label": "mi add-url",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        274,
+        242
+      ]
+    },
+    {
+      "id": "page-fetch",
+      "from": "page",
+      "to": "fetch",
+      "label": "HTTPS GET",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        274,
+        92
+      ]
+    },
+    {
+      "id": "fetch-lake",
+      "from": "fetch",
+      "to": "lake",
+      "label": "snapshot",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        574,
+        62
+      ]
+    },
+    {
+      "id": "fetch-ingest",
+      "from": "fetch",
+      "to": "ingest",
+      "label": "bytes + text",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        574,
+        175
+      ]
+    },
+    {
+      "id": "cli-ingest",
+      "from": "cli",
+      "to": "ingest",
+      "label": "run graph",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        541,
+        242
+      ]
+    },
+    {
+      "id": "cli-resolve",
+      "from": "cli",
+      "to": "resolve",
+      "label": "mi resolve",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        429,
+        319
+      ]
+    },
+    {
+      "id": "ingest-llm",
+      "from": "ingest",
+      "to": "llm",
+      "label": "prompt",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        884,
+        242
+      ]
+    },
+    {
+      "id": "llm-model",
+      "from": "llm",
+      "to": "model",
+      "label": "chat completion",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        975,
+        158
+      ]
+    },
+    {
+      "id": "model-llm",
+      "from": "model",
+      "to": "llm",
+      "label": "JSON facts",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1073,
+        168
+      ]
+    },
+    {
+      "id": "llm-endpoint",
+      "from": "llm",
+      "to": "endpoint",
+      "label": "resolve model",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1024,
+        320
+      ]
+    },
+    {
+      "id": "endpoint-registry",
+      "from": "endpoint",
+      "to": "registry",
+      "label": "endpoint + key",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1024,
+        468
+      ]
+    },
+    {
+      "id": "ingest-store",
+      "from": "ingest",
+      "to": "store",
+      "label": "accepted / rejected",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        724,
+        332
+      ]
+    },
+    {
+      "id": "store-registry",
+      "from": "store",
+      "to": "registry",
+      "label": "upsert weights + deploy",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        880,
+        468
+      ]
+    },
+    {
+      "id": "store-quarantine",
+      "from": "store",
+      "to": "quarantine",
+      "label": "held rows",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        724,
+        468
+      ]
+    },
+    {
+      "id": "resolve-store",
+      "from": "resolve",
+      "to": "store",
+      "label": "merge_weights",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [
+        600,
+        395
+      ]
+    },
+    {
+      "id": "resolve-ingest",
+      "from": "resolve",
+      "to": "ingest",
+      "label": "reuses _agent_llm",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelAt": [
+        610,
+        298
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Touch Points — Runtime",
+      "items": [
+        "Two LangGraph graphs: ingest (7 nodes), resolve (3)",
+        "resolve_endpoint is the only path to a model",
+        "resolve imports _agent_llm from the ingest agent"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Touch Points — State",
+      "items": [
+        "SQLite mininfer.db: weights, deployments, evidence",
+        "fetch_raw writes raw/ before any parsing",
+        "make_deploy and validate_prices guard each row"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Unknowns Kept Unknown",
+      "items": [
+        "Unreported capability stays None, never coerced",
+        "A >20% price disagreement is quarantined",
+        "merge_weights re-checks size, records refusals"
+      ]
+    }
+  ]
+}

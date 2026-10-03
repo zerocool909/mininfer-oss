@@ -1,0 +1,33 @@
+{
+  "_note": "Shape of GET https://router.huggingface.co/v1/models. Each element of `providers[]` carries its own `pricing.*` in USD/Mtok, plus an `is_free` flag. The unit is a property of the payload shape, so the provider name is reported, never used to pick a conversion.",
+  "data": [
+    {
+      "id": "Qwen/Qwen3-235B-A22B",
+      "architecture": {
+        "input_modalities": ["text"]
+      },
+      "providers": [
+        {
+          "provider": "novita",
+          "pricing": {
+            "input": 0.2,
+            "output": 0.8
+          },
+          "context_length": 262144,
+          "is_free": false,
+          "supports_tools": true
+        },
+        {
+          "provider": "hyperbolic",
+          "pricing": {
+            "input": 0.0,
+            "output": 0.0
+          },
+          "context_length": 32768,
+          "is_free": true,
+          "supports_tools": false
+        }
+      ]
+    }
+  ]
+}

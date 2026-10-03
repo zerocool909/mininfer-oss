@@ -1,0 +1,23 @@
+{
+  "_note": "Shape of GET https://ai-gateway.vercel.sh/v1/models. `pricing.*` is USD per token. Free tier is encoded as a `-free` model-id suffix; Vercel states it passes through provider list pricing without a token markup.",
+  "data": [
+    {
+      "id": "alibaba/qwen3-coder",
+      "name": "Qwen3 Coder",
+      "pricing": {
+        "input": "0.0000004",
+        "output": "0.0000016"
+      },
+      "context_window": 262144
+    },
+    {
+      "id": "poolside/laguna-s-2.1-free",
+      "name": "Laguna S 2.1 Free",
+      "pricing": {
+        "input": "0",
+        "output": "0"
+      },
+      "context_window": 131072
+    }
+  ]
+}
