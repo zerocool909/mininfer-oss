@@ -174,9 +174,33 @@ is one file wide: `mininfer/db.py`.
 MI_TEST_PG_DSN="postgresql://…" pytest -q   # or against your own server
 ```
 
-Current: **381 passed** on SQLite, **379 passed / 3 skipped** on Postgres (the
-three skip because they exercise SQLite-only behaviour — two read the file with
-`sqlite3` directly, one tests the SQLite column migration).
+Current: **876 passed / 1 skipped** on SQLite, **873 passed / 4 skipped** on
+Postgres (the skips exercise SQLite-only behaviour — reading the file with
+`sqlite3` directly, the SQLite column migration, and the no-frontend build case).
+
+**Re-validated, and it had regressed.** When this section was first written the
+suite passed on both engines. It later stopped doing so and nothing noticed,
+because `validate-postgres.sh` ends in `| tail -2` and the failure count scrolled
+past. A full run found **120 failures**, from two real bugs that only Postgres
+exposed:
+
+- **A SQLite-only function.** `store.get_pushed_models` purged stale rows with
+  `datetime(ts) < datetime('now', ?)`. Postgres has no `datetime()`, and a failed
+  statement *aborts the transaction* — so the `except: pass` around it hid the
+  cause and every later query in the request died with `InFailedSqlTransaction`.
+  `router.route()` calls this on the hot path, so **routing was broken on
+  Postgres**. Rewritten to compare against an ISO cutoff (the format `_since`
+  documents), done in Python where the two engines agree.
+- **A partial sort key.** Candidate ranking ended its sort key at
+  `(cost_per_success, -effective_p, latency)`. Two equal candidates tied, and the
+  stable sort fell back to the `SELECT`'s row order — insertion order on SQLite,
+  planner order on Postgres. `rank_for_compare` takes `ranked[0]`, so the *same
+  registry picked a different arm 0 per engine*. `deploy_id` is now the final
+  tie-break in `router._sort_key`, making the order total.
+
+The lesson is the one this file already argues for: a cross-engine promise is
+only true on the day it is run. Both bugs are now covered by the suite, and the
+Postgres run is part of `scripts/validate-variants.sh`.
 
 Single-writer was the reason `replicas: 1` was load-bearing, so that constraint
 is lifted. `deploy/local/docker-compose.postgres.yml` runs the cloud shape on a

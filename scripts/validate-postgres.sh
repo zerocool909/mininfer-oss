@@ -72,9 +72,20 @@ python3 -m pytest -q 2>&1 | tail -2
 
 echo
 echo "== Store -> Postgres (the same suite, one schema per test) =="
-MI_TEST_PG_DSN="postgresql://mininfer@127.0.0.1:$PORT/mininfer" \
-  python3 -m pytest -q 2>&1 | tail -2
-status=$?
+PGLOG="$PGDIR/pytest.log"
+# Not `| tail -2`: that hid 120 Postgres failures behind a passing line for an
+# unknown number of runs. On failure the FAILED lines are printed.
+if MI_TEST_PG_DSN="postgresql://mininfer@127.0.0.1:$PORT/mininfer" \
+     python3 -m pytest -q >"$PGLOG" 2>&1; then
+  status=0
+  tail -1 "$PGLOG"
+else
+  status=1
+  tail -1 "$PGLOG"
+  echo
+  echo "  failures (full log: $PGLOG):"
+  grep -E '^FAILED|^ERROR' "$PGLOG" | head -40
+fi
 
 echo
 if [ "$status" -eq 0 ]; then

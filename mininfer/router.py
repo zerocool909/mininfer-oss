@@ -600,11 +600,18 @@ def _sort_key(c: Candidate, objective: str, explore_c: float = 0.0, total_obs: i
         # UCB1 term, so it is largest for n=0 and decays as evidence arrives.
         n = max(0, c.n_obs)
         effective_p += explore_c * math.sqrt(math.log(max(1, total_obs) + 1.0) / (n + 1.0))
+    # `c.deploy_id` is the final key in every branch, and it is what makes the
+    # order *total*. Without it, two candidates with identical price, quality and
+    # latency tie, and Python's stable sort falls back to the input order — which
+    # comes from a `SELECT` with no `ORDER BY`, so SQLite (insertion order) and
+    # Postgres (planner order) disagreed. The same registry then chose a
+    # different arm 0 per engine, which is not reproducible and broke
+    # `rank_for_compare`'s `ranked[0]`.
     if objective == "quality":
-        return (-effective_p, c.cost_per_success, c.latency_ms or 9e9)
+        return (-effective_p, c.cost_per_success, c.latency_ms or 9e9, c.deploy_id)
     if objective == "latency":
-        return (c.latency_ms or 9e9, c.cost_per_success, -effective_p)
-    return (c.cost_per_success, -effective_p, c.latency_ms or 9e9)
+        return (c.latency_ms or 9e9, c.cost_per_success, -effective_p, c.deploy_id)
+    return (c.cost_per_success, -effective_p, c.latency_ms or 9e9, c.deploy_id)
 
 
 def ucb_score(c: Candidate, total_obs: int, c_explore: float = 0.6) -> float:

@@ -321,7 +321,12 @@ cd <repository>
 python3 -m venv .venv
 source .venv/bin/activate
 
+# Base install: registry, ingest, routing and the CLI (`mi`).
 pip install -e .
+
+# To also run the OpenAI-compatible proxy / dashboard, add the server extra.
+# Without it, `mi proxy` exits with a message telling you exactly this.
+pip install -e '.[server]'
 ```
 
 ---
@@ -444,6 +449,8 @@ Gateway + upstream separation achieved
 ---
 
 # Running the Proxy
+
+Requires the `server` extra (`pip install -e '.[server]'`).
 
 Set API keys only for providers you intend to use:
 

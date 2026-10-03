@@ -9,14 +9,13 @@ htmlcov/
 web/node_modules/
 web/dist/
 *.egg-info/
-# Only `mininfer.db` is needed (the image seeds /app/seed.db from it). The
-# maintenance backups and pre-migration snapshots are ~340 MB and were being
-# sent to the daemon on every build; `*.db.*` matches them but not `*.db`.
-# `!mininfer.db` re-includes the one file `COPY mininfer.db /app/seed.db` needs;
-# a bare `mininfer.db` here excluded it, so the worker/web image could not build.
+# The registry is derived, never committed, so it is not part of the image: the
+# Dockerfile creates an empty seed with `Store('/app/seed.db')` and `mi ingest`
+# populates it. Excluding it here also keeps the ~9 MB (plus ~340 MB of backups
+# and pre-migration snapshots) out of the build context on every build.
+*.db
 *.db.*
 *.bak
-!mininfer.db
 *.db-journal
 *.db-wal
 *.db-shm

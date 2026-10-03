@@ -70,10 +70,17 @@ export interface Usage {
 
 /** The `mi` envelope a multiplexed frame carries. Absent on a single-arm stream. */
 export interface MiFrame {
-  event?: 'arm' | 'delta' | 'end' | 'error'
+  // `route` is the first frame of a streamed reply: the chosen arm plus routing
+  // metadata, emitted by `proxy.py` before any `delta`. It was missing from this
+  // union, so `frame.event === 'route'` in chat-02.tsx failed `tsc`.
+  event?: 'arm' | 'delta' | 'end' | 'error' | 'route'
   arm?: number
   deploy_id?: string
+  deploy?: string
+  model?: string
   vendor?: string
+  candidates?: string[]
+  decision_id?: number
   cost_per_success?: number | null
   p_lb?: number | null
   leaderboards?: { key: string; label: string; source: string; url?: string; value?: number }[]

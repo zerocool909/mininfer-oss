@@ -19,6 +19,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+# `python -m build` output (wheel, sdist, and the setuptools staging tree)
+build/
+dist/
 
 # Web dashboard: dependencies and build output are both derived.
 web/node_modules/

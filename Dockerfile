@@ -41,12 +41,23 @@ COPY mininfer/ mininfer/
 RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir --no-deps .
 
-# Copy application configuration and seed catalog
+# Copy application configuration.
 COPY config/ /app/config/
 # The Postgres schema: `mi sync` mirrors through it, and Store uses it as
 # the DDL when MI_DB is a postgresql:// URL.
 COPY supabase/ /app/supabase/
-COPY mininfer.db /app/seed.db
+
+# Seed registry. A fresh clone has no `mininfer.db` — it is gitignored, because
+# the registry is *derived* from provider APIs, not committed. `COPY` cannot be
+# conditional and a missing file fails the build, so the seed is created by the
+# engine itself: an empty registry with the schema ready. `mi ingest` populates
+# it (the `jobs` compose profile / the k8s CronJob do this on a schedule).
+#
+# To bake a *populated* catalog instead, delete the `mininfer.db` line from
+# `.dockerignore` and add `COPY mininfer.db /app/seed.db` here — but a stale
+# baked-in catalog is the anti-pattern `PRODUCTIZATION.md` warns about; prefer
+# the scheduled ingest.
+RUN python -c "from mininfer.store import Store; Store('/app/seed.db').close()"
 
 # Copy compiled frontend from Stage 1
 COPY --from=frontend-builder /app/web/dist /app/web/dist

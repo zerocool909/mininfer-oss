@@ -2226,10 +2226,19 @@ class Store:
               ts         TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Cleanly ignore or purge entries older than ttl_hours
-        q_clean = "DELETE FROM pushed_models WHERE datetime(ts) < datetime('now', ?)"
+        # Purge entries older than `ttl_hours`. Portable on purpose: the previous
+        # `datetime(ts) < datetime('now', ?)` is a SQLite-only function, and on
+        # Postgres the failed DELETE *aborts the transaction* — the SELECT below
+        # then failed with `InFailedSqlTransaction`, so every routing request on
+        # the Postgres backend 500'd while the `except: pass` here hid the cause.
+        # `ts` is written by `push_model` through `utcnow()`, the same
+        # `YYYY-MM-DDTHH:MM:SS+00:00` shape as `_since`, so a lexical comparison
+        # against a cutoff in that shape is exact (see `_since`).
         try:
-            self.conn.execute(q_clean, (f"-{int(ttl_hours)} hours",))
+            cutoff = (dt.datetime.now(dt.timezone.utc)
+                      - dt.timedelta(hours=float(ttl_hours))).isoformat(timespec="seconds")
+            self.conn.execute(
+                "DELETE FROM pushed_models WHERE ts IS NOT NULL AND ts < ?", (cutoff,))
             self.conn.commit()
         except Exception:
             pass
