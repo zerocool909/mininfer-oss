@@ -52,6 +52,22 @@ pytest -q                       # the whole suite on SQLite
 ./scripts/validate-variants.sh  # both routes in-process, live, and in the image
 ```
 
+Optional extras gate some tests. They `skip` (never fail) when the extra is
+absent, so a base install always runs the core suite:
+
+| Extra | What it turns on |
+|---|---|
+| `server` | the proxy endpoints (`mi proxy`) |
+| `agents` | the LangGraph ingest/extract nodes (`agent_ingest`, `agent_resolve`) |
+| `understanding` | the GLiNER2.5 seam (real-checkpoint tests skip without it) |
+| `sync` | `mi sync` to Postgres |
+
+To run everything locally:
+
+```bash
+pip install -e '.[server,dev,agents,sync,understanding]'
+```
+
 Frontend:
 
 ```bash
