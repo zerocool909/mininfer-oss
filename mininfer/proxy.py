@@ -1564,6 +1564,34 @@ def economics_anomalies(status: str = "open", limit: int = 50) -> dict:
     return {"status": status, "count": len(rows), "anomalies": rows}
 
 
+@app.post("/v1/anomalies/decide", openapi_extra=_api_schema.ANOMALY_DECIDE,
+          tags=["operator"])
+async def decide_pricing_anomaly(request: Request) -> dict:
+    """Acknowledge or resolve a pricing anomaly; the same two decisions `mi anomaly`
+    makes, so the dashboard and the CLI cannot drift.
+
+    A body rather than a path segment because an `anomaly_id` contains `|` and `:`
+    (`openrouter:x:free|input|2026-10-04T10:00:00+00:00`), which are awkward to put
+    in a URL and easy for a client to mangle.
+    """
+    payload = await request.json()
+    anomaly_id = (payload.get("anomaly_id") or "").strip()
+    if not anomaly_id:
+        raise HTTPException(status_code=400, detail="anomaly_id is required")
+    status = payload.get("status")
+    if status not in ("acknowledged", "resolved"):
+        raise HTTPException(status_code=400,
+                            detail="status must be 'acknowledged' or 'resolved'")
+    store = _store()
+    try:
+        if not store.decide_anomaly(anomaly_id, status=status,
+                                    note=payload.get("note") or ""):
+            raise HTTPException(status_code=404, detail="no such anomaly")
+        return {"ok": True, "anomaly_id": anomaly_id, "status": status}
+    finally:
+        store.close()
+
+
 @app.get("/v1/economics/quota", tags=["economics"])
 def economics_quota(limit: int = 40) -> dict:
     """Bucket headroom with its *source* and a probabilistic exhaustion (P5)."""

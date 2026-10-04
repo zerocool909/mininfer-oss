@@ -80,6 +80,7 @@ GET    /v1/economics/providers                     experimental
 GET    /v1/economics/quota                         experimental
 GET    /v1/economics/history                       experimental
 GET    /v1/economics/anomalies                     experimental
+POST   /v1/anomalies/decide                        experimental
 GET    /v1/economics/deployments/{deploy_id:path}  experimental
 GET    /v1/local/probe                             experimental
 POST   /v1/local/register                          experimental

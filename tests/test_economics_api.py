@@ -210,3 +210,61 @@ def test_a_deploy_id_with_a_slash_is_routable(tmp_path, monkeypatch):
     # The seeded novita deployment has no slash, but the route must still accept one.
     assert client.get("/v1/economics/deployments/openrouter/thinkingmachines/x:free").status_code == 404
     assert client.get("/v1/economics/deployments/novita:m").status_code == 200
+
+
+# ------------------------------------------------------- deciding an anomaly
+#
+# `mi anomaly` was the only way to acknowledge or resolve one, so the dashboard's
+# review surface had no route to call. The endpoint takes the id in the body
+# because an `anomaly_id` contains `|` and `:`.
+
+
+def _an_open_anomaly(client) -> str:
+    return client.get("/v1/economics/anomalies").json()["anomalies"][0]["anomaly_id"]
+
+
+def test_an_anomaly_can_be_acknowledged_over_http(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    anomaly_id = _an_open_anomaly(client)
+    r = client.post("/v1/anomalies/decide",
+                    json={"anomaly_id": anomaly_id, "status": "acknowledged"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "anomaly_id": anomaly_id, "status": "acknowledged"}
+    # Acknowledged leaves the *open* queue but stays on the record.
+    assert client.get("/v1/economics/anomalies").json()["count"] == 1
+    acked = client.get("/v1/economics/anomalies", params={"status": "acknowledged"}).json()
+    assert [a["anomaly_id"] for a in acked["anomalies"]] == [anomaly_id]
+
+
+def test_an_anomaly_can_be_resolved_over_http(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    anomaly_id = _an_open_anomaly(client)
+    r = client.post("/v1/anomalies/decide",
+                    json={"anomaly_id": anomaly_id, "status": "resolved"})
+    assert r.status_code == 200
+    assert client.get("/v1/economics/anomalies",
+                      params={"status": "resolved"}).json()["count"] == 1
+
+
+def test_deciding_an_unknown_anomaly_is_404(tmp_path, monkeypatch):
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/anomalies/decide", json={"anomaly_id": "nope", "status": "resolved"})
+    assert r.status_code == 404
+
+
+def test_an_unknown_decision_is_rejected(tmp_path, monkeypatch):
+    """`open` is a real store status but not an operator decision made here, and a
+    rejection must leave every anomaly untouched."""
+    client = _client(tmp_path, monkeypatch)
+    anomaly_id = _an_open_anomaly(client)
+    for status in ("closed", "open", "", None):
+        r = client.post("/v1/anomalies/decide",
+                        json={"anomaly_id": anomaly_id, "status": status})
+        assert r.status_code == 400, status
+    assert client.get("/v1/economics/anomalies").json()["count"] == 2
+
+
+def test_a_missing_anomaly_id_is_rejected(tmp_path, monkeypatch):
+    r = _client(tmp_path, monkeypatch).post("/v1/anomalies/decide",
+                                            json={"status": "resolved"})
+    assert r.status_code == 400

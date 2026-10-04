@@ -201,6 +201,22 @@ REVIEWS_DECIDE = _body(
     example={"deploy_id": "openrouter:x:free", "approve": False},
 )
 
+ANOMALY_DECIDE = _body(
+    {
+        "anomaly_id": {"type": "string",
+                       "description": "From `/v1/economics/anomalies`."},
+        "status": {"type": "string", "enum": ["acknowledged", "resolved"],
+                   "description": "`acknowledged`: seen, still wrong. "
+                                  "`resolved`: closed. Resolving one that is "
+                                  "still wrong does not silence it — the next "
+                                  "reconcile opens a new row."},
+        "note": {"type": "string"},
+    },
+    required=["anomaly_id", "status"],
+    example={"anomaly_id": "openrouter:x:free|input|2026-10-04T10:00:00+00:00",
+             "status": "acknowledged", "note": "checked the provider page"},
+)
+
 PUSHED_MODELS = _body(
     {
         "action": {"type": "string", "enum": ["push", "unpush", "list"], "default": "list"},
