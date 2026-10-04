@@ -83,6 +83,11 @@ export function SettingsTab() {
           reply: res.reply,
           error_class: res.error_class,
           error_detail: res.error_detail,
+          // Fetched from the API and then dropped here, so the panel rendered
+          // "none configured" for every result: the diagnostic that says *which*
+          // credential was tried never reached the screen. Caught by
+          // e2e/providers.spec.ts on its first run (see test_fix.md #14).
+          key_source: res.key_source,
         },
       }))
     } catch (e: any) {
