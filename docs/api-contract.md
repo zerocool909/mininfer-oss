@@ -71,6 +71,7 @@ GET    /v1/stats                                   experimental
 GET    /v1/plan                                    experimental
 GET    /v1/providers                               experimental
 POST   /v1/providers/test                          experimental
+POST   /v1/keys                                    experimental
 GET    /v1/pushed-models                           experimental
 POST   /v1/pushed-models                           experimental
 GET    /v1/reviews                                 experimental

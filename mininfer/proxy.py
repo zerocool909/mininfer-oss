@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth as auth_mod
 from . import db as db_mod
 from . import intent as intent_mod
+from . import env as env_mod
 from .env import load_env
 from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
                       open_stream, resolve_endpoint, ENDPOINTS, available_providers,
@@ -86,6 +87,10 @@ app = FastAPI(title="MinInfer", version="0.1.0",
 # second server — and it stays optional: without a build, `/` falls back to the
 # dependency-free server-rendered page.
 WEB_DIST = pathlib.Path(__file__).resolve().parent.parent / "web" / "dist"
+#: The server's `.env`, and the template a missing one is seeded from. A key typed
+#: in the dashboard reaches this file only after a provider has accepted it.
+ENV_PATH = pathlib.Path(".env")
+ENV_TEMPLATE = pathlib.Path(".env.example")
 if (WEB_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=str(WEB_DIST / "assets")), name="web-assets")
 
@@ -1112,6 +1117,52 @@ async def _probe_provider(provider_id: str, custom_key: str, key_source: str = "
     out["reply"] = (f"key accepted — {n} model(s) available. "
                     f"Run `mi refresh` to add {provider_id} to the registry.")
     return out
+
+
+@app.post("/v1/keys", openapi_extra=_api_schema.SET_KEY, tags=["operator"])
+async def set_provider_key(request: Request) -> dict:
+    """Verify a provider key, and only then persist it to the server's `.env`.
+
+    The portal already keeps keys in the browser and forwards them per request;
+    this is the opt-in step that also puts one on the server, so `mi ingest` and
+    the next boot can see it. A key is written **only after the provider accepts
+    it** — an unverified secret in `.env` looks configured, which is worse than
+    absent, and the operator can still use it from the portal or paste it in by
+    hand once it works.
+
+    An existing non-empty value is never replaced; the reply says `already_set`
+    and names the variable, without echoing the key.
+    """
+    payload = await request.json()
+    provider = (payload.get("provider") or "").strip().lower()
+    api_key = (payload.get("api_key") or "").strip()
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider is required")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+    if provider not in ENDPOINTS or not key_env_for(f"{provider}:x"):
+        raise HTTPException(status_code=400,
+                            detail=f"{provider} is unknown or takes no API key")
+    env_var = key_env_for(f"{provider}:x")
+
+    probe = await _probe_provider(provider, api_key, key_source="user")
+    if not probe.get("ok"):
+        return JSONResponse(status_code=400, content={
+            "ok": False, "stored": False, "provider": provider, "env_var": env_var,
+            "error": {"message": probe.get("error_detail") or "the provider rejected the key",
+                      "type": probe.get("error_class") or "provider_unverified",
+                      "code": 400},
+        })
+
+    outcome = env_mod.set_env_var(ENV_PATH, env_var, api_key, template=ENV_TEMPLATE)
+    if outcome != "already_set":
+        # The running process reads `os.environ`, not the file, so the key becomes
+        # live now rather than after a restart. `already_set` is left alone — the
+        # value already in force is the operator's.
+        os.environ[env_var] = api_key
+    return {"ok": True, "stored": outcome != "already_set", "status": outcome,
+            "provider": provider, "env_var": env_var,
+            "reply": probe.get("reply") or "key accepted"}
 
 
 @app.post("/v1/providers/test", openapi_extra=_api_schema.PROVIDERS_TEST, tags=["catalog"])

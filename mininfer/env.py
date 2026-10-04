@@ -38,3 +38,69 @@ def load_env(path: str | pathlib.Path = ".env") -> bool:
         if key and key not in os.environ:
             os.environ[key] = val
     return True
+
+
+def _render_env(key: str, value: str) -> str:
+    """`KEY=value`, quoted when the value would otherwise be misread.
+
+    A `#` starts a comment and whitespace ends the value, so both need quoting for
+    the line to survive `python-dotenv` and `sh -c '. .env'` unchanged.
+    """
+    if value and not any(ch in value for ch in ' \t"\'#$`\\'):
+        return f"{key}={value}"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key}="{escaped}"'
+
+
+def set_env_var(path: str | pathlib.Path, key: str, value: str, *,
+                template: str | pathlib.Path | None = None) -> str:
+    """Write `KEY=value` into a `.env`, returning what happened.
+
+    The dashboard keeps keys in the browser and sends them per request; this is
+    the opt-in second step that also puts one on the server, so ingest and the
+    next boot can use it. The rule is deliberately conservative:
+
+    * a variable that already holds a **non-empty** value is left exactly as it is
+      and reported `"already_set"` — a secret the operator put there is never
+      replaced by one typed into a web form;
+    * an empty placeholder (`OPENROUTER_API_KEY=`) is filled, and an absent line is
+      appended (`"written"`), because that is the `.env.example` -> `.env` flow;
+    * a missing file is first seeded from `template` (`.env.example`) when given,
+      and reported `"created"`.
+
+    The write is atomic and the file is left mode `0600`, so a crash cannot leave a
+    half-written secret and other local users cannot read it.
+    """
+    p = pathlib.Path(path)
+    created = False
+    if not p.exists() and template is not None:
+        t = pathlib.Path(template)
+        if t.exists():
+            p.write_text(t.read_text(encoding="utf-8"), encoding="utf-8")
+            created = True
+
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    rendered = _render_env(key, value)
+    matched = False
+    for i, raw in enumerate(lines):
+        if raw.lstrip().startswith("#") or "=" not in raw:
+            continue
+        name, _, existing = raw.partition("=")
+        if name.strip() != key:
+            continue
+        matched = True
+        if existing.strip().strip('"').strip("'"):
+            return "already_set"
+        lines[i] = rendered
+        break
+    if not matched:
+        lines.append(rendered)
+
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:                       # Windows has no meaningful mode bits
+        pass
+    os.replace(tmp, p)
+    return "created" if created else "written"

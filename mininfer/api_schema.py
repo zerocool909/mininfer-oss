@@ -217,6 +217,19 @@ ANOMALY_DECIDE = _body(
              "status": "acknowledged", "note": "checked the provider page"},
 )
 
+SET_KEY = _body(
+    {
+        "provider": {"type": "string",
+                     "description": "A provider id from `/v1/providers`."},
+        "api_key": {"type": "string",
+                    "description": "Verified against the provider before it is "
+                                   "stored; an unverified key is never written to "
+                                   "`.env`."},
+    },
+    required=["provider", "api_key"],
+    example={"provider": "groq", "api_key": "gsk_..."},
+)
+
 PUSHED_MODELS = _body(
     {
         "action": {"type": "string", "enum": ["push", "unpush", "list"], "default": "list"},
