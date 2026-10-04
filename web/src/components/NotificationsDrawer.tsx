@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import { Drawer } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/Skeleton'
 import { api, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
 import { getUserKeys } from '@/lib/keys'
 import { cn } from '@/lib/utils'
@@ -25,10 +26,12 @@ const SEVERITY_TONE: Record<string, string> = {
 export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [anomalies, setAnomalies] = useState<PricingAnomaly[]>([])
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    setLoading(true)
     setError(null)
     try {
       const [p, a] = await Promise.all([api.providers(), api.anomalies('open')])
@@ -36,6 +39,8 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
       setAnomalies(a.anomalies)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load notifications')
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -61,9 +66,19 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
   return (
     <Drawer open={open} onClose={onClose} title="Notifications">
       {error && (
-        <div className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
+        <div
+          role="alert"
+          className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-[12px] text-destructive"
+        >
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{error}</span>
+          <span className="min-w-0 flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -72,9 +87,14 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
           id="notif-anomalies"
           className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
         >
-          Pricing review {anomalies.length > 0 && `(${anomalies.length})`}
+          Pricing review {!loading && anomalies.length > 0 && `(${anomalies.length})`}
         </h3>
-        {anomalies.length === 0 ? (
+        {loading ? (
+          <div className="mt-2 space-y-2" aria-hidden="true">
+            <Skeleton className="h-[74px] w-full" />
+            <Skeleton className="h-[74px] w-full" />
+          </div>
+        ) : anomalies.length === 0 ? (
           <p className="mt-2 flex items-center gap-1.5 text-[12px] text-muted-foreground">
             <CheckCircle2 className="h-3.5 w-3.5 text-free" /> Nothing to review
           </p>
@@ -98,9 +118,7 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
                     {a.deploy_id}
                   </span>
                 </div>
-                {a.detail && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">{a.detail}</p>
-                )}
+                {a.detail && <p className="mt-1 text-[11px] text-muted-foreground">{a.detail}</p>}
                 <div className="mt-2 flex gap-2">
                   <Button
                     size="sm"
@@ -134,42 +152,54 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
         >
           Providers
         </h3>
-        <ul className="mt-2 space-y-2">
-          {providers.map((p) => {
-            const viaPortal = Boolean(portalKeys[p.id])
-            const on = p.has_project_key || p.is_local || viaPortal
-            const source = p.is_local
-              ? 'local engine'
-              : p.has_project_key
-                ? `server · ${p.key_env}`
-                : viaPortal
-                  ? 'portal key'
-                  : p.key_env
-                    ? `not configured · ${p.key_env}`
-                    : 'not configured'
-            return (
-              <li
-                key={p.id}
-                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'h-1.5 w-1.5 shrink-0 rounded-full',
-                    on ? 'bg-free' : 'bg-muted-foreground',
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12.5px] font-medium text-foreground">{p.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{source}</div>
-                </div>
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  {p.models_count}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
+        {loading ? (
+          <div className="mt-2 space-y-2" aria-hidden="true">
+            <Skeleton className="h-[46px] w-full" />
+            <Skeleton className="h-[46px] w-full" />
+            <Skeleton className="h-[46px] w-full" />
+            <Skeleton className="h-[46px] w-full" />
+          </div>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {providers.map((p) => {
+              const viaPortal = Boolean(portalKeys[p.id])
+              const on = p.has_project_key || p.is_local || viaPortal
+              const source = p.is_local
+                ? 'local engine'
+                : p.has_project_key
+                  ? `server · ${p.key_env}`
+                  : viaPortal
+                    ? 'portal key'
+                    : p.key_env
+                      ? `not configured · ${p.key_env}`
+                      : 'not configured'
+              return (
+                <li
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'h-1.5 w-1.5 shrink-0 rounded-full',
+                      on ? 'bg-free' : 'bg-muted-foreground',
+                    )}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-medium text-foreground">{p.name}</div>
+                    <div className="text-[11px] text-muted-foreground">{source}</div>
+                  </div>
+                  <span
+                    className="font-mono text-[11px] text-muted-foreground"
+                    title={`${p.models_count} models in the registry`}
+                  >
+                    {p.models_count}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </section>
     </Drawer>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LayoutDashboard, Terminal, Settings, Boxes, Command, MessageSquarePlus, Scale, SunMoon, Keyboard, Bell } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Overview } from '@/components/Overview'
@@ -37,6 +37,7 @@ export function App() {
   // closes, so a decision made inside it is reflected on the bell.
   const [notifOpen, setNotifOpen] = useState(false)
   const [notifCount, setNotifCount] = useState(0)
+  const rootRef = useRef<HTMLDivElement>(null)
   /** A model handed over from the Overview's "Test" button, consumed by the chat. */
   const [testTarget, setTestTarget] = useState<TestTarget | null>(null)
 
@@ -54,6 +55,19 @@ export function App() {
     api.anomalies('open')
       .then((a) => setNotifCount(a.count))
       .catch(() => undefined)
+  }, [notifOpen])
+
+  // A modal drawer has to take the page behind it out of the tab order and the
+  // accessibility tree, not merely cover it. `inert` on the header/main/footer
+  // does that; the drawer and the other overlays are siblings, so they stay live.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const behind = root.querySelectorAll(':scope > header, :scope > main, :scope > footer')
+    for (const el of behind) {
+      if (notifOpen) el.setAttribute('inert', '')
+      else el.removeAttribute('inert')
+    }
   }, [notifOpen])
 
   // Deep-linkable tabs: /#playground survives a refresh and is screenshot-able.
@@ -121,7 +135,7 @@ export function App() {
   ]
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-background">
+    <div ref={rootRef} className="relative flex min-h-screen flex-col bg-background">
       <header className="sticky top-0 z-30 h-14 border-b border-border/70 bg-background/60 backdrop-blur-xl">
         <div className="relative z-10 mx-auto flex h-full w-full items-center gap-3 px-4 sm:px-6">
           {/* Brand */}

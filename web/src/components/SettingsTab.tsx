@@ -504,7 +504,9 @@ export function SettingsTab() {
                         href={provider.docs_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-muted-foreground hover:text-brand"
+                        // A 14px icon is a 14px target. The box is 24 so the hit
+                        // area clears the WCAG 2.5.8 minimum; the icon still centres.
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-brand"
                         title="Get API Key"
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
@@ -558,7 +560,7 @@ export function SettingsTab() {
                         // rendered as unlabelled buttons (axe: `button-name`).
                         aria-label={show ? `Hide the ${provider.name} key` : `Show the ${provider.name} key`}
                         onClick={() => setShowKeys((prev) => ({ ...prev, [provider.id]: !prev[provider.id] }))}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                       >
                         {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                       </button>

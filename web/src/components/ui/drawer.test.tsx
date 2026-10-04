@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Drawer } from './drawer'
 
 afterEach(cleanup)
@@ -70,5 +71,87 @@ describe('Drawer', () => {
     expect(backdrop).not.toBeNull()
     fireEvent.click(backdrop as Element)
     expect(onClose).toHaveBeenCalledTimes(2)
+  })
+})
+
+/**
+ * The behaviours that make it a dialog rather than a floating panel. Without
+ * these a keyboard user tabs into the page behind the overlay and loses their
+ * place when it closes — which is exactly what a browser audit of the first
+ * version found.
+ */
+describe('Drawer as a dialog', () => {
+  function Harness() {
+    const [open, setOpen] = useState(false)
+    return (
+      <div>
+        <button onClick={() => setOpen(true)}>open drawer</button>
+        <Drawer open={open} onClose={() => setOpen(false)} title="Notifications">
+          <button>inside one</button>
+          <button>inside two</button>
+        </Drawer>
+      </div>
+    )
+  }
+
+  it('moves focus in on open and puts it back on the trigger on close', async () => {
+    render(<Harness />)
+    const trigger = screen.getByText('open drawer')
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    await waitFor(() => expect(panel()).toBe(document.activeElement))
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
+  it('traps Tab inside the panel', async () => {
+    render(
+      <Drawer open onClose={() => {}} title="Notifications">
+        <button>inside one</button>
+        <button>inside two</button>
+      </Drawer>,
+    )
+    await waitFor(() => expect(panel()).toBe(document.activeElement))
+
+    const last = screen.getByText('inside two')
+    last.focus()
+    fireEvent.keyDown(window, { key: 'Tab' })
+    // Forward from the last focusable wraps to the first (the close button).
+    expect(document.activeElement).toBe(screen.getByLabelText('Close notifications'))
+
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+  })
+
+  it('locks page scroll while open and restores it', () => {
+    const { rerender } = render(
+      <Drawer open onClose={() => {}} title="Notifications">
+        <p>body</p>
+      </Drawer>,
+    )
+    expect(document.body.style.overflow).toBe('hidden')
+    rerender(
+      <Drawer open={false} onClose={() => {}} title="Notifications">
+        <p>body</p>
+      </Drawer>,
+    )
+    expect(document.body.style.overflow).toBe('')
+  })
+
+  it('is inert while closed, so its content cannot be tabbed into', () => {
+    const { rerender } = render(
+      <Drawer open={false} onClose={() => {}} title="Notifications">
+        <button>inside</button>
+      </Drawer>,
+    )
+    expect(panel().hasAttribute('inert')).toBe(true)
+    rerender(
+      <Drawer open onClose={() => {}} title="Notifications">
+        <button>inside</button>
+      </Drawer>,
+    )
+    expect(panel().hasAttribute('inert')).toBe(false)
   })
 })

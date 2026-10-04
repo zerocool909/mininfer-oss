@@ -91,6 +91,36 @@ describe('NotificationsDrawer', () => {
     expect(screen.getByText('openrouter:x:free')).toBeTruthy()
   })
 
+  it('shows a loading state rather than flashing "Nothing to review"', async () => {
+    let release: (v: unknown) => void = () => {}
+    const pending = new Promise((resolve) => {
+      release = resolve
+    })
+    vi.mocked(api.providers).mockResolvedValue({ providers: PROVIDERS })
+    vi.mocked(api.anomalies).mockReturnValue(
+      pending as unknown as ReturnType<typeof api.anomalies>,
+    )
+
+    render(<NotificationsDrawer open onClose={() => {}} />)
+    // Both sections read as loading, so the empty state must not appear first.
+    expect(screen.queryByText('Nothing to review')).toBeNull()
+    expect(screen.queryByText('OpenRouter')).toBeNull()
+
+    release({ status: 'open', count: 0, anomalies: [] })
+    await waitFor(() => expect(screen.getByText('Nothing to review')).toBeTruthy())
+    expect(screen.getByText('OpenRouter')).toBeTruthy()
+  })
+
+  it('offers a retry when loading fails', async () => {
+    vi.mocked(api.providers).mockRejectedValue(new Error('back offline'))
+    render(<NotificationsDrawer open onClose={() => {}} />)
+
+    await waitFor(() => expect(screen.getByText('back offline')).toBeTruthy())
+    expect(screen.getByRole('alert')).toBeTruthy()
+    screen.getByRole('button', { name: 'Retry' }).click()
+    expect(vi.mocked(api.providers).mock.calls.length).toBeGreaterThan(1)
+  })
+
   it('does not fetch while closed', () => {
     render(<NotificationsDrawer open={false} onClose={() => {}} />)
     expect(vi.mocked(api.anomalies)).not.toHaveBeenCalled()

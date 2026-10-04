@@ -161,7 +161,7 @@ export function ModelsTab() {
             <button
               onClick={() => setCapability('')}
               className={cn(
-                'rounded-full border px-2.5 py-0.5 text-xs',
+                'rounded-full border px-2.5 py-1 text-xs',
                 capability === '' ? 'border-brand/40 bg-brand/10 text-brand' : 'border-border text-muted-foreground',
               )}
             >
@@ -173,7 +173,7 @@ export function ModelsTab() {
                 onClick={() => setCapability(capability === c ? '' : c)}
                 title={`${data?.capabilities[c] ?? 0} deployments confirm (a null is unknown, not unsupported)`}
                 className={cn(
-                  'rounded-full border px-2.5 py-0.5 text-xs',
+                  'rounded-full border px-2.5 py-1 text-xs',
                   capability === c ? 'border-brand/40 bg-brand/10 text-brand' : 'border-border text-muted-foreground',
                 )}
               >
