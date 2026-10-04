@@ -89,11 +89,11 @@ WEB_DIST = pathlib.Path(__file__).resolve().parent.parent / "web" / "dist"
 if (WEB_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=str(WEB_DIST / "assets")), name="web-assets")
 
-@app.get("/favicon.svg")
-@app.get("/mininfer-icon.svg")
-@app.get("/mininfer-icon.png")
-@app.get("/mininfer-logo.svg")
-@app.get("/mininfer-logo.png")
+@app.get("/favicon.svg", tags=["dashboard"])
+@app.get("/mininfer-icon.svg", tags=["dashboard"])
+@app.get("/mininfer-icon.png", tags=["dashboard"])
+@app.get("/mininfer-logo.svg", tags=["dashboard"])
+@app.get("/mininfer-logo.png", tags=["dashboard"])
 async def static_brand_asset(request: Request):
     filename = request.url.path.lstrip("/")
     target = WEB_DIST / filename
@@ -820,12 +820,12 @@ def _all_failed(attempts: list[Attempt], res: CallResult, decision_id: int | Non
 # --------------------------------------------------------------------------- #
 
 
-@app.get("/healthz")
+@app.get("/healthz", tags=["operator"])
 def healthz() -> dict:
     return {"ok": True, "service": "mininfer"}
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", tags=["catalog"])
 def models() -> dict:
     """The routable surface, not the 23k deployments: one virtual model per task
     (so an OpenAI client's model picker is exactly the thing it can ask for)."""
@@ -842,7 +842,7 @@ def models() -> dict:
     return {"object": "list", "data": data}
 
 
-@app.get("/v1/models/explore")
+@app.get("/v1/models/explore", tags=["catalog"])
 def explore_models(
     q: str | None = None,
     provider: str | None = None,
@@ -944,7 +944,7 @@ PROVIDER_METADATA: dict[str, dict[str, Any]] = {
 }
 
 
-@app.get("/v1/providers")
+@app.get("/v1/providers", tags=["catalog"])
 def providers() -> dict:
     """Return all supported providers, their configured status, and registered models."""
     store = _store()
@@ -1009,7 +1009,7 @@ def providers() -> dict:
     return {"providers": out}
 
 
-@app.get("/v1/local/probe")
+@app.get("/v1/local/probe", tags=["operator"])
 async def local_probe(engine: str = "ollama", url: str | None = None) -> dict:
     """Check connectivity to a local LLM daemon (Ollama or llama.cpp) and discover installed models."""
     target_url = (url or ("http://localhost:11434" if engine == "ollama" else "http://localhost:8080")).rstrip("/")
@@ -1042,7 +1042,7 @@ async def local_probe(engine: str = "ollama", url: str | None = None) -> dict:
     }
 
 
-@app.post("/v1/local/register", openapi_extra=_api_schema.LOCAL_REGISTER)
+@app.post("/v1/local/register", openapi_extra=_api_schema.LOCAL_REGISTER, tags=["operator"])
 async def local_register(request: Request) -> dict:
     """Register discovered local models into MinInfer registry."""
     payload = await request.json()
@@ -1114,7 +1114,7 @@ async def _probe_provider(provider_id: str, custom_key: str, key_source: str = "
     return out
 
 
-@app.post("/v1/providers/test", openapi_extra=_api_schema.PROVIDERS_TEST)
+@app.post("/v1/providers/test", openapi_extra=_api_schema.PROVIDERS_TEST, tags=["catalog"])
 async def test_provider_connectivity(request: Request) -> dict:
     """Test connectivity to a provider using its free model or cheapest deployment."""
     payload = await request.json()
@@ -1323,7 +1323,7 @@ def _stats_data(store=None) -> dict:
             "decisions": decisions, "tasks": list(tasks), "savings": savings}
 
 
-@app.get("/v1/pushed-models")
+@app.get("/v1/pushed-models", tags=["catalog"])
 def get_pushed_models_endpoint(task: str | None = None):
     """List deployments that the user has pinned/pushed to the top 3 shortlist."""
     store = _store()
@@ -1332,7 +1332,7 @@ def get_pushed_models_endpoint(task: str | None = None):
     return {"pushed_models": models}
 
 
-@app.post("/v1/pushed-models", openapi_extra=_api_schema.PUSHED_MODELS)
+@app.post("/v1/pushed-models", openapi_extra=_api_schema.PUSHED_MODELS, tags=["catalog"])
 async def set_pushed_models_endpoint(request: Request):
     """Push, unpush, or clear pinned models."""
     body = await request.json()
@@ -1351,7 +1351,7 @@ async def set_pushed_models_endpoint(request: Request):
     return {"ok": True, "pushed_models": models}
 
 
-@app.get("/v1/plan")
+@app.get("/v1/plan", tags=["operator"])
 def plan_endpoint(task: str, request: Request = None):
     """Routing plan for a task: the funnel and the chosen arms, no model call.
 
@@ -1401,7 +1401,7 @@ def plan_endpoint(task: str, request: Request = None):
     }
 
 
-@app.post("/v1/search", openapi_extra=_api_schema.SEARCH)
+@app.post("/v1/search", openapi_extra=_api_schema.SEARCH, tags=["search"])
 async def search_endpoint(request: Request) -> dict:
     """Web search, charged to a session and refused when the session cannot afford it.
 
@@ -1446,7 +1446,7 @@ async def search_endpoint(request: Request) -> dict:
     return {**rep.as_dict(), "session": session}
 
 
-@app.get("/v1/session")
+@app.get("/v1/session", tags=["sessions"])
 def session_endpoint(request: Request):
     """Spend so far for one session, so a client can show a running total.
 
@@ -1467,7 +1467,7 @@ def session_endpoint(request: Request):
     return out
 
 
-@app.get("/v1/session/messages")
+@app.get("/v1/session/messages", tags=["sessions"])
 def session_messages_endpoint(request: Request, limit: int | None = None):
     """The session's transcript, oldest first.
 
@@ -1488,7 +1488,7 @@ def session_messages_endpoint(request: Request, limit: int | None = None):
     return {"session_id": session_id, "messages": messages}
 
 
-@app.delete("/v1/session/messages")
+@app.delete("/v1/session/messages", tags=["sessions"])
 def clear_session_messages_endpoint(request: Request):
     """Forget a session's transcript. The spend ledger is left alone.
 
@@ -1509,12 +1509,12 @@ def clear_session_messages_endpoint(request: Request):
     return {"session_id": session_id, "cleared": cleared}
 
 
-@app.get("/v1/stats")
+@app.get("/v1/stats", tags=["operator"])
 def stats() -> dict:
     return _stats_data()
 
 
-@app.get("/v1/economics/history")
+@app.get("/v1/economics/history", tags=["economics"])
 def economics_history(deploy_id: str | None = None, as_of: str | None = None,
                       limit: int = 200) -> dict:
     """The price *belief* timeline (P6).
@@ -1532,7 +1532,7 @@ def economics_history(deploy_id: str | None = None, as_of: str | None = None,
     return {"as_of": as_of, "count": len(rows), "history": rows}
 
 
-@app.get("/v1/economics/overview")
+@app.get("/v1/economics/overview", tags=["economics"])
 def economics_overview() -> dict:
     """Everything the Overview page's free/cost elements read, in one call (P7).
 
@@ -1553,7 +1553,7 @@ def economics_overview() -> dict:
     return data
 
 
-@app.get("/v1/economics/anomalies")
+@app.get("/v1/economics/anomalies", tags=["economics"])
 def economics_anomalies(status: str = "open", limit: int = 50) -> dict:
     """The anomaly log (P3). `status=` (empty) returns the whole history."""
     store = _store()
@@ -1564,7 +1564,7 @@ def economics_anomalies(status: str = "open", limit: int = 50) -> dict:
     return {"status": status, "count": len(rows), "anomalies": rows}
 
 
-@app.get("/v1/economics/quota")
+@app.get("/v1/economics/quota", tags=["economics"])
 def economics_quota(limit: int = 40) -> dict:
     """Bucket headroom with its *source* and a probabilistic exhaustion (P5)."""
     store = _store()
@@ -1575,7 +1575,7 @@ def economics_quota(limit: int = 40) -> dict:
     return {"count": len(rows), "buckets": rows}
 
 
-@app.get("/v1/economics/providers")
+@app.get("/v1/economics/providers", tags=["economics"])
 def economics_providers(limit: int = 50) -> dict:
     """Per-provider rollup, with the provenance of each `min_in`."""
     store = _store()
@@ -1586,7 +1586,7 @@ def economics_providers(limit: int = 50) -> dict:
     return {"count": len(rows), "providers": rows}
 
 
-@app.get("/v1/economics/deployments/{deploy_id:path}")
+@app.get("/v1/economics/deployments/{deploy_id:path}", tags=["economics"])
 def economics_deployment(deploy_id: str) -> dict:
     """One deployment's full economics: resolution, history, transitions, anomalies.
 
@@ -1602,7 +1602,7 @@ def economics_deployment(deploy_id: str) -> dict:
     return data
 
 
-@app.get("/v1/savings")
+@app.get("/v1/savings", tags=["sessions"])
 def savings_endpoint(days: int | None = None, session: str | None = None) -> dict:
     """Spend vs. what the cheapest paid sibling would have charged.
 
@@ -1621,7 +1621,7 @@ def savings_endpoint(days: int | None = None, session: str | None = None) -> dic
         store.close()
 
 
-@app.get("/v1/usage")
+@app.get("/v1/usage", tags=["sessions"])
 def usage_endpoint(request: Request, days: int | None = None,
                    tenant: str | None = None) -> dict:
     """Per-tenant usage: model calls, spend, savings, searches and decisions.
@@ -1661,7 +1661,7 @@ def dashboard(task: str | None = None) -> str:
         decisions=data["decisions"], tasks=list(tasks), task=chosen, routed=routed)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, tags=["dashboard"])
 def root(task: str | None = None) -> str:
     """The React dashboard when built, else the server-rendered page."""
     index = WEB_DIST / "index.html"
@@ -1670,7 +1670,7 @@ def root(task: str | None = None) -> str:
     return dashboard(task)
 
 
-@app.get("/legacy", response_class=HTMLResponse)
+@app.get("/legacy", response_class=HTMLResponse, tags=["dashboard"])
 def legacy_dashboard(task: str | None = None) -> str:
     """The original server-rendered dashboard, always available."""
     return dashboard(task)
@@ -1708,21 +1708,21 @@ def _extract_origin(request: Request | None) -> dict:
     }
 
 
-@app.post("/v1/chat/completions", openapi_extra=_api_schema.CHAT)
+@app.post("/v1/chat/completions", openapi_extra=_api_schema.CHAT, tags=["inference"])
 async def chat_completions(request: Request):
     return await _handle(await request.json(), force_route=False,
                          session_header=request.headers.get("x-mi-session"),
                          request=request)
 
 
-@app.post("/v1/route", openapi_extra=_api_schema.ROUTE)
+@app.post("/v1/route", openapi_extra=_api_schema.ROUTE, tags=["inference"])
 async def route_endpoint(request: Request):
     return await _handle(await request.json(), force_route=True,
                          session_header=request.headers.get("x-mi-session"),
                          request=request)
 
 
-@app.post("/v1/approve", openapi_extra=_api_schema.APPROVE)
+@app.post("/v1/approve", openapi_extra=_api_schema.APPROVE, tags=["inference"])
 async def approve(request: Request) -> dict:
     """Record a human's choice between the offered answers.
 
@@ -1751,7 +1751,7 @@ async def approve(request: Request) -> dict:
     return {"ok": True, "chosen": chosen, "rejected": rejected, "decision_id": decision_id}
 
 
-@app.post("/v1/route-verdict", openapi_extra=_api_schema.ROUTE_VERDICT)
+@app.post("/v1/route-verdict", openapi_extra=_api_schema.ROUTE_VERDICT, tags=["inference"])
 async def route_verdict(request: Request) -> dict:
     """Record a human judgment specifically on the model routing choice.
 
@@ -1926,7 +1926,7 @@ def _launch_shadow_trial(
         threading.Thread(target=lambda: asyncio.run(coro), daemon=True).start()
 
 
-@app.post("/v1/models/trial", openapi_extra=_api_schema.TRIAL)
+@app.post("/v1/models/trial", openapi_extra=_api_schema.TRIAL, tags=["catalog"])
 async def trial_model_endpoint(request: Request) -> dict:
     """Run an on-demand trial call against a specific deployment and judge it."""
     payload = await request.json()
@@ -1996,7 +1996,7 @@ async def trial_model_endpoint(request: Request) -> dict:
         store.close()
 
 
-@app.get("/v1/reviews")
+@app.get("/v1/reviews", tags=["operator"])
 def reviews() -> dict:
     """Deployments hibernated for human review.
 
@@ -2011,7 +2011,7 @@ def reviews() -> dict:
         store.close()
 
 
-@app.post("/v1/reviews/decide", openapi_extra=_api_schema.REVIEWS_DECIDE)
+@app.post("/v1/reviews/decide", openapi_extra=_api_schema.REVIEWS_DECIDE, tags=["operator"])
 async def decide_review(request: Request) -> dict:
     """Resolve a hibernation: `approve` returns it to `live`, otherwise retire it."""
     payload = await request.json()
@@ -2044,7 +2044,7 @@ _COMPACT_INSTRUCTIONS = (
 )
 
 
-@app.post("/v1/compact", openapi_extra=_api_schema.COMPACT)
+@app.post("/v1/compact", openapi_extra=_api_schema.COMPACT, tags=["inference"])
 async def compact(request: Request) -> dict:
     """Summarise older turns so later requests resend a brief, not the transcript.
 

@@ -180,3 +180,18 @@ def test_search_marks_its_session_header_required():
     params = app.openapi()["paths"]["/v1/search"]["post"]["parameters"]
     session = next(p for p in params if p["name"] == "X-MI-Session")
     assert session["required"] is True
+
+
+def test_every_operation_is_tagged():
+    """Swagger groups by tag; 38 untagged operations is one unreadable list.
+
+    The tags are the navigation, so a new endpoint landing outside every group is
+    as bad as a new endpoint missing from the inventory.
+    """
+    from mininfer.proxy import app
+
+    spec = app.openapi()
+    untagged = sorted(
+        path for path, ops in spec["paths"].items()
+        if any("tags" not in op for op in ops.values()))
+    assert not untagged, f"untagged operations: {untagged}"
