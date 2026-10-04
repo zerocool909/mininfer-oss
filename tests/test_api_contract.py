@@ -104,3 +104,47 @@ def test_the_core_surface_is_marked_stable(path):
     documented = _documented()
     entries = [status for key, status in documented.items() if key.endswith(f" {path}")]
     assert entries == ["stable"], entries
+
+
+def test_every_post_declares_a_request_body():
+    """Swagger UI cannot offer "Try it out" for a body it does not know about.
+
+    The handlers parse JSON by hand, so FastAPI infers nothing — which is why the
+    schema listed 11 POSTs and none of them had a body. The shapes live in
+    `mininfer/api_schema.py` and are attached with `openapi_extra`, which documents
+    without validating: a Pydantic body model would make FastAPI answer 422 in its
+    own error shape, not the OpenAI envelope this contract promises.
+    """
+    from mininfer.proxy import app
+
+    spec = app.openapi()
+    missing = sorted(p for p, ops in spec["paths"].items()
+                     if "post" in ops and "requestBody" not in ops["post"])
+    assert not missing, f"POSTs with no declared request body: {missing}"
+
+
+def test_declared_request_bodies_have_real_properties():
+    """An empty `{}` schema documents nothing — it only silences the check above."""
+    from mininfer.proxy import app
+
+    spec = app.openapi()
+    empty = []
+    for p, ops in spec["paths"].items():
+        body = ops.get("post", {}).get("requestBody")
+        if not body:
+            continue
+        if not body["content"]["application/json"]["schema"].get("properties"):
+            empty.append(p)
+    assert not empty, f"declared but empty request bodies: {empty}"
+
+
+def test_the_docs_surfaces_are_admin_only():
+    """`/docs` publishes every endpoint and an interactive client.
+
+    Correct behind an admin token, wrong on the public internet — and exactly the
+    kind of surface that gets forgotten when a new one is added.
+    """
+    import mininfer.auth as auth
+
+    for p in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+        assert auth.classify(p) == "admin", p

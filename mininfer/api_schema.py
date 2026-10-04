@@ -1,0 +1,182 @@
+"""Request-body schemas for the OpenAPI document.
+
+The handlers parse JSON by hand (`await request.json()`), so FastAPI had nothing
+to infer and Swagger UI listed every POST **with no body editor** — the routes
+were documented, but "Try it out" had nowhere to put the request.
+
+These fragments are attached with `openapi_extra` rather than as a Pydantic body
+on the handler, and that is deliberate. A declared body model makes FastAPI
+*validate* the request, and its 422 is `{"detail": [...]}` — not the OpenAI error
+envelope this project promises (`docs/api-contract.md`). Documentation should not
+change the contract, so the schemas are declarative and the handlers keep
+validating.
+
+`tests/test_api_contract.py` asserts every POST declares a request body, so the
+schema and the code cannot drift apart.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+def _body(properties: dict[str, Any], *, required: list[str] | None = None,
+          example: dict[str, Any] | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    if example is not None:
+        schema["example"] = example
+    return {
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": schema}},
+        }
+    }
+
+
+_MESSAGES = {
+    "type": "array",
+    "description": "The conversation so far.",
+    "items": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+            "role": {"type": "string", "enum": ["system", "user", "assistant", "tool"]},
+            "content": {"type": "string"},
+        },
+    },
+}
+
+_MODEL = {
+    "type": "string",
+    "default": "auto",
+    "description": (
+        "`auto` routes the default task; a task name pins that task; "
+        "`provider:model` calls that deployment directly."
+    ),
+}
+
+_TASK = {"type": "string", "description": "Pin the task instead of classifying the prompt."}
+
+
+CHAT = _body(
+    {
+        "model": _MODEL,
+        "messages": _MESSAGES,
+        "stream": {"type": "boolean", "default": False,
+                   "description": "Server-sent events. Each frame carries `choices[].delta`."},
+        "temperature": {"type": "number", "default": 0.0},
+        "max_tokens": {"type": "integer", "description": "No cap is applied when omitted."},
+        "task": _TASK,
+        "policy": {"type": "string", "description": "Named policy from the registry."},
+        "mi_options": {"type": "integer", "minimum": 1, "maximum": 8,
+                       "description": "Compare mode: run this many arms concurrently."},
+    },
+    required=["messages"],
+    example={"model": "auto", "messages": [{"role": "user", "content": "hello"}]},
+)
+
+ROUTE = _body(
+    {"model": _MODEL, "messages": _MESSAGES, "task": _TASK,
+     "policy": {"type": "string"}, "max_tokens": {"type": "integer"}},
+    required=["messages"],
+    example={"messages": [{"role": "user", "content": "hello"}]},
+)
+
+SEARCH = _body(
+    {
+        "query": {"type": "string"},
+        "provider": {"type": "string", "default": "auto",
+                     "description": "`auto` reaches a free provider first."},
+        "limit": {"type": "integer", "default": 5},
+        "force": {"type": "boolean", "default": False},
+    },
+    required=["query"],
+    example={"query": "what is a mixture of experts model"},
+)
+
+APPROVE = _body(
+    {
+        "task": {"type": "string", "default": "unrouted"},
+        "chosen": {"type": "string", "description": "The deployment the human preferred."},
+        "rejected": {"type": "array", "items": {"type": "string"}},
+        "decision_id": {"type": "integer"},
+    },
+    example={"task": "general_chat", "chosen": "groq:qwen/qwen3.8-27b"},
+)
+
+ROUTE_VERDICT = _body(
+    {
+        "deploy_id": {"type": "string"},
+        "approved": {"type": "boolean"},
+        "task": {"type": "string", "default": "unrouted"},
+        "reason": {"type": "string"},
+    },
+    required=["deploy_id"],
+    example={"deploy_id": "groq:qwen/qwen3.8-27b", "approved": True},
+)
+
+TRIAL = _body(
+    {
+        "deploy_id": {"type": "string"},
+        "task": {"type": "string", "default": "general_chat"},
+        "prompt": {"type": "string", "description": "Defaults to a routing question."},
+    },
+    required=["deploy_id"],
+    example={"deploy_id": "groq:qwen/qwen3.8-27b"},
+)
+
+COMPACT = _body(
+    {
+        "model": _MODEL,
+        "messages": _MESSAGES,
+        "summary": {"type": "string", "description": "An existing summary to fold in."},
+        "task": _TASK,
+        "policy": {"type": "string"},
+        "max_tokens": {"type": "integer"},
+        "stream": {"type": "boolean", "default": False},
+    },
+    required=["messages"],
+    example={"messages": [{"role": "user", "content": "summarise this thread"}]},
+)
+
+PROVIDERS_TEST = _body(
+    {
+        "provider": {"type": "string", "description": "A provider id from `/v1/providers`."},
+        "api_key": {"type": "string",
+                    "description": "Optional. Falls back to `X-User-API-Keys`, then the "
+                                   "provider's environment variable."},
+    },
+    required=["provider"],
+    example={"provider": "groq"},
+)
+
+REVIEWS_DECIDE = _body(
+    {
+        "deploy_id": {"type": "string"},
+        "approve": {"type": "boolean",
+                    "description": "Keep using it at the new price, or stop using it."},
+        "note": {"type": "string"},
+    },
+    required=["deploy_id", "approve"],
+    example={"deploy_id": "openrouter:x:free", "approve": False},
+)
+
+PUSHED_MODELS = _body(
+    {
+        "action": {"type": "string", "enum": ["push", "unpush", "list"], "default": "list"},
+        "deploy_id": {"type": "string"},
+        "task": {"type": "string"},
+    },
+    example={"action": "push", "deploy_id": "groq:qwen/qwen3.8-27b"},
+)
+
+LOCAL_REGISTER = _body(
+    {
+        "engine": {"type": "string", "enum": ["ollama", "llamacpp"]},
+        "models": {"type": "array", "items": {"type": "string"},
+                   "description": "Model ids the local runtime reports."},
+    },
+    required=["engine"],
+    example={"engine": "ollama", "models": ["llama3.2"]},
+)

@@ -46,6 +46,7 @@ from . import search as search_mod
 from .router import DEFAULT_TASK, Policy, rank_for_compare, route
 from .store import Store
 from .web.legacy import render_dashboard
+from . import api_schema as _api_schema
 
 # Load `.env` before anything reads the environment. This module is imported
 # directly by uvicorn's --reload child, which never runs `mi.cli.main`.
@@ -1041,7 +1042,7 @@ async def local_probe(engine: str = "ollama", url: str | None = None) -> dict:
     }
 
 
-@app.post("/v1/local/register")
+@app.post("/v1/local/register", openapi_extra=_api_schema.LOCAL_REGISTER)
 async def local_register(request: Request) -> dict:
     """Register discovered local models into MinInfer registry."""
     payload = await request.json()
@@ -1113,7 +1114,7 @@ async def _probe_provider(provider_id: str, custom_key: str, key_source: str = "
     return out
 
 
-@app.post("/v1/providers/test")
+@app.post("/v1/providers/test", openapi_extra=_api_schema.PROVIDERS_TEST)
 async def test_provider_connectivity(request: Request) -> dict:
     """Test connectivity to a provider using its free model or cheapest deployment."""
     payload = await request.json()
@@ -1331,7 +1332,7 @@ def get_pushed_models_endpoint(task: str | None = None):
     return {"pushed_models": models}
 
 
-@app.post("/v1/pushed-models")
+@app.post("/v1/pushed-models", openapi_extra=_api_schema.PUSHED_MODELS)
 async def set_pushed_models_endpoint(request: Request):
     """Push, unpush, or clear pinned models."""
     body = await request.json()
@@ -1400,7 +1401,7 @@ def plan_endpoint(task: str, request: Request = None):
     }
 
 
-@app.post("/v1/search")
+@app.post("/v1/search", openapi_extra=_api_schema.SEARCH)
 async def search_endpoint(request: Request) -> dict:
     """Web search, charged to a session and refused when the session cannot afford it.
 
@@ -1707,21 +1708,21 @@ def _extract_origin(request: Request | None) -> dict:
     }
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", openapi_extra=_api_schema.CHAT)
 async def chat_completions(request: Request):
     return await _handle(await request.json(), force_route=False,
                          session_header=request.headers.get("x-mi-session"),
                          request=request)
 
 
-@app.post("/v1/route")
+@app.post("/v1/route", openapi_extra=_api_schema.ROUTE)
 async def route_endpoint(request: Request):
     return await _handle(await request.json(), force_route=True,
                          session_header=request.headers.get("x-mi-session"),
                          request=request)
 
 
-@app.post("/v1/approve")
+@app.post("/v1/approve", openapi_extra=_api_schema.APPROVE)
 async def approve(request: Request) -> dict:
     """Record a human's choice between the offered answers.
 
@@ -1750,7 +1751,7 @@ async def approve(request: Request) -> dict:
     return {"ok": True, "chosen": chosen, "rejected": rejected, "decision_id": decision_id}
 
 
-@app.post("/v1/route-verdict")
+@app.post("/v1/route-verdict", openapi_extra=_api_schema.ROUTE_VERDICT)
 async def route_verdict(request: Request) -> dict:
     """Record a human judgment specifically on the model routing choice.
 
@@ -1925,7 +1926,7 @@ def _launch_shadow_trial(
         threading.Thread(target=lambda: asyncio.run(coro), daemon=True).start()
 
 
-@app.post("/v1/models/trial")
+@app.post("/v1/models/trial", openapi_extra=_api_schema.TRIAL)
 async def trial_model_endpoint(request: Request) -> dict:
     """Run an on-demand trial call against a specific deployment and judge it."""
     payload = await request.json()
@@ -2005,7 +2006,7 @@ def reviews() -> dict:
         store.close()
 
 
-@app.post("/v1/reviews/decide")
+@app.post("/v1/reviews/decide", openapi_extra=_api_schema.REVIEWS_DECIDE)
 async def decide_review(request: Request) -> dict:
     """Resolve a hibernation: `approve` returns it to `live`, otherwise retire it."""
     payload = await request.json()
@@ -2038,7 +2039,7 @@ _COMPACT_INSTRUCTIONS = (
 )
 
 
-@app.post("/v1/compact")
+@app.post("/v1/compact", openapi_extra=_api_schema.COMPACT)
 async def compact(request: Request) -> dict:
     """Summarise older turns so later requests resend a brief, not the transcript.
 

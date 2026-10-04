@@ -396,6 +396,21 @@ python3 -m mininfer stats
 
 ## 3. Test routing
 
+> **You need one provider key before anything routes.** The catalogue builds with
+> no credentials — that is what Tier 0 is for — but no provider serves inference
+> without one, so `mi route` reports `0 eligible` until a key is exported. This is
+> the design, not a fault: MinInfer never needs *your* key, it needs *a* key.
+>
+> Groq has the fastest free tier to obtain (<https://console.groq.com/keys>):
+>
+> ```bash
+> export GROQ_API_KEY="gsk_..."
+> mi route general_chat       # 1774 deployments -> 264 eligible -> 3 selected
+> ```
+>
+> Any provider in `mi sources` works, and a key also widens the catalogue on the
+> next `mi ingest` — the router only ranks what it can actually call.
+
 Route a task:
 
 ```bash

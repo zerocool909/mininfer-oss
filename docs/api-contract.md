@@ -22,6 +22,29 @@ or the PyPI version and talk HTTP.
 A field being *added* to a stable response is not a breaking change. A field being
 removed, renamed, retyped, or changing meaning is.
 
+## Where the docs live
+
+Three surfaces, all generated from the running app:
+
+| Path | What |
+|---|---|
+| `/docs` | Swagger UI — every endpoint, with a request body you can fill in and send |
+| `/redoc` | the same schema, laid out for reading |
+| `/openapi.json` | the raw document, for SDK generation |
+
+**All three are `admin`**, so with access control on they need `MI_ADMIN_TOKEN`
+(a browser can send it as the password of an HTTP Basic prompt). That is
+deliberate: the schema publishes every endpoint and an interactive client, which
+is an operator surface, not a public one.
+
+The request bodies are declared in `mininfer/api_schema.py` and attached with
+`openapi_extra`. They describe the shape but do not validate it — a declared
+Pydantic body would make FastAPI answer 422 in its own error format, and this
+document promises the OpenAI envelope instead. `tests/test_api_contract.py`
+asserts every POST declares a body, so Swagger cannot silently lose one.
+
+This document, not the Swagger schema, is what is *promised*.
+
 ## Machine-readable inventory
 
 The block below is parsed by `tests/test_api_contract.py`, which fails if it and
