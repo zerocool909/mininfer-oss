@@ -198,6 +198,13 @@ class Policy:
     # many observations it is held to the quality floor like any other arm, so an
     # arm that keeps failing stops winning on price alone.
     free_trial_obs: int = 3
+    # How many untried arms one shadow request trials *and judges together*. The
+    # provider calls cannot be batched (different providers), but the judging is a
+    # single model call for the whole batch — so trialling three arms costs three
+    # provider calls and **one** judge call instead of three. A larger batch learns
+    # more per request and pays less to judge it; a smaller one spends less on
+    # trials nobody asked for.
+    judge_batch_size: int = 3
     objective: str = "cost_per_success"  # | quality | latency | bandit
     prior_strength: float = 6.0
     # free arm with no configured quota: how much do we discount its success

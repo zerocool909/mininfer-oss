@@ -1829,53 +1829,71 @@ async def _run_shadow_trial(
 
         import random
         untried.sort(key=lambda x: (x["n_obs"], random.random()))
-        target_did = untried[0]["deploy_id"]
+        # The judge's label space is A..H, so the batch is capped to match. Each
+        # candidate is a different provider, so the *calls* cannot be batched —
+        # only the judging can, and that is one call for the whole batch.
+        batch = [u["deploy_id"] for u in untried[:max(1, min(8, int(policy.judge_batch_size)))]]
 
         runner = Runner(extra_body=extra_body, user_keys=user_keys, local_endpoints=local_endpoints)
-        trial_res = await asyncio.to_thread(runner, target_did, messages, max_tokens=1000, temperature=0.0, timeout=30.0)
 
-        store.record_usage(target_did)
-        _retire_if_uncallable(store, target_did, error_class=trial_res.error_class, error_detail=trial_res.error_detail)
+        trial_results: list[tuple[str, object]] = []
+        for did in batch:
+            trial_res = await asyncio.to_thread(
+                runner, did, messages, max_tokens=1000, temperature=0.0, timeout=30.0)
+            store.record_usage(did)
+            _retire_if_uncallable(store, did, error_class=trial_res.error_class,
+                                  error_detail=trial_res.error_detail)
+            trial_results.append((did, trial_res))
 
-        if trial_res.ok and trial_res.text:
-            from .judge import evaluate_trial_response
-            judge_ok, judge_reason = await asyncio.to_thread(
-                evaluate_trial_response,
-                prompt,
-                trial_res.text,
-                reference_text=primary_text,
-                runner=runner,
-                judge_model=primary_deploy_id,
-            )
-            store.observe(
-                target_did,
-                task_name,
-                ok=judge_ok,
-                ts=utcnow(),
-                error_class=None if judge_ok else "judge_rejected",
-                latency_ms=trial_res.latency_ms,
-                tokens_in=trial_res.tokens_in,
-                tokens_out=trial_res.tokens_out,
-                cost_usd=0.0,
-                signal_kind="judge_trial",
-                signal_value=1.0 if judge_ok else 0.0,
-                meta={"shadow": True, "judge_reason": judge_reason, "primary": primary_deploy_id},
-                tenant_id=tenant_id,
-            )
-        else:
-            store.observe(
-                target_did,
-                task_name,
-                ok=False,
-                ts=utcnow(),
-                error_class=trial_res.error_class or "empty_content",
-                latency_ms=trial_res.latency_ms,
-                cost_usd=0.0,
-                signal_kind="judge_trial",
-                signal_value=0.0,
-                meta={"shadow": True, "error_detail": trial_res.error_detail},
-                tenant_id=tenant_id,
-            )
+        # One judging call for the whole batch, labelled A, B, C… and mapped back.
+        answered = [(did, r.text) for did, r in trial_results if r.ok and r.text]
+        verdicts: dict[str, tuple[bool, str]] = {}
+        best_did: str | None = None
+        if answered:
+            from .judge import evaluate_batch
+            by_label = {chr(ord("A") + i): did for i, (did, _) in enumerate(answered)}
+            labelled = [(label, answered[i][1]) for i, label in enumerate(by_label)]
+            got, best_label = await asyncio.to_thread(
+                evaluate_batch, prompt, labelled,
+                reference_text=primary_text, runner=runner, judge_model=primary_deploy_id)
+            verdicts = {by_label[lbl]: v for lbl, v in got.items() if lbl in by_label}
+            if best_label and best_label in by_label:
+                best_did = by_label[best_label]
+
+        for did, trial_res in trial_results:
+            if did in verdicts:
+                judge_ok, judge_reason = verdicts[did]
+                store.observe(
+                    did,
+                    task_name,
+                    ok=judge_ok,
+                    ts=utcnow(),
+                    error_class=None if judge_ok else "judge_rejected",
+                    latency_ms=trial_res.latency_ms,
+                    tokens_in=trial_res.tokens_in,
+                    tokens_out=trial_res.tokens_out,
+                    cost_usd=0.0,
+                    signal_kind="judge_trial",
+                    signal_value=1.0 if judge_ok else 0.0,
+                    meta={"shadow": True, "judge_reason": judge_reason,
+                          "primary": primary_deploy_id, "batch": len(answered),
+                          "best": did == best_did},
+                    tenant_id=tenant_id,
+                )
+            else:
+                store.observe(
+                    did,
+                    task_name,
+                    ok=False,
+                    ts=utcnow(),
+                    error_class=trial_res.error_class or "empty_content",
+                    latency_ms=trial_res.latency_ms,
+                    cost_usd=0.0,
+                    signal_kind="judge_trial",
+                    signal_value=0.0,
+                    meta={"shadow": True, "error_detail": trial_res.error_detail},
+                    tenant_id=tenant_id,
+                )
         store.commit()
     except Exception as exc:
         logging.getLogger("mininfer.proxy").warning(f"Shadow trial error: {exc}")

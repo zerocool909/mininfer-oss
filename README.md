@@ -284,6 +284,44 @@ The Playground can display:
 
 Human selection can then be fed back into the routing system.
 
+### LLM-as-judge, batched
+
+Untried models gain evidence automatically. A background *shadow request* replays
+your prompt against free arms that have little history, then judges the answers
+against the one the caller actually got — so an arm earns or loses its place
+without you paying for it.
+
+The judging is **batched**: several candidates are compared in a **single** model
+call rather than one call each.
+
+```
+one judge call:
+  CANDIDATE A: PASS - correct and complete
+  CANDIDATE B: FAIL - ignores the second question
+  CANDIDATE C: PASS - correct but terse
+  BEST: A
+```
+
+Two reasons it is one call. Cost and latency are linear in the number of
+candidates when each is judged separately, and every call re-reads the same
+prompt. More importantly, *"which of these is best?"* is a more consistent
+question than *"is this good?"* asked k times — the candidates are compared
+against each other instead of against a bar each call invents separately.
+
+The verdict per candidate becomes an observation (`signal_kind=judge_trial`), and
+the winner is recorded, so "which model performed best" is answerable afterwards.
+Cheap heuristics run first — empty output, a provider error returned as text, a
+repetition loop — so a candidate that obviously failed never costs a judge call.
+A judge that errors or answers unparseably is **not** treated as evidence against
+the model: the candidate keeps its heuristic verdict.
+
+Tune it in `config/policy.yaml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `free_trial_obs` | `3` | how many observations a free arm keeps its trial exemption for |
+| `judge_batch_size` | `3` | how many untried arms one shadow request trials and judges together |
+
 ### Explainable Routing
 
 Every routing decision can be inspected.
