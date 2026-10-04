@@ -1938,7 +1938,12 @@ async def trial_model_endpoint(request: Request) -> dict:
 
     user_keys: dict[str, str] = {}
     local_endpoints: dict[str, str] = {}
-    raw_keys = request.headers.get("x-user-keys")
+    # `x-user-api-keys` is the name the dashboard sends and every other path
+    # reads; this one alone asked for `x-user-keys`, so the Models tab's Test
+    # button silently fell back to the environment key — the same failure as #21,
+    # one endpoint over.
+    raw_keys = (request.headers.get("x-user-api-keys")
+                or request.headers.get("x-user-keys"))
     if raw_keys:
         try:
             user_keys = json.loads(raw_keys)

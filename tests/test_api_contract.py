@@ -148,3 +148,35 @@ def test_the_docs_surfaces_are_admin_only():
 
     for p in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
         assert auth.classify(p) == "admin", p
+
+
+def test_the_headers_the_handlers_read_are_declared():
+    """Swagger can only set what the schema declares.
+
+    `X-MI-Session` and `X-User-API-Keys` change what these endpoints do — `/v1/search`
+    refuses without a session, and a user key decides whether a provider is callable
+    — but neither appeared in the schema, so "Try it out" could not reach them.
+    """
+    from mininfer.proxy import app
+
+    spec = app.openapi()
+    wanted = {
+        "/v1/chat/completions": {"X-MI-Session", "X-User-API-Keys"},
+        "/v1/route": {"X-MI-Session", "X-User-API-Keys"},
+        "/v1/search": {"X-MI-Session", "X-User-API-Keys"},
+        "/v1/models/trial": {"X-User-API-Keys"},
+        "/v1/providers/test": {"X-User-API-Keys"},
+    }
+    for path, names in wanted.items():
+        declared = {p["name"] for p in
+                    spec["paths"][path]["post"].get("parameters", [])}
+        assert not names - declared, f"{path} does not declare {names - declared}"
+
+
+def test_search_marks_its_session_header_required():
+    """/v1/search is the one path that refuses without a session."""
+    from mininfer.proxy import app
+
+    params = app.openapi()["paths"]["/v1/search"]["post"]["parameters"]
+    session = next(p for p in params if p["name"] == "X-MI-Session")
+    assert session["required"] is True

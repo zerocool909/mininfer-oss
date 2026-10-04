@@ -19,19 +19,50 @@ from __future__ import annotations
 from typing import Any
 
 
+SESSION = {
+    "name": "X-MI-Session",
+    "in": "header",
+    "required": False,
+    "schema": {"type": "string"},
+    "description": (
+        "Groups calls into one budgeted session. With access control on, the "
+        "ledger is keyed `tenant/session`, so this is a label, not a boundary."
+    ),
+}
+
+USER_KEYS = {
+    "name": "X-User-API-Keys",
+    "in": "header",
+    "required": False,
+    "schema": {"type": "string"},
+    "description": (
+        'JSON object mapping provider id to key, e.g. `{"groq": "gsk_..."}`. '
+        "The provider is callable for that request only; a supplied key is never "
+        "stored server-side."
+    ),
+}
+
+
 def _body(properties: dict[str, Any], *, required: list[str] | None = None,
-          example: dict[str, Any] | None = None) -> dict[str, Any]:
+          example: dict[str, Any] | None = None,
+          headers: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
     schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
         schema["required"] = required
     if example is not None:
         schema["example"] = example
-    return {
+    extra: dict[str, Any] = {
         "requestBody": {
             "required": True,
             "content": {"application/json": {"schema": schema}},
         }
     }
+    if headers:
+        # Declared so Swagger UI renders an input for them. Without this the
+        # header-dependent endpoints are unreachable from "Try it out": the
+        # handlers read them, the schema never mentioned them.
+        extra["parameters"] = list(headers)
+    return extra
 
 
 _MESSAGES = {
@@ -74,6 +105,7 @@ CHAT = _body(
     },
     required=["messages"],
     example={"model": "auto", "messages": [{"role": "user", "content": "hello"}]},
+    headers=(SESSION, USER_KEYS),
 )
 
 ROUTE = _body(
@@ -81,6 +113,7 @@ ROUTE = _body(
      "policy": {"type": "string"}, "max_tokens": {"type": "integer"}},
     required=["messages"],
     example={"messages": [{"role": "user", "content": "hello"}]},
+    headers=(SESSION, USER_KEYS),
 )
 
 SEARCH = _body(
@@ -93,6 +126,9 @@ SEARCH = _body(
     },
     required=["query"],
     example={"query": "what is a mixture of experts model"},
+    # /v1/search is the one path that *requires* a session: an uncapped paid
+    # search is the only thing here that could spend without a bound.
+    headers=(dict(SESSION, required=True), USER_KEYS),
 )
 
 APPROVE = _body(
@@ -124,6 +160,7 @@ TRIAL = _body(
     },
     required=["deploy_id"],
     example={"deploy_id": "groq:qwen/qwen3.8-27b"},
+    headers=(SESSION, USER_KEYS),
 )
 
 COMPACT = _body(
@@ -138,6 +175,7 @@ COMPACT = _body(
     },
     required=["messages"],
     example={"messages": [{"role": "user", "content": "summarise this thread"}]},
+    headers=(SESSION, USER_KEYS),
 )
 
 PROVIDERS_TEST = _body(
@@ -149,6 +187,7 @@ PROVIDERS_TEST = _body(
     },
     required=["provider"],
     example={"provider": "groq"},
+    headers=(USER_KEYS,),
 )
 
 REVIEWS_DECIDE = _body(

@@ -228,3 +228,41 @@ def test_a_rate_limited_free_arm_is_retried_not_reported_as_failure(tmp_path, mo
 
     assert body["ok"] is True
     assert len(calls) == 3          # it walked past the two rate-limited arms
+
+
+def test_the_trial_endpoint_reads_the_header_everything_else_does(tmp_path, monkeypatch):
+    """`x-user-api-keys`, not `x-user-keys`.
+
+    The Models tab's Test button posts here, and the dashboard sends
+    `X-User-API-Keys` — the header every other path reads. This endpoint alone
+    asked for `x-user-keys`, so a saved key was invisible and the trial silently
+    used the environment key instead.
+    """
+    from mininfer.execute import CallResult
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    client = _client(tmp_path, monkeypatch)
+    s = Store(tmp_path / "p.db")
+    s.upsert_weights(Weights("hf:cerebras/m", "m", params_b=7.0))
+    s.upsert_deployment(Deployment("cerebras:m0", "hf:cerebras/m", "cerebras", "m0",
+                                   price_in=0.0, price_out=0.0, context_window=1000))
+    s.commit()
+    s.close()
+
+    import mininfer.proxy as proxy
+    seen: dict = {}
+
+    class _Runner:
+        def __init__(self, **kw):
+            seen["user_keys"] = kw.get("user_keys")
+
+        def __call__(self, did, msgs, **kw):
+            return CallResult(did, text="a trial answer", ok=True)
+
+    monkeypatch.setattr(proxy, "Runner", _Runner)
+    client.post("/v1/models/trial",
+                headers={"X-User-API-Keys": json.dumps({"cerebras": "sk-byo"})},
+                json={"deploy_id": "cerebras:m0"})
+
+    assert seen["user_keys"] == {"cerebras": "sk-byo"}
