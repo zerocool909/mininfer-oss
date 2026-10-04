@@ -230,6 +230,17 @@ SET_KEY = _body(
     example={"provider": "groq", "api_key": "gsk_..."},
 )
 
+SEED_QUOTAS = _body(
+    {
+        "config": {"type": "string",
+                   "description": "Path to the quota config. Defaults to "
+                                  "`config/quotas.yaml`."},
+        "dry_run": {"type": "boolean", "default": False,
+                    "description": "Report what would be seeded without writing."},
+    },
+    example={"dry_run": False},
+)
+
 PUSHED_MODELS = _body(
     {
         "action": {"type": "string", "enum": ["push", "unpush", "list"], "default": "list"},

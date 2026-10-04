@@ -43,6 +43,7 @@ from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
                       _network_class, _TLS_HINT)
 from .fetch import utcnow, _verify as _tls_verify
 from .quota import classify_429, describe as quota_describe, record_from_headers
+from . import quota as quota_mod
 from . import search as search_mod
 from .router import DEFAULT_TASK, Policy, rank_for_compare, route
 from .store import Store
@@ -1364,12 +1365,18 @@ def _synthesize_why_for_decision(store: Store, chosen: str, task: str) -> list[d
     return out
 
 
-def _stats_data(store=None) -> dict:
+#: How many quota buckets the Overview page receives in its one call. The card
+#: pages through them client-side; `/v1/stats` and the legacy dashboard keep the
+#: small default so a caller that only wants counts does not download every row.
+_OVERVIEW_QUOTA_ROWS = 500
+
+
+def _stats_data(store=None, *, quota_limit: int = 10) -> dict:
     own = store is None
     store = store or _store()
     counts = store.counts()
     providers = store.providers_summary(limit=20)
-    quota = quota_describe(store, limit=10)
+    quota = quota_describe(store, limit=quota_limit)
     decisions = []
     for d in store.recent_decisions(limit=10):
         # `why` is lifted out of the stored blob so every consumer of this
@@ -1619,7 +1626,7 @@ def economics_overview() -> dict:
     """
     store = _store()
     try:
-        data = _stats_data(store)
+        data = _stats_data(store, quota_limit=_OVERVIEW_QUOTA_ROWS)
         data["reviews"] = store.reviews()
         data["anomalies"] = store.anomalies(limit=20)
         data["pricing_states"] = store.pricing_state_counts()
@@ -1666,6 +1673,27 @@ async def decide_pricing_anomaly(request: Request) -> dict:
         return {"ok": True, "anomaly_id": anomaly_id, "status": status}
     finally:
         store.close()
+
+
+@app.post("/v1/quota/seed", openapi_extra=_api_schema.SEED_QUOTAS, tags=["operator"])
+async def seed_quota_buckets(request: Request) -> dict:
+    """Import the declared free-tier limits from `config/quotas.yaml`.
+
+    The step the Docker entrypoint runs after its bootstrap ingest; a native
+    install has nobody to run it, so a fresh registry shows an empty "Quota
+    headroom" card and the operator has to know the CLI command. Idempotent:
+    `set_limit` rewrites the configured limit for a (deployment, window) pair, so
+    seeding twice is not two buckets.
+    """
+    payload = await request.json()
+    config = (payload.get("config") or "").strip() or quota_mod.DEFAULT_CONFIG
+    dry_run = bool(payload.get("dry_run"))
+    store = _store()
+    try:
+        report = quota_mod.seed(store, config=config, dry_run=dry_run)
+    finally:
+        store.close()
+    return {"ok": True, "dry_run": dry_run, **report}
 
 
 @app.get("/v1/economics/quota", tags=["economics"])

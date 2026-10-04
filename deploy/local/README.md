@@ -32,6 +32,44 @@ docker compose -f deploy/local/docker-compose.postgres.yml up -d --build
 
 Then open <http://127.0.0.1:8765/> — or `:8000` in the container.
 
+## Setup, step by step
+
+From a fresh clone, in order:
+
+```bash
+# 1. Provider keys. The catalogue builds with none, but nothing routes until at
+#    least one is set. Copy the template and fill in what you have.
+cp .env.example .env
+
+# 2. The engine, and the proxy (`server` adds FastAPI/uvicorn — without it
+#    `mi proxy` exits with a message saying exactly this).
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[server]'
+
+# 3. Pull the provider catalogues into the registry.
+mi ingest
+
+# 4. Resolve identities across sources.
+mi resolve
+
+# 5. Declare the free-tier limits in `config/quotas.yaml`. The Docker entrypoint
+#    runs this for you after step 3; a native install does not, which is why an
+#    un-seeded registry shows an empty "Quota headroom" card. The dashboard's
+#    "Seed quotas" button runs exactly this.
+mi quota seed
+
+# 6. Serve the proxy and dashboard.
+mi proxy                      # http://127.0.0.1:8765
+```
+
+In the container, steps 2–5 are the image and the entrypoint's job, so only
+step 1 is yours:
+
+```bash
+cp .env.example .env          # required: the file is bind-mounted at /app/.env
+docker compose up -d --build  # builds, ingests, seeds quotas, serves :8000
+```
+
 ## Configuration
 
 `config/profiles/local.env` is the declared profile. It is not read

@@ -27,6 +27,161 @@ const CARDS = [
   { key: 'snapshots', label: 'snapshots', icon: Camera },
 ] as const
 
+/**
+ * The quota card's empty state. Shared by the full and split layouts so the copy
+ * and the action cannot drift between them, which is how they got out of step.
+ */
+function QuotaEmptyState({ onSeed, busy }: { onSeed: () => void; busy: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-1.5">
+      <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
+      <span className="text-xs font-medium">No declared quota buckets</span>
+      <span className="max-w-[36ch] text-[11px]">
+        Free-tier limits are not seeded, so nothing caps usage yet.
+      </span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={busy}
+        onClick={onSeed}
+        className="mt-1 h-7 text-[11.5px]"
+      >
+        {busy ? 'Seeding…' : 'Seed quotas'}
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * One row per provider in turn, tightest-first within each.
+ *
+ * The list arrives sorted by headroom, and one provider usually holds most of the
+ * buckets — OpenRouter has 86 of 288 here — so the raw order fills the first page
+ * with a single provider, which reads as "only OpenRouter exists". Round-robin
+ * keeps the urgency order inside each provider while showing the breadth across
+ * them.
+ */
+function interleaveByProvider(rows: QuotaRow[]): QuotaRow[] {
+  const queues = new Map<string, QuotaRow[]>()
+  for (const row of rows) {
+    const head = row.deploy_id.split(':')[0].split('/')[0]
+    const existing = queues.get(head)
+    if (existing) existing.push(row)
+    else queues.set(head, [row])
+  }
+  const out: QuotaRow[] = []
+  while (queues.size > 0) {
+    for (const head of Array.from(queues.keys())) {
+      const queue = queues.get(head)
+      if (!queue || queue.length === 0) {
+        queues.delete(head)
+        continue
+      }
+      const next = queue.shift()
+      if (next) out.push(next)
+      if (queue.length === 0) queues.delete(head)
+    }
+  }
+  return out
+}
+
+const QUOTA_PAGE = 8
+
+/**
+ * The quota table, shared by the full and split layouts so they cannot drift, with
+ * paging: the registry has hundreds of buckets and a fixed-height card can show
+ * eight. The empty state carries the one action that fills it.
+ */
+function QuotaTable({
+  rows,
+  onSeed,
+  busy,
+}: {
+  rows: QuotaRow[]
+  onSeed: () => void
+  busy: boolean
+}) {
+  const [page, setPage] = useState(0)
+  const ordered = useMemo(() => interleaveByProvider(rows), [rows])
+  const pages = Math.max(1, Math.ceil(ordered.length / QUOTA_PAGE))
+  // A refresh can shrink the list under the current page; clamp rather than
+  // rendering an empty page.
+  const current = Math.min(page, pages - 1)
+  const start = current * QUOTA_PAGE
+  const slice = ordered.slice(start, start + QUOTA_PAGE)
+
+  return (
+    <TableWrap className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-xl border border-border/80 bg-card shadow-xs">
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table className="min-w-[380px]">
+          <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+            <TableRow>
+              <TableHead>deployment</TableHead>
+              <TableHead>window</TableHead>
+              <TableHead className="text-right">used</TableHead>
+              <TableHead className="text-right">head</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {slice.map((q) => (
+              <TableRow key={`${q.deploy_id}-${q.window}`}>
+                <TableCell
+                  className="max-w-[14rem] truncate font-mono text-xs"
+                  title={q.deploy_id}
+                >
+                  <DeployCell deployId={q.deploy_id} />
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">{q.window}</TableCell>
+                <TableCell className="tnum text-right font-mono text-xs">
+                  {q.used_n}/{q.limit_n ?? '—'}
+                </TableCell>
+                <HeadroomCell q={q} />
+              </TableRow>
+            ))}
+            {ordered.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={4} className="py-16 text-center text-muted-foreground">
+                  <QuotaEmptyState onSeed={onSeed} busy={busy} />
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+      {ordered.length > QUOTA_PAGE && (
+        <div className="flex shrink-0 items-center justify-between border-t border-border/70 px-3 py-2 text-[11px] text-muted-foreground">
+          <span className="font-mono">
+            {start + 1}–{Math.min(start + QUOTA_PAGE, ordered.length)} of {ordered.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={current === 0}
+              onClick={() => setPage(current - 1)}
+              className="h-6 px-2 text-[11px]"
+            >
+              Prev
+            </Button>
+            <span className="font-mono tabular-nums">
+              {current + 1}/{pages}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={current >= pages - 1}
+              onClick={() => setPage(current + 1)}
+              className="h-6 px-2 text-[11px]"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+    </TableWrap>
+  )
+}
+
 export function Overview({ onTestModel }: { onTestModel?: (deployId: string, task: string) => void } = {}) {
   const [stats, setStats] = useState<EconomicsOverview | null>(null)
   const [task, setTask] = useState('')
@@ -39,6 +194,7 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
   const [decisionsView, setDecisionsView] = useState<'full' | 'split'>('full')
   /** Deployments hibernated for review: they were free, and now they charge. */
   const [reviews, setReviews] = useState<Review[]>([])
+  const [seedingQuota, setSeedingQuota] = useState(false)
 
   // Ticker for human-friendly "Updated Xs ago"
   useEffect(() => {
@@ -82,6 +238,23 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
     },
     [task, stats],
   )
+
+  /**
+   * One-click fix for the empty Quota headroom card. The Docker entrypoint seeds
+   * quotas after its bootstrap ingest; a native install does not, so the dashboard
+   * offers the same step instead of leaving the operator to find the CLI command.
+   */
+  const handleSeedQuotas = async () => {
+    setSeedingQuota(true)
+    try {
+      await api.seedQuotas()
+      await refresh(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not seed quotas')
+    } finally {
+      setSeedingQuota(false)
+    }
+  }
 
   /** Resolve a hibernation: optimistic, then re-read the plan. */
   const decideReview = async (deployId: string, approve: boolean) => {
@@ -546,56 +719,14 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
             <div className="flex flex-col h-[400px]">
               <SectionHeading
                 title="Quota headroom"
-                hint="tightest buckets first"
+                hint="one per provider, tightest first"
                 action={
                   <span className="font-mono text-[11px] text-muted-foreground">
                     {stats.quota.length} bucket{stats.quota.length === 1 ? '' : 's'}
                   </span>
                 }
               />
-              <TableWrap className="flex-1 overflow-auto rounded-xl border border-border/80 bg-card shadow-xs">
-                <Table className="min-w-[380px]">
-                  <TableHeader className="sticky top-0 bg-card/95 backdrop-blur-sm z-10">
-                    <TableRow>
-                      <TableHead>deployment</TableHead>
-                      <TableHead>window</TableHead>
-                      <TableHead className="text-right">used</TableHead>
-                      <TableHead className="text-right">head</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {stats.quota.map((q) => (
-                      <TableRow key={`${q.deploy_id}-${q.window}`}>
-                        <TableCell className="max-w-[14rem] truncate font-mono text-xs" title={q.deploy_id}>
-                          <DeployCell deployId={q.deploy_id} />
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-xs">{q.window}</TableCell>
-                        <TableCell className="tnum text-right text-xs font-mono">
-                          {q.used_n}/{q.limit_n ?? '—'}
-                        </TableCell>
-                        <HeadroomCell q={q} />
-                      </TableRow>
-                    ))}
-                    {stats.quota.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={4} className="py-16 text-center text-muted-foreground">
-                          <div className="flex flex-col items-center justify-center gap-1.5">
-                            <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
-                            <span className="text-xs font-medium">No declared quota buckets</span>
-                            <span className="max-w-[36ch] text-[11px]">
-                              Free-tier limits are not seeded, so nothing caps usage yet. Run{' '}
-                              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px] text-foreground">
-                                mi quota seed
-                              </code>{' '}
-                              to import them.
-                            </span>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableWrap>
+              <QuotaTable rows={stats.quota} onSeed={handleSeedQuotas} busy={seedingQuota} />
             </div>
           </section>
 
@@ -722,50 +853,8 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
           {/* Split 2-column grid for Quota & Decisions with equal heights */}
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="flex flex-col h-[460px]">
-              <SectionHeading title="Quota headroom" hint="tightest buckets first" />
-              <TableWrap className="flex-1 overflow-auto rounded-xl border border-border/80 bg-card shadow-xs">
-                <Table className="min-w-[360px]">
-                  <TableHeader className="sticky top-0 bg-card/95 backdrop-blur-sm z-10">
-                    <TableRow>
-                      <TableHead>deployment</TableHead>
-                      <TableHead>window</TableHead>
-                      <TableHead className="text-right">used</TableHead>
-                      <TableHead className="text-right">head</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {stats.quota.map((q) => (
-                      <TableRow key={`${q.deploy_id}-${q.window}`}>
-                        <TableCell className="max-w-[14rem] truncate font-mono text-xs" title={q.deploy_id}>
-                          <DeployCell deployId={q.deploy_id} />
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-xs">{q.window}</TableCell>
-                        <TableCell className="tnum text-right text-xs">
-                          {q.used_n}/{q.limit_n ?? '—'}
-                        </TableCell>
-                        <HeadroomCell q={q} />
-                      </TableRow>
-                    ))}
-                    {stats.quota.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={4} className="py-16 text-center text-muted-foreground">
-                          <div className="flex flex-col items-center justify-center gap-1.5">
-                            <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
-                            <span className="text-xs font-medium">No declared quota buckets</span>
-                            <span className="max-w-[36ch] text-[11px]">
-                              Free-tier limits are not seeded, so nothing caps usage yet. Run{' '}
-                              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px] text-foreground">
-                                mi quota seed
-                              </code>{' '}
-                              to import them.
-                            </span>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </TableWrap>
+              <SectionHeading title="Quota headroom" hint="one per provider, tightest first" />
+              <QuotaTable rows={stats.quota} onSeed={handleSeedQuotas} busy={seedingQuota} />
             </div>
 
             <div className="flex flex-col h-[460px]">

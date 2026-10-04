@@ -268,3 +268,37 @@ def test_a_missing_anomaly_id_is_rejected(tmp_path, monkeypatch):
     r = _client(tmp_path, monkeypatch).post("/v1/anomalies/decide",
                                             json={"status": "resolved"})
     assert r.status_code == 400
+
+
+# ------------------------------------------------------- seeding quotas
+
+_QCFG = "quotas:\n  - provider: novita\n    window: minute\n    limit: 42\n"
+
+
+def test_seeding_quotas_from_a_config_file(tmp_path, monkeypatch):
+    """The one-click action: a native install has no entrypoint to run
+    `mi quota seed`, so the dashboard offers it."""
+    client = _client(tmp_path, monkeypatch)
+    cfg = tmp_path / "q.yaml"
+    cfg.write_text(_QCFG, encoding="utf-8")
+
+    body = client.post("/v1/quota/seed", json={"config": str(cfg)}).json()
+    assert body["ok"] is True
+    assert body["buckets"] >= 1
+    assert body["matched"].get("novita", 0) >= 1
+
+    buckets = client.get("/v1/economics/quota").json()["buckets"]
+    novita = next(b for b in buckets if b["deploy_id"] == "novita:m")
+    assert novita["limit_n"] == 42
+
+
+def test_a_dry_run_seeds_nothing(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    cfg = tmp_path / "q.yaml"
+    cfg.write_text(_QCFG, encoding="utf-8")
+    before = client.get("/v1/economics/quota").json()["count"]
+
+    body = client.post("/v1/quota/seed", json={"config": str(cfg), "dry_run": True}).json()
+    assert body["dry_run"] is True
+    assert body["buckets"] == 0
+    assert client.get("/v1/economics/quota").json()["count"] == before

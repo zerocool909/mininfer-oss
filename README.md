@@ -386,6 +386,13 @@ Resolve model identities across sources:
 python3 -m mininfer resolve
 ```
 
+Declare the free-tier quota limits, so the router's free-first policy and the
+dashboard's **Quota headroom** card have something to read:
+
+```bash
+python3 -m mininfer quota seed
+```
+
 Inspect the registry:
 
 ```bash

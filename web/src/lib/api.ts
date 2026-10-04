@@ -453,6 +453,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ anomaly_id, status, note }),
     }),
+  /**
+   * Import the declared free-tier limits from `config/quotas.yaml`. The Docker
+   * entrypoint does this after its bootstrap ingest; a native install does not, so
+   * the dashboard offers it as a one-click action.
+   */
+  seedQuotas: (opts: { config?: string; dry_run?: boolean } = {}) =>
+    req<{
+      ok: boolean
+      dry_run: boolean
+      entries: number
+      buckets: number
+      matched: Record<string, number>
+    }>('/v1/quota/seed', { method: 'POST', body: JSON.stringify(opts) }),
   // Reviews, anomalies and the pricing-state distribution all arrive on
   // `economics()` now, so the page reads them from the same moment as the prices
   // they describe. The `/v1/reviews` endpoint remains for API clients.

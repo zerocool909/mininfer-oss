@@ -80,6 +80,7 @@ POST   /v1/reviews/decide                          experimental
 GET    /v1/economics/overview                      experimental
 GET    /v1/economics/providers                     experimental
 GET    /v1/economics/quota                         experimental
+POST   /v1/quota/seed                              experimental
 GET    /v1/economics/history                       experimental
 GET    /v1/economics/anomalies                     experimental
 POST   /v1/anomalies/decide                        experimental
