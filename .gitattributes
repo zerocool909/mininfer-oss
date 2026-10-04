@@ -1,13 +1,27 @@
-# Line-ending policy.
+# Line-ending policy: every tracked text file is LF, in the index and on disk.
 #
-# Git on Windows (`core.autocrlf=true`) rewrites text files to CRLF on checkout.
-# That is harmless for Python, but fatal for a shell script that is executed by
-# name inside the Linux image: the shebang becomes `#!/bin/sh\r`, so the kernel
-# looks for an interpreter literally named `/bin/sh<CR>` and the container dies
-# with `exec /app/entrypoint.sh: no such file or directory` -- pointing at the
-# interpreter, not the missing file, which is why it reads as a phantom.
+# This repo is developed on Windows and deployed on Linux, and `core.autocrlf=true`
+# rewrites text files to CRLF at checkout. Python and the YAML/TOML/SQL parsers
+# all tolerate that, so it stays invisible until something on the Linux side
+# reads a byte it cannot ignore. Two cases have already bitten:
 #
-# Shell scripts are the only tracked files here that are executed by name, so
-# they are pinned to LF in the index *and* in every working tree. The checkout
-# that builds the image and the checkout CI builds from then agree byte for byte.
+#   * `docker/entrypoint.sh` is executed by name, so the kernel reads its shebang
+#     literally: CRLF turns `#!/bin/sh` into `#!/bin/sh\r`, exec then looks for an
+#     interpreter called `/bin/sh<CR>`, and the container dies with "no such file
+#     or directory" -- naming a missing interpreter, not a missing file, which is
+#     why it reads as a phantom.
+#   * `config/profiles/*.env` are sourced by `scripts/validate-*.sh`; a CRLF
+#     checkout gives every value a trailing carriage return.
+#
+# `eol=lf` pins the bytes, so the checkout that builds the image and the one CI
+# builds from cannot disagree. `text=auto` lets git keep real binaries (the
+# diagrams' PNGs, any `.so`) untouched -- they contain NUL, so they are never
+# detected as text.
+* text=auto eol=lf
+
+# Spelled out, because these are the files executed by name and the shebang is
+# what breaks. `tests/test_deploy_manifest_*`-style checks pin the deployment
+# files; the `line-endings` CI job re-materialises a Windows checkout and fails
+# if any tracked file comes back CRLF.
 *.sh text eol=lf
+Dockerfile text eol=lf
