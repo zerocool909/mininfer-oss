@@ -152,8 +152,16 @@ def test_one_broken_source_does_not_abort_the_ingest(tmp_path, monkeypatch, caps
 
     monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
     monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    # Without a key for the second source it is *skipped*, not run — and then
+    # nothing succeeded and nothing was ingested, which `cmd_ingest` now reports
+    # as a failure. That made this test pass only on a machine whose shell
+    # happened to export a provider key.
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+
+    ran: list[str] = []
 
     def fake_run_source(name, *, force=False, **kw):
+        ran.append(name)
         if name == "vercel":
             raise AttributeError("'list' object has no attribute 'get'")
         return ing.Run()
@@ -162,6 +170,7 @@ def test_one_broken_source_does_not_abort_the_ingest(tmp_path, monkeypatch, caps
     # `sources` is positional
     rc = cli.main(["--db", str(tmp_path / "p.db"), "ingest", "vercel", "groq"])
     err = capsys.readouterr().err
+    assert "groq" in ran, "the loop must continue past the broken source"
     assert rc == 0, "a failing source must not fail the command"
     assert "vercel" in err and "FAILED" in err
     assert "AttributeError" in err
