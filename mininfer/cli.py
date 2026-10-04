@@ -83,11 +83,28 @@ def _money(v: float | None, *, per_mtok: bool = True) -> str:
 
 def cmd_ingest(args) -> int:
     store = _open(args)
-    _ingest_all(store, args)
+    summary = _ingest_all(store, args) or {}
     c = store.counts()
     print(f"\nregistry: {c['weights']} weights  {c['deployments']} deployments  "
           f"{c['evidence']} evidence rows  {c['snapshots']} raw snapshots")
     store.close()
+
+    # A command that ingested nothing must not report success. Silence here is
+    # what let the container announce "Catalogue populated" over an empty
+    # registry: the operator sees a blank dashboard and a log line saying it
+    # worked, which is worse than an error.
+    if summary.get("ok", 1) == 0 and summary.get("failed", 0) > 0:
+        print(f"\n  all {summary['failed']} source(s) failed — nothing was ingested.",
+              file=sys.stderr)
+        if args.sources:
+            print("  (named sources only — a bare `mi ingest` sweeps every "
+                  "available one)", file=sys.stderr)
+        print("  If the failures are CERTIFICATE_VERIFY_FAILED, your network "
+              "intercepts TLS and\n  Python cannot see its root CA:\n"
+              "    ./scripts/make_ca_bundle.sh && export MI_CA_BUNDLE=$PWD/.certs/bundle.pem\n"
+              "  See README: 'TLS: corporate proxies and corporate roots'.",
+              file=sys.stderr)
+        return 1
     return 0
 
 
@@ -109,16 +126,26 @@ def _default_source_names() -> list[str]:
             if s.url and s.tier != 2 and s.available]
 
 
-def _ingest_all(store, args) -> None:
-    """Run every available source into `store`. Shared by `ingest` and `verify`."""
+def _ingest_all(store, args) -> dict:
+    """Run every available source into `store`. Shared by `ingest` and `verify`.
+
+    Returns a summary (`{sources, ok, failed, skipped}`) so a caller can tell
+    "nothing to do" from "everything failed". It used to return `None`, which meant
+    `mi ingest` exited 0 after every source had failed — the container then logged
+    "Catalogue populated" over an empty registry, and the operator got a blank
+    dashboard with a success message.
+    """
     names = args.sources or _default_source_names()
+    ok = failed = skipped = 0
     for name in names:
         spec = ing.SOURCES.get(name)
         if spec is None:
             print(f"  ! unknown source {name}", file=sys.stderr)
+            skipped += 1
             continue
         if not spec.available:
             print(f"  - {name:12s} skipped (needs {spec.key_env})")
+            skipped += 1
             continue
         try:
             kw: dict = {}
@@ -130,6 +157,7 @@ def _ingest_all(store, args) -> None:
             run = ing.run_source(name, force=args.force, **kw)
         except Exception as exc:
             print(f"  ! {name:12s} FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+            failed += 1
             continue
 
         for b in run.bundles:
@@ -139,6 +167,7 @@ def _ingest_all(store, args) -> None:
         for s in run.snapshots:
             store.record_snapshot(s)
         store.commit()
+        ok += 1
         print(f"  + {name:12s} {len(run.bundles):5d} deployments  "
               f"{len(run.quarantine):3d} quarantined  ({spec.tier=} {spec.note})")
 
@@ -160,6 +189,8 @@ def _ingest_all(store, args) -> None:
         ps = rep["pricing_states"]
         if ps["changed"]:
             print(f"  pricing states: {ps['changed']} changed — see `mi transitions`")
+
+    return {"sources": len(names), "ok": ok, "failed": failed, "skipped": skipped}
 
 
 def cmd_reconcile(args) -> int:

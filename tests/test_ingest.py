@@ -303,3 +303,62 @@ def test_the_default_sweep_leaves_out_local_runtimes():
     from mininfer import cli
 
     assert {"ollama", "lmstudio", "vllm"}.isdisjoint(cli._default_source_names())
+
+
+# --------------------------------------------------------------------------- #
+# a command that ingested nothing must not report success
+# --------------------------------------------------------------------------- #
+
+
+class _Store:
+    def counts(self):
+        return {"weights": 0, "deployments": 0, "evidence": 0, "snapshots": 0}
+
+    def close(self):
+        pass
+
+
+def _ingest_args():
+    import argparse
+
+    return argparse.Namespace(sources=[], force=False, no_endpoints=True,
+                              endpoints_top=0, limit=0)
+
+
+def test_ingest_fails_when_every_source_failed(monkeypatch):
+    """The bug: `mi ingest` exited 0 after all sources failed.
+
+    The container's first-run bootstrap reads that exit code, so it announced
+    "Catalogue populated" over an empty registry — a blank dashboard and a log
+    line saying it worked, which is worse than an error.
+    """
+    from mininfer import cli
+
+    monkeypatch.setattr(cli, "_open", lambda _a: _Store())
+    monkeypatch.setattr(cli, "_ingest_all",
+                        lambda _s, _a: {"sources": 8, "ok": 0, "failed": 8, "skipped": 0})
+
+    assert cli.cmd_ingest(_ingest_args()) == 1
+
+
+def test_ingest_succeeds_when_at_least_one_source_worked(monkeypatch):
+    """Partial failure is normal — one provider down is not a broken run."""
+    from mininfer import cli
+
+    monkeypatch.setattr(cli, "_open", lambda _a: _Store())
+    monkeypatch.setattr(cli, "_ingest_all",
+                        lambda _s, _a: {"sources": 8, "ok": 1, "failed": 7, "skipped": 0})
+
+    assert cli.cmd_ingest(_ingest_args()) == 0
+
+
+def test_ingest_succeeds_when_every_source_was_skipped(monkeypatch):
+    """Nothing available is not a failure: tier-0 is keyless, but a run can
+    legitimately have no work to do."""
+    from mininfer import cli
+
+    monkeypatch.setattr(cli, "_open", lambda _a: _Store())
+    monkeypatch.setattr(cli, "_ingest_all",
+                        lambda _s, _a: {"sources": 3, "ok": 0, "failed": 0, "skipped": 3})
+
+    assert cli.cmd_ingest(_ingest_args()) == 0
