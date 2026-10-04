@@ -149,7 +149,7 @@ function ErrorCard({ error, task }: { error: TurnError; task?: string }) {
         <span className="rounded-full border border-destructive/30 px-1.5 py-px font-mono text-[10px] font-normal">
           {error.kind}
         </span>
-        {task && <span className="font-mono text-[10px] font-normal opacity-70">{task}</span>}
+        {task && <span className="font-mono text-[10px] font-normal">{task}</span>}
       </div>
       <p className="mt-1 font-mono text-[11.5px] leading-5 break-words text-muted-foreground">
         {error.message}

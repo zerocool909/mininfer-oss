@@ -17,6 +17,7 @@ import os
 import pathlib
 import sys
 
+from . import __version__
 from .env import load_env
 
 from . import bandit as bandit_mod
@@ -1240,6 +1241,9 @@ def cmd_metrics(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     p = argparse.ArgumentParser(prog="mi", description="MinInfer model router")
+    p.add_argument("--version", action="version",
+                   version=f"mininfer {__version__}",
+                   help="print the version and exit")
     p.add_argument("--db", default=str(DB))
     p.add_argument("--policy", default=str(POLICY))
     sub = p.add_subparsers(dest="cmd", required=True)

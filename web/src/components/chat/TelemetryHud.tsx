@@ -96,7 +96,7 @@ export function TelemetryHud({
           </span>
         ) : (
           <span className="inline-flex items-center rounded-full border border-paid/30 bg-paid/10 px-2 py-[1px] text-[10.5px] font-semibold text-paid">
-            {money(meta?.cost)} <span className="ml-1 font-normal opacity-70">/ success</span>
+            {money(meta?.cost)} <span className="ml-1 font-normal">/ success</span>
           </span>
         )}
 

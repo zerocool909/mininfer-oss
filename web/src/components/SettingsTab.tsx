@@ -520,6 +520,9 @@ export function SettingsTab() {
                       />
                       <button
                         type="button"
+                        // Icon-only, so it needs its name from here: 25 of these
+                        // rendered as unlabelled buttons (axe: `button-name`).
+                        aria-label={show ? `Hide the ${provider.name} key` : `Show the ${provider.name} key`}
                         onClick={() => setShowKeys((prev) => ({ ...prev, [provider.id]: !prev[provider.id] }))}
                         className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                       >
@@ -652,12 +655,14 @@ export function SettingsTab() {
                 setSearchQuery(e.target.value)
                 setDisplayLimit(100)
               }}
+              aria-label="Search providers and models"
               placeholder="Search model name, deployment ID, or provider..."
               className="w-full rounded-md border border-border bg-background pl-8 pr-3 py-1.5 text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-brand"
             />
           </div>
 
           <select
+            aria-label="Filter by provider"
             value={providerFilter}
             onChange={(e) => {
               setProviderFilter(e.target.value)
@@ -674,6 +679,7 @@ export function SettingsTab() {
           </select>
 
           <select
+            aria-label="Filter by capability"
             value={taskFilter}
             onChange={(e) => {
               setTaskFilter(e.target.value)

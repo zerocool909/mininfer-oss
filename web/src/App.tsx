@@ -6,6 +6,7 @@ import { ModelsTab } from '@/components/ModelsTab'
 import { Playground } from '@/components/Playground'
 import type { TestTarget } from '@/components/Playground'
 import { SettingsTab } from '@/components/SettingsTab'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ConnectModal } from '@/components/ConnectModal'
 import { CommandPalette, type PaletteCommand } from '@/components/CommandPalette'
@@ -136,6 +137,11 @@ export function App() {
               return (
                 <button
                   key={id}
+                  // The label is hidden below `md`, which left the button with no
+                  // accessible name at all on a phone — a screen reader (and a
+                  // test) saw four unlabelled buttons. Caught by
+                  // e2e/responsive.spec.ts.
+                  aria-label={label}
                   onClick={() => go(id)}
                   className={cn(
                     'relative inline-flex items-center gap-2 px-3 text-[13px] font-medium transition-colors',
@@ -210,6 +216,9 @@ export function App() {
           !isChat && 'mx-auto max-w-[1400px] px-6 py-8',
         )}
       >
+        {/* Keyed by tab, so a crash on one page does not brick the rest: the
+            header and nav stay live, and switching tabs remounts a fresh subtree. */}
+        <ErrorBoundary key={tab}>
         {tab === 'overview' ? (
           <Overview
             onTestModel={(deployId, task) => {
@@ -224,6 +233,7 @@ export function App() {
         ) : (
           <Playground testTarget={testTarget} onTestConsumed={() => setTestTarget(null)} />
         )}
+        </ErrorBoundary>
       </main>
 
       {tab === 'overview' && (

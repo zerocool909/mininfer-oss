@@ -143,7 +143,7 @@ export function CommandPalette({ commands }: { commands: PaletteCommand[] }) {
           ) : (
             grouped.map((group) => (
               <div key={group.group} className="mb-1">
-                <div className="px-2.5 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                <div className="px-2.5 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {group.group}
                 </div>
                 {group.items.map((cmd) => {
@@ -163,7 +163,7 @@ export function CommandPalette({ commands }: { commands: PaletteCommand[] }) {
                       <Icon className="h-4 w-4 shrink-0 text-brand" strokeWidth={1.9} />
                       <span className="flex-1 truncate">{cmd.label}</span>
                       {cmd.hint && (
-                        <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
+                        <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
                           {cmd.hint}
                         </span>
                       )}

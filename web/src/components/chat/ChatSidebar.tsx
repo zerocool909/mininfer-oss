@@ -135,7 +135,7 @@ export function ChatSidebar({
               placeholder="Search chats"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-8 w-full rounded-lg border border-border bg-muted/40 pl-8 pr-8 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-brand/50 focus:bg-background"
+              className="h-8 w-full rounded-lg border border-border bg-muted/40 pl-8 pr-8 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-brand/50 focus:bg-background"
             />
             {search && (
               <button
@@ -158,7 +158,7 @@ export function ChatSidebar({
           ) : (
             groups.map((group) => (
               <div key={group.label} className="space-y-0.5">
-                <div className="px-2.5 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                <div className="px-2.5 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {group.label}
                 </div>
                 {group.items.map((session) => {
@@ -258,7 +258,7 @@ export function ChatSidebar({
         {/* Footer */}
         <div className="flex items-center justify-between border-t border-border px-3.5 py-2.5 text-[11px] text-muted-foreground">
           <span className="tnum font-mono">{sessions.length} chats</span>
-          <span className="text-muted-foreground/70">Stored locally</span>
+          <span className="text-muted-foreground">Stored locally</span>
         </div>
       </aside>
 

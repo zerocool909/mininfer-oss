@@ -582,7 +582,7 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
                           <div className="flex flex-col items-center justify-center gap-1.5">
                             <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
                             <span className="text-xs font-medium">No declared quota buckets</span>
-                            <span className="text-[11px] opacity-70">Deployments operate without active limit caps</span>
+                            <span className="text-[11px]">Deployments operate without active limit caps</span>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -662,7 +662,7 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
                         <div className="flex flex-col items-center justify-center gap-1.5">
                           <GitBranch className="h-6 w-6 opacity-30 text-muted-foreground" />
                           <span className="text-xs font-medium">No decisions recorded yet</span>
-                          <span className="text-[11px] opacity-70">
+                          <span className="text-[11px]">
                             Routes triggered via proxy or playground will be logged here
                           </span>
                         </div>
@@ -1062,7 +1062,7 @@ function WhyTags({ why }: { why?: WhyTag[] }) {
           )}
         >
           {w.label}
-          {w.detail ? <span className="ml-1.5 opacity-70">{w.detail}</span> : null}
+          {w.detail ? <span className="ml-1.5">{w.detail}</span> : null}
         </span>
       ))}
     </div>
@@ -1176,7 +1176,7 @@ function DecisionTimeCell({ d }: { d: DecisionRow }) {
       ) : (
         <div className="flex items-center gap-1 font-mono text-[9.5px] text-muted-foreground/60 mt-0.5">
           <span className="truncate max-w-[100px]">{originSource}</span>
-          {origin?.ip && <span className="opacity-70">· {origin.ip}</span>}
+          {origin?.ip && <span>· {origin.ip}</span>}
         </div>
       )}
     </div>

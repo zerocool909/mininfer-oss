@@ -91,7 +91,7 @@ export function ModelIdentity({
                   className="inline-flex items-center gap-1 rounded-md border border-border/80 bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition-colors hover:border-border hover:bg-muted"
                 >
                   {altProv && (
-                    <span className="text-[9px] font-semibold uppercase tracking-wider opacity-70">
+                    <span className="text-[9px] font-semibold uppercase tracking-wider">
                       {altProv}:
                     </span>
                   )}

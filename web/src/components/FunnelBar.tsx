@@ -71,7 +71,7 @@ export function FunnelBar({ funnel }: { funnel: Funnel }) {
         <div className="relative flex flex-col justify-between rounded-xl border border-border/80 bg-muted/30 p-3">
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-[11px] font-semibold uppercase tracking-wider">1. Catalog</span>
-            <Layers className="h-3.5 w-3.5 text-muted-foreground/70" />
+            <Layers className="h-3.5 w-3.5 text-muted-foreground" />
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="tnum text-xl font-bold tracking-tight text-foreground">
@@ -166,7 +166,7 @@ export function FunnelBar({ funnel }: { funnel: Funnel }) {
               </div>
               <div className="ml-2 flex items-baseline gap-1 shrink-0">
                 <span className="tnum font-semibold text-foreground">{p.value.toLocaleString()}</span>
-                <span className="tnum text-[10px] text-muted-foreground/70">
+                <span className="tnum text-[10px] text-muted-foreground">
                   ({pct(p.value) < 0.1 ? '<0.1' : pct(p.value).toFixed(1)}%)
                 </span>
               </div>

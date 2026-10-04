@@ -191,10 +191,27 @@
   }
 }
 
-/* A reader who asked for less motion gets a still scene. */
+/* A reader who asked for less motion gets a still scene.
+ *
+ * This used to cover only `.skeleton`/`.shimmer`, so the card enter transitions,
+ * the live-indicator ping and the hover lifts all still ran for someone who had
+ * explicitly asked them not to. The universal reset is the standard one: it keeps
+ * the *result* of an animation (the end state) while removing the movement.
+ *
+ * It also makes the accessibility scan honest. `axe` measures contrast on what is
+ * painted, so sampling an element mid-fade reports a colour that is only true for
+ * 200ms — 77 "violations" that all disappear once the transition settles. */
 @media (prefers-reduced-motion: reduce) {
   .skeleton,
   .shimmer {
     animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
