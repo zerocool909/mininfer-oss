@@ -20,7 +20,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 # Virtualenv: machine-local and platform-specific, never commit. A full macOS
-# `.venv` was once committed here (`35126db`) and had to be purged from history.
+# `.venv` was once committed here and had to be purged from history.
 .venv/
 # `python -m build` output (wheel, sdist, and the setuptools staging tree)
 build/
