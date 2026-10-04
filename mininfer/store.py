@@ -26,6 +26,31 @@ from . import db
 from .schema import (CAP_KEYS, NON_MODEL_ERRORS, Deployment, Evidence, Weights)
 
 
+_stamp_lock = threading.Lock()
+_last_stamp: dt.datetime | None = None
+
+
+def _unique_stamp() -> str:
+    """Microsecond ISO timestamp that is strictly increasing within the process.
+
+    Row identity here is content-derived and includes the stamp (see
+    `_record_price_history`/`_open_anomaly`/`_transition_row`), so two writes in
+    the same tick must not share one. `datetime.now()` is only as precise as the
+    OS clock, and on Windows that advances in ~15.6 ms steps -- several rapid
+    reconciles return the *same* microsecond string, the ids collide, and
+    `ON CONFLICT DO NOTHING` silently drops the later belief. Nudging past the
+    previous stamp keeps each value wall-clock accurate to within microseconds
+    while guaranteeing uniqueness within the process.
+    """
+    global _last_stamp
+    with _stamp_lock:
+        now = dt.datetime.now(dt.timezone.utc)
+        if _last_stamp is not None and now <= _last_stamp:
+            now = _last_stamp + dt.timedelta(microseconds=1)
+        _last_stamp = now
+    return now.isoformat(timespec="microseconds")
+
+
 def _per_mtok(stored: float | None) -> str:
     """Format a stored price. The column is already dollars per Mtok.
 
@@ -1538,7 +1563,7 @@ class Store:
         # Microseconds rather than the second-precision `stamp`, because resolving
         # a still-wrong anomaly and re-reconciling must open a genuinely new row
         # instead of colliding with the one just closed.
-        opened = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+        opened = _unique_stamp()
         anomaly_id = f"{r['deploy_id']}|{r['kind']}|{opened}"
         self.conn.execute(
             """INSERT INTO price_anomalies (anomaly_id,deploy_id,weights_id,dimension,kind,
@@ -1643,7 +1668,7 @@ class Store:
         # One stamp for the whole pass: every row written together shares an
         # `effective_from`, because "we now believe this" is one event, while the id
         # stays unique per (deployment, kind).
-        effective_from = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+        effective_from = _unique_stamp()
         rows = []
         for r in resolutions:
             before = current.get((r["deploy_id"], r["kind"]))
@@ -1766,7 +1791,7 @@ class Store:
     def _transition_row(self, row, to_state: str, headroom, stamp: str) -> tuple:
         # Content-derived id (a rowid would not survive `sync`), microsecond-precise
         # so two changes in the same second are still two rows.
-        opened = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+        opened = _unique_stamp()
         transition_id = f"{row['deploy_id']}|{row['pricing_state'] or '-'}|{to_state}|{opened}"
         evidence = {
             "status": row["status"],

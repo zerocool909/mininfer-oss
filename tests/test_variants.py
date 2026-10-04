@@ -435,7 +435,9 @@ def test_deploy_tree_splits_local_and_cloud():
 
 def test_deploy_tree_holds_no_python():
     """Manifests and profiles only — logic lives in `mininfer/` once."""
-    stray = [str(p.relative_to(ROOT)) for p in (ROOT / "deploy").rglob("*.py")
+    # `as_posix()` so the expected literal below holds on Windows too, where
+    # `str(Path)` would use `\`.
+    stray = [p.relative_to(ROOT).as_posix() for p in (ROOT / "deploy").rglob("*.py")
              if "__pycache__" not in p.parts]
     # `deploy/modal/app.py` is a host entrypoint, not engine logic; it is allowed
     # because `test_hosted_config.py` pins it to `mininfer.proxy:app` + the CLI.

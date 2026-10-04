@@ -691,9 +691,17 @@ def _port_busy(host: str, port: int) -> bool:
     free is a port uvicorn can actually take.
     """
     import socket
+    import sys
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # On POSIX, SO_REUSEADDR mirrors what asyncio/uvicorn set, so a port this
+        # calls free is one uvicorn can still take through TIME_WAIT. On Windows
+        # the same option means "share the port" (SO_REUSEPORT semantics): a
+        # probe with it set *succeeds* against a live listener, so a busy port is
+        # reported free and uvicorn then dies with WSAEADDRINUSE. Windows needs
+        # the default, exclusive bind to actually detect the holder.
+        if sys.platform != "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
         except OSError:
