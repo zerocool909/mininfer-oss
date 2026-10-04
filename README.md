@@ -860,6 +860,14 @@ Human feedback can then update the routing policy and bandit state.
 
 # Repository Layout
 
+Two documents are part of the contract rather than the prose:
+
+* [`docs/api-contract.md`](docs/api-contract.md) — which endpoints are stable,
+  which are experimental, and the deprecation policy. Its endpoint inventory is
+  parsed by `tests/test_api_contract.py`, so it cannot drift from the code.
+* [`docs/RELEASING.md`](docs/RELEASING.md) — the release checklist.
+
+
 ```text
 mininfer/
 
