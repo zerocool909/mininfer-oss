@@ -444,6 +444,15 @@ export const api = {
       body: JSON.stringify({ messages, summary }),
     }),
   providers: () => req<{ providers: ProviderInfo[] }>('/v1/providers'),
+  /** The review queue for pricing disagreements. `status=""` is the whole history. */
+  anomalies: (status = 'open') =>
+    req<{ status: string; count: number; anomalies: PricingAnomaly[] }>(
+      `/v1/economics/anomalies?status=${encodeURIComponent(status)}`),
+  decideAnomaly: (anomaly_id: string, status: 'acknowledged' | 'resolved', note = '') =>
+    req<{ ok: boolean; anomaly_id: string; status: string }>('/v1/anomalies/decide', {
+      method: 'POST',
+      body: JSON.stringify({ anomaly_id, status, note }),
+    }),
   // Reviews, anomalies and the pricing-state distribution all arrive on
   // `economics()` now, so the page reads them from the same moment as the prices
   // they describe. The `/v1/reviews` endpoint remains for API clients.
@@ -476,6 +485,23 @@ export const api = {
       error_class: string | null
       error_detail: string | null
     }>('/v1/providers/test', {
+      method: 'POST',
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    }),
+  /**
+   * Verify a provider key and, only if the provider accepts it, persist it to the
+   * server's `.env`. `status` is `already_set` when a value was already there and
+   * was deliberately left untouched.
+   */
+  saveProviderKey: (provider: string, apiKey: string) =>
+    req<{
+      ok: boolean
+      stored: boolean
+      status: 'created' | 'written' | 'already_set'
+      provider: string
+      env_var: string
+      reply: string
+    }>('/v1/keys', {
       method: 'POST',
       body: JSON.stringify({ provider, api_key: apiKey }),
     }),

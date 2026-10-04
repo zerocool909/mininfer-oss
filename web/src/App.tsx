@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, Terminal, Settings, Boxes, Command, MessageSquarePlus, Scale, SunMoon, Keyboard } from 'lucide-react'
+import { LayoutDashboard, Terminal, Settings, Boxes, Command, MessageSquarePlus, Scale, SunMoon, Keyboard, Bell } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Overview } from '@/components/Overview'
 import { ModelsTab } from '@/components/ModelsTab'
 import { Playground } from '@/components/Playground'
 import type { TestTarget } from '@/components/Playground'
 import { SettingsTab } from '@/components/SettingsTab'
+import { NotificationsDrawer } from '@/components/NotificationsDrawer'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ConnectModal } from '@/components/ConnectModal'
@@ -32,6 +33,10 @@ export function App() {
   // of any actual registry, and an engine claim that is wrong on Postgres.
   const [stats, setStats] = useState<Stats | null>(null)
   const [connectOpen, setConnectOpen] = useState(false)
+  // The review queue surface. The count is refetched whenever the drawer opens or
+  // closes, so a decision made inside it is reflected on the bell.
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [notifCount, setNotifCount] = useState(0)
   /** A model handed over from the Overview's "Test" button, consumed by the chat. */
   const [testTarget, setTestTarget] = useState<TestTarget | null>(null)
 
@@ -44,6 +49,12 @@ export function App() {
   useEffect(() => {
     api.stats().then(setStats).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    api.anomalies('open')
+      .then((a) => setNotifCount(a.count))
+      .catch(() => undefined)
+  }, [notifOpen])
 
   // Deep-linkable tabs: /#playground survives a refresh and is screenshot-able.
   useEffect(() => {
@@ -205,6 +216,23 @@ export function App() {
               </kbd>
             </Button>
 
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setNotifOpen(true)}
+              aria-label={
+                notifCount > 0 ? `Notifications, ${notifCount} open` : 'Notifications'
+              }
+              className="relative h-8 gap-1.5 rounded-lg px-2 text-[12.5px] font-medium text-muted-foreground hover:text-foreground"
+            >
+              <Bell className="h-3.5 w-3.5" />
+              {notifCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground">
+                  {notifCount > 9 ? '9+' : notifCount}
+                </span>
+              )}
+            </Button>
+
             <ThemeToggle />
           </div>
         </div>
@@ -256,6 +284,7 @@ export function App() {
       )}
 
       <ConnectModal open={connectOpen} onClose={() => setConnectOpen(false)} />
+      <NotificationsDrawer open={notifOpen} onClose={() => setNotifOpen(false)} />
       <CommandPalette commands={commands} />
     </div>
   )

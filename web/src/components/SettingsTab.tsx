@@ -28,6 +28,10 @@ export function SettingsTab() {
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({})
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
   const [savedSuccess, setSavedSuccess] = useState<Record<string, boolean>>({})
+  // Persisting a key to the server's `.env` is a separate, verified step:
+  // provider id -> 'created' | 'written' | 'already_set' | an error message.
+  const [serverSaved, setServerSaved] = useState<Record<string, string>>({})
+  const [serverSaving, setServerSaving] = useState<Record<string, boolean>>({})
 
   // Local Engine State
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
@@ -145,6 +149,36 @@ export function SettingsTab() {
       }, 2000)
     } else {
       handleRemoveKey(providerId)
+    }
+  }
+
+  /**
+   * Verify a key upstream and, only if it works, write it to the server's `.env`.
+   *
+   * The portal key alone is browser-only: `mi ingest` and the next boot never see
+   * it. This is the opt-in step that also puts it on the server. An unverified key
+   * is never written — a secret `.env` the provider rejects looks configured,
+   * which is worse than absent. A value already in `.env` is left untouched.
+   */
+  const handleSaveToServer = async (providerId: string) => {
+    const val = (keyInputs[providerId] || userKeys[providerId] || '').trim()
+    if (!val) return
+    setServerSaving((prev) => ({ ...prev, [providerId]: true }))
+    setServerSaved((prev) => {
+      const next = { ...prev }
+      delete next[providerId]
+      return next
+    })
+    try {
+      const res = await api.saveProviderKey(providerId, val)
+      setServerSaved((prev) => ({ ...prev, [providerId]: res.status }))
+    } catch (e) {
+      setServerSaved((prev) => ({
+        ...prev,
+        [providerId]: e instanceof Error ? e.message : 'failed',
+      }))
+    } finally {
+      setServerSaving((prev) => ({ ...prev, [providerId]: false }))
     }
   }
 
@@ -566,8 +600,35 @@ export function SettingsTab() {
                         >
                           {isSaved ? 'Saved!' : 'Save Key'}
                         </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            Boolean(serverSaving[provider.id]) ||
+                            !(keyInputs[provider.id] || userKeys[provider.id])
+                          }
+                          onClick={() => handleSaveToServer(provider.id)}
+                          className="h-6 text-[11px] px-2 border-border/80 text-muted-foreground hover:text-foreground"
+                          title="Verify with the provider, then write it to the server's .env so mi ingest and the next boot can use it"
+                        >
+                          <Server className="h-3 w-3 mr-1" />
+                          {serverSaving[provider.id] ? 'Verifying…' : 'To server'}
+                        </Button>
                       </div>
                     </div>
+
+                    {serverSaved[provider.id] && (
+                      <p className="text-[10px] text-muted-foreground">
+                        Server:{' '}
+                        {serverSaved[provider.id] === 'created' ||
+                        serverSaved[provider.id] === 'written'
+                          ? `saved to .env (${provider.key_env})`
+                          : serverSaved[provider.id] === 'already_set'
+                            ? 'already set in .env — left untouched'
+                            : `not saved — ${serverSaved[provider.id]}`}
+                      </p>
+                    )}
 
                     {/* Test Connectivity Result */}
                     {res && (
