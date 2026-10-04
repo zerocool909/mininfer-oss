@@ -131,6 +131,34 @@ jobs:
       - run: bash scripts/validate-phase0.sh
 
   # ---------------------------------------------------------------------------
+  # `core.autocrlf=true` on a Windows checkout rewrote `docker/entrypoint.sh` to
+  # CRLF, so the image died with `exec /app/entrypoint.sh: no such file or
+  # directory` -- the kernel was looking for an interpreter named `/bin/sh<CR>`.
+  # The subtlety is that a Linux checkout is LF no matter what, so asserting LF
+  # here would pass on the very tree that broke the image. This job has to
+  # re-materialise the working tree the way a Windows checkout does and only
+  # then assert, which puts the `.gitattributes` rule itself under test.
+  # ---------------------------------------------------------------------------
+  line-endings:
+    name: line endings (shell scripts stay LF)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: re-materialise the tree as a Windows checkout would
+        run: |
+          git rm -r --cached . > /dev/null
+          git -c core.autocrlf=true reset --hard
+      - name: shell scripts are LF
+        run: |
+          bad=$(git ls-files --eol '*.sh' | grep -v 'w/lf' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::a shell script is CRLF in the working tree; its shebang becomes '#!/bin/sh\\r' and exec fails. Pin it with .gitattributes (text eol=lf)."
+            echo "$bad"
+            exit 1
+          fi
+          echo "all tracked shell scripts stay LF under core.autocrlf=true"
+
+  # ---------------------------------------------------------------------------
   # One image, two process types. This is the leg that would have caught the
   # `COPY mininfer.db` failure on a fresh clone: there is no `mininfer.db` in a
   # clone, and the Dockerfile must build anyway.
