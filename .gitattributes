@@ -1,0 +1,13 @@
+# Line-ending policy.
+#
+# Git on Windows (`core.autocrlf=true`) rewrites text files to CRLF on checkout.
+# That is harmless for Python, but fatal for a shell script that is executed by
+# name inside the Linux image: the shebang becomes `#!/bin/sh\r`, so the kernel
+# looks for an interpreter literally named `/bin/sh<CR>` and the container dies
+# with `exec /app/entrypoint.sh: no such file or directory` -- pointing at the
+# interpreter, not the missing file, which is why it reads as a phantom.
+#
+# Shell scripts are the only tracked files here that are executed by name, so
+# they are pinned to LF in the index *and* in every working tree. The checkout
+# that builds the image and the checkout CI builds from then agree byte for byte.
+*.sh text eol=lf
