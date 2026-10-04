@@ -145,6 +145,67 @@ def test_retiring_twice_is_idempotent(tmp_path):
     s.close()
 
 
+def test_a_runtime_retirement_covers_the_gateways_other_ids_for_the_same_model(tmp_path):
+    """OpenRouter lists one model under several deploy ids.
+
+    `openrouter:m:free` and `openrouter/vendor/nvfp4:m:free` are the same weights
+    through the same gateway, and the agentic restriction is a property of the
+    model. Retiring only the id that happened to be called first leaves the sibling
+    to be rediscovered on the next request — which is how an agentic-only model
+    kept coming back, one id at a time, every time it was "removed".
+    """
+    s = Store(tmp_path / "t.db")
+    s.upsert_weights(Weights("w", "w"))
+    direct, resold = "openrouter:m:free", "openrouter/vendor/nvfp4:m:free"
+    s.upsert_deployment(Deployment(direct, "w", "openrouter", "m:free"))
+    s.upsert_deployment(Deployment(resold, "w", "openrouter/vendor/nvfp4", "m:free"))
+    s.commit()
+
+    assert proxy._retire_if_uncallable(s, direct, error_class="not_api_callable",
+                                       error_detail=DETAIL) is True
+    s.commit()
+    assert _row(s, direct)["status"] == "deprecated"
+    assert _row(s, resold)["status"] == "deprecated"
+    s.close()
+
+
+def test_a_runtime_retirement_leaves_other_gateways_serving_the_same_model(tmp_path):
+    """`weights_id` is shared across gateways, so a model-level retirement has to
+    be scoped to the gateway that refused. An HF route to the same weights is a
+    different serving path and may well be callable."""
+    s = Store(tmp_path / "t.db")
+    s.upsert_weights(Weights("w", "w"))
+    s.upsert_deployment(Deployment("openrouter:m:free", "w", "openrouter", "m:free"))
+    s.upsert_deployment(Deployment("hf/deepinfra:m:free", "w", "hf/deepinfra", "m:free"))
+    s.upsert_deployment(Deployment("deepinfra:m:free", "w", "deepinfra", "m:free"))
+    s.commit()
+
+    proxy._retire_if_uncallable(s, "openrouter:m:free", error_class="not_api_callable",
+                                error_detail=DETAIL)
+    s.commit()
+    assert _row(s, "openrouter:m:free")["status"] == "deprecated"
+    assert _row(s, "hf/deepinfra:m:free")["status"] == "live"
+    assert _row(s, "deepinfra:m:free")["status"] == "live"
+    s.close()
+
+
+def test_a_hand_retirement_still_names_one_deployment(tmp_path):
+    """`mi retire` is an operator pointing at one id, so it does not fan out —
+    the escape hatch stays predictable."""
+    s = Store(tmp_path / "t.db")
+    s.upsert_weights(Weights("w", "w"))
+    s.upsert_deployment(Deployment("openrouter:m:free", "w", "openrouter", "m:free"))
+    s.upsert_deployment(Deployment("openrouter/vendor/nvfp4:m:free", "w",
+                                   "openrouter/vendor/nvfp4", "m:free"))
+    s.commit()
+
+    s.retire_deployment("openrouter:m:free", "agentic-only", source="review")
+    s.commit()
+    assert _row(s, "openrouter:m:free")["status"] == "deprecated"
+    assert _row(s, "openrouter/vendor/nvfp4:m:free")["status"] == "live"
+    s.close()
+
+
 # ------------------------------------------------------------- the stickiness
 
 

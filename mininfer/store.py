@@ -1130,8 +1130,18 @@ class Store:
         agentic harnesses". That is not a bad key, so it must not be swallowed as
         one; it means the arm cannot be called, and the router should stop trying.
 
-        `source='review'` is a human deciding the same thing — `mi retire`. Both are
-        sticky, so the next ingest does not put the arm back.
+        A runtime discovery retires the whole *family* under the same gateway. One
+        catalogue model is listed under several deploy ids — `openrouter:m:free` and
+        `openrouter/vendor/nvfp4:m:free` are the same weights — the restriction is a
+        property of the model, and retiring only the id that happened to be called
+        first leaves the sibling to be rediscovered on the next request, which is
+        exactly how an agentic-only model kept coming back one id at a time. Routes
+        through *another* gateway are deliberately left alone: `weights_id` is
+        shared across all of them, so scoping by weights would over-retire.
+
+        `source='review'` is a human deciding the same thing — `mi retire` — and it
+        names one deployment, so it retires only that one. Both are sticky, so the
+        next ingest does not put the arm back.
 
         `status_source` is what makes it stick: the catalogue reports these models
         `live` (there is no field for the restriction), and under
@@ -1139,15 +1149,47 @@ class Store:
         """
         from .fetch import utcnow
 
-        cur = self.conn.execute(
-            "UPDATE deployments SET status='deprecated', status_reason=?,"
-            " status_source=?, status_changed_at=?"
-            " WHERE deploy_id=? AND status != 'deprecated'",
-            (reason, source, utcnow(), deploy_id),
-        )
+        targets = [deploy_id]
+        if source == "runtime":
+            targets = self._gateway_family(deploy_id) or targets
+        now = utcnow()
+        changed = 0
+        for did in targets:
+            cur = self.conn.execute(
+                "UPDATE deployments SET status='deprecated', status_reason=?,"
+                " status_source=?, status_changed_at=?"
+                " WHERE deploy_id=? AND status != 'deprecated'",
+                (reason, source, now, did),
+            )
+            changed += int(getattr(cur, "rowcount", 0) or 0)
         # No commit: the call path that discovers this (`try_fallbacks`) commits
         # once per attempt, like every other batch writer here. The CLI commits.
-        return bool(getattr(cur, "rowcount", 0))
+        return changed > 0
+
+    def _gateway_family(self, deploy_id: str) -> list[str]:
+        """Every deploy id for the same model served through the same gateway.
+
+        `provider` is the gateway, plus — for a gateway that resells named
+        upstreams — the upstream: `openrouter` and `openrouter/thinkingmachines/nvfp4`
+        both route through OpenRouter, so the head identifies the gateway, and
+        `provider_model_id` identifies the model within it. Returning `[]` when the
+        row is unknown lets the caller fall back to the single id it was given.
+        """
+        row = self.conn.execute(
+            "SELECT provider, provider_model_id FROM deployments WHERE deploy_id=?",
+            (deploy_id,),
+        ).fetchone()
+        if row is None or not row["provider_model_id"]:
+            return []
+        head = (row["provider"] or "").split("/")[0]
+        return [
+            r["deploy_id"]
+            for r in self.conn.execute(
+                "SELECT deploy_id, provider FROM deployments WHERE provider_model_id=?",
+                (row["provider_model_id"],),
+            )
+            if (r["provider"] or "").split("/")[0] == head
+        ]
 
     def enable_deployment(self, deploy_id: str) -> bool:
         """Clear a retirement, so an operator can override it.
