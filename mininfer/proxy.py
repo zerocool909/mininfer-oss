@@ -1119,6 +1119,31 @@ async def _probe_provider(provider_id: str, custom_key: str, key_source: str = "
     return out
 
 
+@app.get("/v1/keys", tags=["operator"])
+def list_provider_keys() -> dict:
+    """Which providers are configured server-side, and under which variable.
+
+    Presence only, never the value. `/v1/providers` carries this too, but it also
+    carries every model's catalogue, so a client that only needs "is groq
+    configured?" should not download hundreds of OpenRouter rows to find out.
+
+    `configured` is the *running process's* view: it reflects the environment it
+    started with, plus any key `POST /v1/keys` has since written.
+    """
+    local = {"ollama", "llamacpp"}
+    return {
+        "providers": [
+            {
+                "id": pid,
+                "env_var": key_env,
+                "configured": bool(key_env and os.environ.get(key_env)),
+                "is_local": pid in local,
+            }
+            for pid, (_, key_env, _) in ENDPOINTS.items()
+        ]
+    }
+
+
 @app.post("/v1/keys", openapi_extra=_api_schema.SET_KEY, tags=["operator"])
 async def set_provider_key(request: Request) -> dict:
     """Verify a provider key, and only then persist it to the server's `.env`.

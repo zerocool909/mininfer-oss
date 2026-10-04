@@ -97,10 +97,22 @@ def set_env_var(path: str | pathlib.Path, key: str, value: str, *,
         lines.append(rendered)
 
     tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    body = "\n".join(lines) + "\n"
+    tmp.write_text(body, encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)
     except OSError:                       # Windows has no meaningful mode bits
         pass
-    os.replace(tmp, p)
+    try:
+        os.replace(tmp, p)
+    except OSError:
+        # A bind-mounted `.env` is a mount point, and Linux refuses to rename over
+        # one (EBUSY) — which is exactly how the container sees the repo's file.
+        # The mount leaves no second inode to swap in, so write in place: not
+        # atomic, but the only option, and it keeps "To server" working in Docker.
+        p.write_text(body, encoding="utf-8")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     return "created" if created else "written"

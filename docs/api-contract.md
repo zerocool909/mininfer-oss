@@ -70,6 +70,7 @@ GET    /v1/savings                                 stable
 GET    /v1/stats                                   experimental
 GET    /v1/plan                                    experimental
 GET    /v1/providers                               experimental
+GET    /v1/keys                                    experimental
 POST   /v1/providers/test                          experimental
 POST   /v1/keys                                    experimental
 GET    /v1/pushed-models                           experimental

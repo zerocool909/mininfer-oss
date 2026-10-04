@@ -60,6 +60,18 @@ services:
     volumes:
       - mininfer_data:/data
       - ../../.certs:/certs:ro
+      # A key saved from the dashboard ("To server") is written to the server's
+      # `.env`. Binding the repo's copy means it lands on the host and survives a
+      # `docker compose up` recreate, instead of living in the container's writable
+      # layer and vanishing with it. `create_host_path: false` is deliberate:
+      # Docker's default creates a *directory* when `../../.env` is missing, and a
+      # directory where a file is expected breaks the app on import. Run
+      # `cp .env.example .env` first — a missing file then fails loudly here.
+      - type: bind
+        source: ../../.env
+        target: /app/.env
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
       interval: 30s
@@ -124,6 +136,14 @@ services:
       # Same volume as the web service: one registry, two processes.
       - mininfer_data:/data
       - ../../.certs:/certs:ro
+      # Read the same `.env` the web service writes, so a key saved from the
+      # dashboard is visible to `mi refresh` on its next iteration (each `mi`
+      # invocation is a fresh process and calls `load_env`).
+      - type: bind
+        source: ../../.env
+        target: /app/.env
+        bind:
+          create_host_path: false
 
 volumes:
   mininfer_data:

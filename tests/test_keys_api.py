@@ -66,6 +66,22 @@ def test_a_value_that_needs_quoting_is_quoted(tmp_path):
     assert 'ODD="a b#c"' in f.read_text(encoding="utf-8")
 
 
+def test_a_mount_point_falls_back_to_an_in_place_write(tmp_path, monkeypatch):
+    """A bind-mounted `.env` is a mount point: Linux refuses to rename over it
+    (`EBUSY`), so the atomic swap cannot be used. The write still has to land, or
+    "To server" is dead in the container."""
+    f = tmp_path / ".env"
+    f.write_text("GROQ_API_KEY=\n", encoding="utf-8")
+
+    def busy(src, dst):
+        raise OSError(16, "Device or resource busy")
+    monkeypatch.setattr(env.os, "replace", busy)
+
+    assert env.set_env_var(f, "GROQ_API_KEY", "gsk_1") == "written"
+    assert "GROQ_API_KEY=gsk_1" in f.read_text(encoding="utf-8")
+    assert not (tmp_path / ".env.tmp").exists()
+
+
 # ------------------------------------------------------- the endpoint
 
 
@@ -135,3 +151,30 @@ def test_an_unknown_provider_is_rejected(tmp_path, monkeypatch):
 def test_a_missing_key_is_rejected(tmp_path, monkeypatch):
     r = _client(tmp_path, monkeypatch).post("/v1/keys", json={"provider": "groq"})
     assert r.status_code == 400
+
+
+# --------------------------------------------------- listing what is configured
+
+
+def test_listing_keys_reports_presence_and_never_the_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    body = _client(tmp_path, monkeypatch).get("/v1/keys").json()
+    by_id = {p["id"]: p for p in body["providers"]}
+    assert by_id["groq"]["env_var"] == "GROQ_API_KEY"
+    assert by_id["groq"]["configured"] is False
+    assert "api_key" not in by_id["groq"]
+    assert by_id["ollama"]["is_local"] is True
+
+
+def test_a_stored_key_shows_as_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(proxy, "ENV_PATH", tmp_path / ".env")
+
+    async def accepted(provider, key, key_source="none"):
+        return {"ok": True, "reply": "ok", "error_class": None, "error_detail": None}
+    monkeypatch.setattr(proxy, "_probe_provider", accepted)
+
+    client = _client(tmp_path, monkeypatch)
+    client.post("/v1/keys", json={"provider": "groq", "api_key": "gsk_x"})
+    by_id = {p["id"]: p for p in client.get("/v1/keys").json()["providers"]}
+    assert by_id["groq"]["configured"] is True

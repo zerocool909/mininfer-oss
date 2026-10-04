@@ -43,7 +43,19 @@ set -a; . config/profiles/local.env; set +a
 mi proxy
 ```
 
-Provider keys go in `.env` (gitignored — see `.env.example`).
+Provider keys go in `.env` (gitignored — see `.env.example`). Create it before the
+container starts — it is bind-mounted at `/app/.env`, so a key saved from the
+dashboard's **To server** action is written to the repo's `.env` and survives a
+`docker compose up` recreate:
+
+```bash
+cp .env.example .env
+```
+
+On a Linux host the container runs as uid 1001, so `.env` has to be writable by
+that user for **To server** to succeed (`chmod 666 .env`, or accept that the write
+is refused and set the key on the host instead). On Docker Desktop the file-sharing
+layer handles it.
 
 ## The one place the container differs
 
