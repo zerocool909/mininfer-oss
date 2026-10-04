@@ -582,7 +582,13 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
                           <div className="flex flex-col items-center justify-center gap-1.5">
                             <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
                             <span className="text-xs font-medium">No declared quota buckets</span>
-                            <span className="text-[11px]">Deployments operate without active limit caps</span>
+                            <span className="max-w-[36ch] text-[11px]">
+                              Free-tier limits are not seeded, so nothing caps usage yet. Run{' '}
+                              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px] text-foreground">
+                                mi quota seed
+                              </code>{' '}
+                              to import them.
+                            </span>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -745,7 +751,14 @@ export function Overview({ onTestModel }: { onTestModel?: (deployId: string, tas
                         <TableCell colSpan={4} className="py-16 text-center text-muted-foreground">
                           <div className="flex flex-col items-center justify-center gap-1.5">
                             <ShieldAlert className="h-6 w-6 opacity-30 text-muted-foreground" />
-                            <span className="text-xs font-medium">no declared quota buckets</span>
+                            <span className="text-xs font-medium">No declared quota buckets</span>
+                            <span className="max-w-[36ch] text-[11px]">
+                              Free-tier limits are not seeded, so nothing caps usage yet. Run{' '}
+                              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px] text-foreground">
+                                mi quota seed
+                              </code>{' '}
+                              to import them.
+                            </span>
                           </div>
                         </TableCell>
                       </TableRow>
