@@ -1,11 +1,17 @@
-# min(Infer)
+<div align="center">
+
+<img src="docs/assets/mininfer-logo.svg" alt="min(Infer)" width="460">
+
+**Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
 
 [![CI](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-> **Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
+</div>
 
-MinInfer is an open-source **model intelligence registry and economic constraint router**.
+min(Infer) is an open-source **model intelligence registry and economic constraint router**.
 
 It continuously collects evidence from provider APIs, model catalogs, pricing pages, benchmark sources, and other public webpages; normalizes that evidence into a deployment registry; and uses task intent, hard capability constraints, quality thresholds, availability, quotas, and cost-per-success to select a model for each request.
 
@@ -13,9 +19,64 @@ The goal is simple:
 
 **Don't ask "Which model is best?" Ask "Which model is capable enough for this task at the lowest effective cost?"**
 
+|  |  |
+| :-- | :-- |
+| 🆓 **Free first** | Routes to free-tier deployments whenever they clear the task's bar, and pays only when they can't. |
+| 🧾 **Evidence, not vibes** | Every price, quota and capability is a time-stamped record with source provenance. |
+| 🎯 **Task-aware** | Hard capability gates and a quality floor — not one blended score. |
+| 🔍 **Explainable** | Every decision names the winner *and* why each other candidate lost. |
+| 🔒 **Your keys, your spend** | Runs on user-supplied credentials; prompt and response bodies are not stored by default. |
+
+<details>
+<summary><b>Table of contents</b></summary>
+
+- [How a request is routed](#how-a-request-is-routed)
+- [Why min(Infer)?](#why-mininfer)
+- [Core Principles](#core-principles)
+- [Key Features](#key-features)
+- [Quick Start](#quick-start)
+- [CLI](#cli)
+- [Running the Proxy](#running-the-proxy)
+- [Arena Comparison](#arena-comparison)
+- [Architecture](#architecture)
+- [Repository Layout](#repository-layout)
+- [Sources and Providers](#sources-and-providers)
+- [Production Deployment](#production-deployment)
+- [Security and Privacy](#security-and-privacy)
+- [Evidence Provenance](#evidence-provenance)
+- [What min(Infer) Is Not](#what-mininfer-is-not)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+</details>
+
 ---
 
-## Why MinInfer?
+## How a request is routed
+
+```mermaid
+flowchart TD
+    P([Prompt]) --> IC[Intent classifier]
+    IC --> TP[Task profile]
+    TP --> CG{Capability gates}
+    CG -- fail --> RJ[Candidate rejected]
+    CG -- pass --> QF{Quality floor}
+    QF -- fail --> RJ
+    QF -- pass --> FQ{Free quota available?}
+    FQ -- yes --> WIN[Cheapest capable deployment]
+    FQ -- no --> EC{Economically eligible?}
+    EC -- yes --> WIN
+    EC -- no --> RJ
+    WIN --> RT([Route request])
+    RT --> OT[Outcome telemetry]
+    OT --> FB[Bandit + judge feedback]
+    FB -.->|updates priors| QF
+```
+
+---
+
+## Why min(Infer)?
 
 The LLM ecosystem changes constantly.
 
@@ -23,7 +84,7 @@ Models are released, deprecated, repriced, rate-limited, moved between providers
 
 A model can also have very different economics depending on where it is served.
 
-MinInfer treats these as separate concerns:
+min(Infer) treats these as separate concerns:
 
 ```text
 Model / Weights
@@ -50,7 +111,7 @@ Task Constraints
 Cheapest Capable Deployment
 ```
 
-This makes MinInfer less of a traditional load balancer and more of a **model decision engine backed by continuously refreshed evidence**.
+This makes min(Infer) less of a traditional load balancer and more of a **model decision engine backed by continuously refreshed evidence**.
 
 ---
 
@@ -81,7 +142,7 @@ The same model can therefore have different price, latency, availability, quota,
 
 A deployment is not automatically "free" just because its price is currently `$0`.
 
-MinInfer distinguishes between:
+min(Infer) distinguishes between:
 
 ```text
 free_quota      recurring zero-price allowance
@@ -93,7 +154,7 @@ unknown         economics not yet verified
 
 A free deployment with exhausted quota is not economically equivalent to a genuinely available free deployment.
 
-MinInfer therefore tracks:
+min(Infer) therefore tracks:
 
 * request limits
 * token limits
@@ -139,7 +200,7 @@ Hugging Face
 
 Those are different gateways but potentially the same underlying failure domain.
 
-MinInfer therefore attempts to separate fallbacks across:
+min(Infer) therefore attempts to separate fallbacks across:
 
 1. gateway/provider
 2. upstream infrastructure
@@ -151,7 +212,7 @@ The router reports the independence it actually achieved instead of assuming it.
 
 ### 5. Don't collapse everything into one score
 
-MinInfer deliberately avoids a simple weighted sum such as:
+min(Infer) deliberately avoids a simple weighted sum such as:
 
 ```text
 quality * 0.5
@@ -184,7 +245,7 @@ Falls back to paid deployments when free capacity is unavailable or when the tas
 
 ### Evidence-Driven Model Registry
 
-MinInfer ingests model and deployment evidence from:
+min(Infer) ingests model and deployment evidence from:
 
 * provider APIs
 * public model catalogs
@@ -217,7 +278,7 @@ A fast heuristic classifier is used first, with optional model-based classificat
 
 ### Conservative Quality Estimation
 
-MinInfer combines benchmark evidence with observed outcomes.
+min(Infer) combines benchmark evidence with observed outcomes.
 
 The router uses a conservative lower-bound estimate rather than allowing a small number of lucky successful requests to immediately promote an untested deployment.
 
@@ -225,7 +286,7 @@ Where Wilson-based estimation is used, observed evidence and benchmark priors ar
 
 ### Reliability-Aware Fallbacks
 
-MinInfer records:
+min(Infer) records:
 
 * latency
 * timeouts
@@ -239,7 +300,7 @@ This allows routing decisions to account for more than nominal token price.
 
 ### Contextual Bandit
 
-Optional Thompson-sampling exploration allows MinInfer to learn which deployments perform well for specific task families.
+Optional Thompson-sampling exploration allows min(Infer) to learn which deployments perform well for specific task families.
 
 The bandit can incorporate:
 
@@ -253,7 +314,7 @@ Human preference can be submitted through the Arena interface.
 
 ### OpenAI-Compatible Proxy
 
-MinInfer exposes an OpenAI-compatible endpoint:
+min(Infer) exposes an OpenAI-compatible endpoint:
 
 ```text
 POST /v1/chat/completions
@@ -267,7 +328,7 @@ Applications can request:
 }
 ```
 
-and let MinInfer select the deployment dynamically.
+and let min(Infer) select the deployment dynamically.
 
 ### Arena Compare Mode
 
@@ -406,7 +467,7 @@ python3 -m mininfer stats
 > **You need one provider key before anything routes.** The catalogue builds with
 > no credentials — that is what Tier 0 is for — but no provider serves inference
 > without one, so `mi route` reports `0 eligible` until a key is exported. This is
-> the design, not a fault: MinInfer never needs *your* key, it needs *a* key.
+> the design, not a fault: min(Infer) never needs *your* key, it needs *a* key.
 >
 > Groq has the fastest free tier to obtain (<https://console.groq.com/keys>):
 >
@@ -524,7 +585,7 @@ export GROQ_API_KEY="..."
 export GEMINI_API_KEY="..."
 ```
 
-Start MinInfer:
+Start min(Infer):
 
 ```bash
 mi proxy --port 8765
@@ -549,7 +610,7 @@ The dashboard includes:
 
 ## Bring your own keys
 
-MinInfer never needs to hold a provider key. There are two ways to supply one,
+min(Infer) never needs to hold a provider key. There are two ways to supply one,
 and they compose:
 
 **Operator keys (environment).** Set any provider's variable and that provider
@@ -668,7 +729,7 @@ want to try it.
 
 ## TLS: corporate proxies and corporate roots
 
-**A normal network needs no configuration.** MinInfer verifies TLS against
+**A normal network needs no configuration.** min(Infer) verifies TLS against
 `certifi` (the Mozilla root store), which already trusts every public provider,
 so a fresh checkout talks to them out of the box. Nothing here is device- or
 machine-specific.
@@ -682,7 +743,7 @@ unable to get local issuer certificate
 
 That means your network does TLS interception, and the intercepting root CA sits
 in the OS trust store where `certifi` cannot see it. Generate a bundle **on that
-machine** and point MinInfer at it:
+machine** and point min(Infer) at it:
 
 ```bash
 ./scripts/make_ca_bundle.sh                    # writes .certs/bundle.pem
@@ -690,7 +751,7 @@ export MI_CA_BUNDLE="$PWD/.certs/bundle.pem"   # or put it in .env
 ```
 
 `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` are honoured too, so a
-machine already configured for Python or `curl` needs nothing MinInfer-specific.
+machine already configured for Python or `curl` needs nothing min(Infer)-specific.
 
 **Why this is never committed.** The bundle contains *your* network's
 interception root — a trust anchor specific to your organisation. Committing it
@@ -700,7 +761,7 @@ generates its own if it needs one. Never disable verification instead.
 
 ---
 
-# Using MinInfer with OpenAI Clients
+# Using min(Infer) with OpenAI Clients
 
 ## Python
 
@@ -936,7 +997,7 @@ web/
 
 # Sources and Providers
 
-MinInfer is designed to ingest information from multiple classes of sources.
+min(Infer) is designed to ingest information from multiple classes of sources.
 
 ### Public catalogs and gateways
 
@@ -977,7 +1038,7 @@ Examples include:
 * vLLM
 * LM Studio
 
-Provider pricing, quotas, model availability, and free-tier policies can change. MinInfer therefore treats provider information as **time-stamped evidence**, not immutable truth.
+Provider pricing, quotas, model availability, and free-tier policies can change. min(Infer) therefore treats provider information as **time-stamped evidence**, not immutable truth.
 
 Run:
 
@@ -991,7 +1052,7 @@ to inspect the current configured source state.
 
 # Production Deployment
 
-MinInfer can run as a containerized service with the API and web application packaged together.
+min(Infer) can run as a containerized service with the API and web application packaged together.
 
 ```bash
 docker compose up -d
@@ -1009,7 +1070,7 @@ Deployment examples are documented in [`deploy/README.md`](deploy/README.md).
 
 # Security and Privacy
 
-MinInfer is designed to run with user-owned provider credentials.
+min(Infer) is designed to run with user-owned provider credentials.
 
 ### Important
 
@@ -1061,9 +1122,9 @@ rather than blindly committing large bodies of third-party webpage content.
 
 ---
 
-# What MinInfer Is Not
+# What min(Infer) Is Not
 
-MinInfer is not:
+min(Infer) is not:
 
 * a benchmark leaderboard
 * a universal "best model" ranking
@@ -1135,3 +1196,9 @@ SECURITY.md
 # License
 
 MIT
+
+---
+
+<p align="center">
+  <sub>If min(Infer) saves you money, a ⭐ helps other people find it.</sub>
+</p>
