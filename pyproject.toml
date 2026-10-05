@@ -23,6 +23,12 @@ cloud = ["psycopg2-binary>=2.9", "redis>=5.0"]
 # platform-specific so it cannot live in the `--universal` lock. The seam is
 # declared here so Phase 2.0 can opt in without a code change.
 understanding = ["gliner2[local]>=2.0"]
+# Verify TLS against the OS trust store (macOS Keychain, the Windows cert store,
+# p11-kit on Linux) instead of certifi, so a root the machine already trusts is
+# honoured without building, shipping or committing a CA bundle. Optional: absent
+# this, `fetch._verify` falls back to certifi and a normal network is unaffected.
+# Not in the default image or `requirements.lock`.
+tls = ["truststore>=0.8"]
 
 [project.scripts]
 mi = "mininfer.cli:main"

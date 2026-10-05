@@ -1262,7 +1262,7 @@ async def test_provider_connectivity(request: Request) -> dict:
     # If provider is Google and we have an API key, discover live models dynamically
     if provider_id == "google" and custom_key:
         try:
-            async with httpx.AsyncClient(timeout=4.0) as http_c:
+            async with httpx.AsyncClient(timeout=4.0, verify=_tls_verify()) as http_c:
                 g_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={custom_key}"
                 g_res = await http_c.get(g_url)
                 if g_res.status_code == 200:

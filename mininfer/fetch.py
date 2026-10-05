@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import pathlib
+import ssl
 import time
 from dataclasses import dataclass
 
@@ -32,23 +33,44 @@ _CA_BUNDLE_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
                    "CURL_CA_BUNDLE")
 
 
-def _verify() -> str | bool:
-    """TLS trust store: a bundle path, or `True` for httpx's own default.
+def _os_trust_context() -> "ssl.SSLContext | None":
+    """An `ssl.SSLContext` backed by the OS trust store, or `None` if unavailable.
+
+    Optional by design — it needs the `tls` extra, so a default install keeps
+    verifying against `certifi` and nothing changes on a normal network. When it
+    is present, Python trusts what the machine trusts (the macOS Keychain, the
+    Windows cert store, p11-kit on Linux), which is what a browser and `curl`
+    already do. A root that lives in the OS store and not in `certifi` is then
+    trusted with no bundle file to build, ship, or commit.
+
+    Kept as its own function so it can be stubbed in tests.
+    """
+    try:
+        import truststore
+    except ImportError:
+        return None
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+def _verify() -> "str | bool | ssl.SSLContext":
+    """TLS trust: an explicit bundle path, the OS store, or httpx's default.
 
     **A normal network needs no configuration.** With nothing set this returns
     `True`, so httpx verifies against `certifi` (the Mozilla roots), which already
     trusts every public provider. Nothing here is machine- or device-specific.
 
-    A bundle is only needed when Python's trust store lacks a root that another
-    client already trusts. Point one of `_CA_BUNDLE_VARS` at a PEM bundle to add
-    those anchors; never disable verification instead. `.certs/` is gitignored
-    because such a bundle is machine-specific.
+    Two ways to add a root that `certifi` does not carry, in order:
+
+    1. point one of `_CA_BUNDLE_VARS` at a PEM bundle — explicit and portable;
+    2. install the `tls` extra and trust the OS store instead — no file at all.
+
+    Never disable verification.
     """
     for name in _CA_BUNDLE_VARS:
         value = os.environ.get(name)
         if value and pathlib.Path(value).exists():
             return value
-    return True
+    return _os_trust_context() or True
 
 
 

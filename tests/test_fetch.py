@@ -11,6 +11,7 @@ of the cache key" — the directory is already keyed by source *and* URL hash.
 """
 from __future__ import annotations
 
+import ssl
 import time
 
 import httpx
@@ -152,7 +153,20 @@ def test_a_normal_network_needs_no_ca_configuration(monkeypatch):
     machine-specific file is required for the common case.
     """
     _clear_ca(monkeypatch)
+    monkeypatch.setattr(F, "_os_trust_context", lambda: None)
     assert F._verify() is True
+
+
+def test_the_os_trust_store_is_used_when_the_extra_is_installed(monkeypatch):
+    """The file-less alternative to a CA bundle: trust what the OS trusts.
+
+    `truststore` is optional, so this skips on a default install rather than
+    failing; with the `tls` extra it must return a context, not `True`.
+    """
+    _clear_ca(monkeypatch)
+    if F._os_trust_context() is None:
+        pytest.skip("truststore is not installed (the `tls` extra)")
+    assert isinstance(F._verify(), ssl.SSLContext)
 
 
 @pytest.mark.parametrize("var", ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"])
@@ -172,6 +186,7 @@ def test_the_standard_ca_variables_are_honoured(monkeypatch, tmp_path, var):
 def test_a_missing_bundle_path_falls_back_to_the_default(monkeypatch):
     """A stale path must not be handed to httpx — that would fail every request."""
     _clear_ca(monkeypatch)
+    monkeypatch.setattr(F, "_os_trust_context", lambda: None)
     monkeypatch.setenv("SSL_CERT_FILE", "/does/not/exist.pem")
     assert F._verify() is True
 
