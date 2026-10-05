@@ -4,7 +4,10 @@
 
 **Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
 
+**[Live docs & routing explainer →](https://zerocool909.github.io/mininfer-oss/)**
+
 [![CI](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-live-1D9E75)](https://zerocool909.github.io/mininfer-oss/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
