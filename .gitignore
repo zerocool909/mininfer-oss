@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# macOS Finder metadata.
+.DS_Store
+
 # Registry DB and the raw evidence lake (re-derivable; large).
 *.db
 *.db-journal

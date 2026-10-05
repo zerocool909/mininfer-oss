@@ -1003,11 +1003,7 @@ Health check:
 curl http://localhost:8765/healthz
 ```
 
-Deployment examples are documented in:
-
-```text
-cloud_deploy.md
-```
+Deployment examples are documented in [`deploy/README.md`](deploy/README.md).
 
 ---
 

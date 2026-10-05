@@ -49,7 +49,7 @@ MinInfer, with access control on — the cloud shape without the cloud.
   environment and orchestration, so a second Dockerfile would be a copy that
   drifts — the exact failure this layout exists to avoid;
 - `docker build .` and `docker compose up` are what everyone already types, and
-  `cloud_deploy.md` documents them. The root `docker-compose.yml` is now a
+  this README documents them. The root `docker-compose.yml` is now a
   one-line `include:` of `deploy/local/docker-compose.yml`, so the command is
   unchanged and there is still only one definition of the stack.
 

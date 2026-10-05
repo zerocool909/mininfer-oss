@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MinInfer — minimum sufficient inference</title>
+<meta name="description" content="An open-source model intelligence registry and economic constraint router. Find the cheapest capable model for every task. Prefer free. Pay only when necessary.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<style>
+  :root{
+    --paper:#fbfaf7; --ink:#14171A; --mute:#5f6670; --rule:#e3e0d8; --wash:#f2efe8;
+    --teal:#1D9E75; --teal-ink:#0e6b4d; --warn:#b4531a;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:Inter,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--paper:#0f1214;--ink:#f1f2f4;--mute:#9aa2ad;--rule:#232930;--wash:#161b1f;--teal:#2bc08f;--teal-ink:#5fd8b0;--warn:#e08a4f}
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:inherit}
+  ::selection{background:var(--teal);color:#fff}
+  .col{max-width:1080px;margin:0 auto;padding:0 28px}
+
+  /* masthead */
+  .mast{display:flex;align-items:center;justify-content:space-between;padding:22px 0;border-bottom:1px solid var(--rule)}
+  .mast img{height:64px;width:auto;display:block}
+  .mast nav{display:flex;gap:26px;font-size:14px}
+  .mast nav a{text-decoration:none;color:var(--mute)}
+  .mast nav a:hover{color:var(--ink)}
+  .mast nav a.gh{color:var(--ink);border-bottom:1px solid var(--teal)}
+
+  /* hero */
+  .hero{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;padding:72px 0 72px}
+  .eyebrow{font:500 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--teal-ink);margin:0 0 26px}
+  h1{font:400 clamp(36px,5.2vw,60px)/1.06 var(--serif);letter-spacing:-.02em;margin:0 0 26px}
+  h1 em{font-style:italic;color:var(--teal-ink)}
+  .dek{font-size:19px;color:var(--mute);max-width:34em;margin:0 0 32px}
+  .cta{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .btn{font:500 15px/1 var(--sans);padding:14px 20px;border-radius:6px;text-decoration:none;background:var(--ink);color:var(--paper);border:1px solid var(--ink)}
+  .btn:hover{background:var(--teal-ink);border-color:var(--teal-ink)}
+  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
+  .btn.ghost:hover{border-color:var(--ink);background:transparent}
+  .curve{width:100%;max-width:520px;height:auto;display:block;justify-self:end;overflow:visible}
+  .curve .draw{stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.4s .2s cubic-bezier(.3,.7,.2,1) forwards}
+  .curve .dot{opacity:0;animation:pop .5s 1.4s forwards}
+  .curve .ghosts{opacity:0;animation:pop .8s 1.8s forwards}
+  @keyframes draw{to{stroke-dashoffset:0}}
+  @keyframes pop{to{opacity:1}}
+  @media (prefers-reduced-motion:reduce){.curve .draw{animation:none;stroke-dashoffset:0}.curve .dot,.curve .ghosts{animation:none;opacity:1}}
+
+  /* sections */
+  section{padding:76px 0;border-top:1px solid var(--rule)}
+  .sec{display:grid;grid-template-columns:200px 1fr;gap:56px}
+  .sec>aside{font:500 12px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);padding-top:10px}
+  .sec>aside b{display:block;color:var(--teal-ink);font-weight:500;margin-bottom:4px}
+  h2{font:400 clamp(28px,3.4vw,40px)/1.15 var(--serif);letter-spacing:-.015em;margin:0 0 22px}
+  p{margin:0 0 18px}
+  .lede{font-size:19px;max-width:38em}
+  .mut{color:var(--mute)}
+  code,.mono{font-family:var(--mono);font-size:.88em}
+  p code{background:var(--wash);padding:2px 6px;border-radius:4px}
+
+  /* ledger table */
+  .ledger{width:100%;border-collapse:collapse;margin:26px 0 12px;font-variant-numeric:tabular-nums}
+  .ledger th{font:500 11px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);text-align:right;padding:0 14px 10px;border-bottom:2px solid var(--ink)}
+  .ledger th:first-child,.ledger td:first-child{text-align:left;padding-left:0}
+  .ledger td{padding:14px;border-bottom:1px solid var(--rule);text-align:right;font:15px/1.4 var(--mono)}
+  .ledger td:first-child{font-family:var(--sans)}
+  .ledger td small{display:block;color:var(--mute);font:13px/1.4 var(--sans)}
+  .ledger tr.win td{background:linear-gradient(90deg,color-mix(in srgb,var(--teal) 12%,transparent),transparent)}
+  .ledger tr.win td:last-child{color:var(--teal-ink);font-weight:600}
+  .ledger tr.out td{color:var(--mute)}
+  .ledger tr.out td:last-child{color:var(--warn)}
+  .note{font-size:14px;color:var(--mute);max-width:46em}
+
+  /* confidence instrument */
+  .gauge{border:1px solid var(--rule);background:var(--wash);border-radius:8px;padding:28px;margin:26px 0 8px}
+  .gauge .row{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:26px}
+  .gauge label{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);display:block;margin-bottom:10px}
+  .gauge input[type=number]{font:500 22px/1 var(--mono);width:120px;padding:10px 12px;background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:6px}
+  .gauge input:focus{outline:2px solid var(--teal);outline-offset:1px}
+  .bar{position:relative;height:14px;background:var(--rule);border-radius:7px;margin:34px 0 10px}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:7px;background:var(--warn);transition:width .35s ease,background .35s}
+  .bar .fill.ok{background:var(--teal)}
+  .bar .naive{position:absolute;top:-6px;width:2px;height:26px;background:var(--ink);transition:left .35s ease}
+  .bar .floor{position:absolute;top:-10px;bottom:-10px;border-left:2px dashed var(--mute)}
+  .bar .tag{position:absolute;font:11px/1 var(--mono);color:var(--mute);white-space:nowrap}
+  .readout{display:flex;gap:34px;flex-wrap:wrap;font:14px/1.5 var(--mono);margin-top:22px}
+  .readout b{display:block;font:400 30px/1.1 var(--serif);letter-spacing:-.01em;margin-top:2px}
+  .verdict{margin-top:18px;font-size:15px}
+  .verdict strong{color:var(--teal-ink)}
+  .verdict.no strong{color:var(--warn)}
+
+  /* trace */
+  .trace{background:#0f1214;color:#d7dde4;border-radius:8px;padding:24px 26px;font:13.5px/1.75 var(--mono);overflow-x:auto;margin:26px 0 0}
+  .trace .c{color:#6e7885}.trace .g{color:#4fd1a1}.trace .w{color:#e9a36b}.trace .b{color:#8fb7ff}
+  ol.steps{list-style:none;padding:0;margin:30px 0 0;counter-reset:s}
+  ol.steps li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:6px;padding:20px 0;border-top:1px solid var(--rule)}
+  ol.steps li:first-child{border-top:0}
+  ol.steps li::before{content:counter(s,decimal-leading-zero);font:500 13px/2 var(--mono);color:var(--teal-ink)}
+  ol.steps h3{font:600 17px/1.4 var(--sans);margin:0 0 4px}
+  ol.steps p{margin:0;color:var(--mute);font-size:16px}
+
+  /* principles */
+  dl.pr{margin:30px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:0 48px}
+  dl.pr div{padding:22px 0;border-top:1px solid var(--rule)}
+  dl.pr dt{font:600 16px/1.4 var(--sans);margin-bottom:6px}
+  dl.pr dd{margin:0;color:var(--mute);font-size:15.5px}
+  dl.pr dd code{color:var(--ink)}
+
+  .pull{font:italic 400 clamp(24px,3vw,32px)/1.3 var(--serif);border-left:3px solid var(--teal);padding:4px 0 4px 26px;margin:34px 0;max-width:30em}
+
+  /* code */
+  pre.cmd{background:var(--wash);border:1px solid var(--rule);border-radius:8px;padding:20px 22px;overflow-x:auto;font:14px/1.7 var(--mono);margin:18px 0}
+  pre.cmd .c{color:var(--mute)}
+
+  footer{border-top:1px solid var(--rule);padding:34px 0 60px;color:var(--mute);font-size:14px}
+  footer .col{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+  footer a{text-decoration:none;border-bottom:1px solid var(--rule)}
+  footer a:hover{border-color:var(--teal)}
+
+  @media (max-width:860px){
+    .hero{grid-template-columns:1fr;gap:34px;padding:52px 0 48px}
+    .sec{grid-template-columns:1fr;gap:10px}
+    dl.pr{grid-template-columns:1fr}
+    .mast nav a:not(.gh){display:none}
+    .ledger th,.ledger td{padding-left:8px;padding-right:8px}
+    .ledger .hide-s{display:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="col">
+  <header class="mast">
+    <a href="#top" aria-label="MinInfer"><img src="assets/mininfer-logo.svg" alt="MinInfer"></a>
+    <nav>
+      <a href="#idea">The idea</a>
+      <a href="#ledger">Ledger</a>
+      <a href="#trust">Trust</a>
+      <a href="#route">Routing</a>
+      <a href="#run">Run it</a>
+      <a class="gh" href="https://github.com/zerocool909/mininfer-oss">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero" id="top">
+    <div>
+      <p class="eyebrow">Open-source · model intelligence registry</p>
+      <h1>Don’t ask which model is best. Ask which is <em>capable enough</em>, at the lowest effective cost.</h1>
+      <p class="dek">MinInfer collects evidence from provider APIs, catalogs, pricing pages and benchmarks, then routes each request to the cheapest deployment that clears the bar for that task. Prefer free. Pay only when necessary.</p>
+      <div class="cta">
+        <a class="btn" href="#run">Run it locally</a>
+        <a class="btn ghost" href="https://github.com/zerocool909/mininfer-oss">Read the source</a>
+      </div>
+    </div>
+
+    <!-- The logo mark itself, enlarged: same geometry (dashed threshold, thick curve, teal dot,
+         dotted escalation path to hollow nodes), drawn in the logo's own 120-unit space. -->
+    <svg class="curve" viewBox="-6 -4 140 130" role="img" aria-label="The MinInfer mark: a thick capability curve climbs to a dashed quality threshold. A teal dot marks the cheapest capable point. A faded dotted path escalates to larger hollow nodes.">
+      <path d="M4 62H116" fill="none" stroke="currentColor" stroke-opacity=".4" stroke-width="2.5" stroke-dasharray="6 6" stroke-linecap="round"/>
+      <path class="draw" pathLength="1" d="M10 108Q44 108 60 62" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round"/>
+      <g class="dot">
+        <circle cx="60" cy="62" r="19" fill="#1D9E75" opacity=".2"/>
+        <circle cx="60" cy="62" r="10.5" fill="#1D9E75"/>
+      </g>
+      <g class="ghosts" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-linecap="round">
+        <path d="M69.7 52.7L79.9 42.9" stroke-width="4" stroke-dasharray="1 8"/>
+        <circle cx="86" cy="37" r="5.5" stroke-width="3"/>
+        <path d="M91.6 30.6L100.1 21" stroke-width="4" stroke-dasharray="1 8"/>
+        <circle cx="108" cy="12" r="9" stroke-width="3"/>
+      </g>
+      <g font-family="ui-monospace,Menlo,monospace" font-size="4.4" fill="currentColor" fill-opacity=".62">
+        <text x="116" y="57" text-anchor="end">quality floor</text>
+      </g>
+      <g class="dot" font-family="ui-monospace,Menlo,monospace" font-size="4.6" font-weight="600" fill="#1D9E75">
+        <text x="60" y="88" text-anchor="middle">cheapest capable</text>
+      </g>
+      <g class="ghosts" font-family="ui-monospace,Menlo,monospace" font-size="4.2" fill="currentColor" fill-opacity=".55">
+        <text x="108" y="30" text-anchor="middle">costlier, only if needed</text>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<section id="idea"><div class="col sec">
+  <aside><b>01</b>The idea</aside>
+  <div>
+    <h2>A decision engine, not a load balancer.</h2>
+    <p class="lede">The LLM market moves weekly. Models launch, get retired, change price, hit rate limits, or appear on a new gateway with a free tier. The same weights can cost nothing on one provider and a lot on another.</p>
+    <p>So MinInfer keeps three things apart that most routers blur together: <b>the model</b> (what it can do), <b>the deployment</b> (provider, price, limits, latency, availability), and <b>the task</b> (what has to be true for an answer to count). A request is routed by filtering deployments against the task, then picking the cheapest survivor.</p>
+    <p class="pull">The registry describes what exists. Live evidence determines what is usable.</p>
+  </div>
+</div></section>
+
+<section id="ledger"><div class="col sec">
+  <aside><b>02</b>The ledger</aside>
+  <div>
+    <h2>“Free” is not the same as cheap.</h2>
+    <p class="lede">Ranking runs on <b>cost per success</b>: expected spend divided by the lower-bound probability the model actually completes the task. A model that fails half the time costs more than its sticker price says.</p>
+
+    <table class="ledger">
+      <thead><tr>
+        <th>Deployment</th><th>List price</th><th>Success<br>lower bound</th><th class="hide-s">Cost per<br>success</th><th>Verdict</th>
+      </tr></thead>
+      <tbody>
+        <tr class="out"><td>Free tier A<small>no track record yet</small></td><td>$0.000</td><td>0.31</td><td class="hide-s">—</td><td>below floor</td></tr>
+        <tr class="win"><td>Free tier B<small>proven on this task</small></td><td>$0.000</td><td>0.88</td><td class="hide-s">$0.000</td><td>selected</td></tr>
+        <tr><td>Small paid model<small>fallback</small></td><td>$0.004</td><td>0.91</td><td class="hide-s">$0.0044</td><td>fallback 1</td></tr>
+        <tr><td>Frontier model<small>last resort</small></td><td>$0.060</td><td>0.97</td><td class="hide-s">$0.0619</td><td>fallback 2</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Illustrative numbers. Free arms that clear the quality floor all tie at zero, so the router breaks ties with a small exploration bonus. That is what stops one free model from answering every request.</p>
+  </div>
+</div></section>
+
+<section id="trust"><div class="col sec">
+  <aside><b>03</b>Earning trust</aside>
+  <div>
+    <h2>Two wins out of two is not a track record.</h2>
+    <p class="lede">The router scores each model per task with the Wilson lower bound of its success rate, seeded with a benchmark prior so cold starts aren’t blind. Small samples get penalised until evidence accumulates. Try it:</p>
+
+    <div class="gauge" id="gauge">
+      <div class="row">
+        <div><label for="wins">Successes</label><input id="wins" type="number" min="0" value="2"></div>
+        <div><label for="trials">Trials</label><input id="trials" type="number" min="1" value="2"></div>
+        <div><label for="floor">Quality floor</label><input id="floor" type="number" min="0" max="1" step="0.05" value="0.7"></div>
+      </div>
+      <div class="bar" aria-hidden="true">
+        <div class="fill" id="fill"></div>
+        <div class="naive" id="naive"></div>
+        <div class="floor" id="floorline"></div>
+      </div>
+      <div class="readout">
+        <div>raw success rate<b id="raw">100%</b></div>
+        <div>lower bound the router uses<b id="lb">—</b></div>
+      </div>
+      <p class="verdict" id="verdict"></p>
+    </div>
+    <p class="note">Black tick: raw rate. Bar: lower bound at z = 1.96. Dashed line: the task’s quality floor.</p>
+
+    <p style="margin-top:34px">Untried free models get their evidence without risking users. A small slice of traffic is <b>duplicated in the background</b> to an untried arm after the real answer has already been sent. An LLM judge scores the shadow reply, the result is recorded as a <code>judge_trial</code> observation, and once the lower bound clears the floor the model graduates to real traffic. Nobody waits on it and nobody is billed for it.</p>
+  </div>
+</div></section>
+
+<section id="route"><div class="col sec">
+  <aside><b>04</b>One request</aside>
+  <div>
+    <h2>What happens between the prompt and the first token.</h2>
+
+    <div class="trace" aria-label="Example routing trace"><span class="c"># POST /v1/chat/completions  model=auto</span>
+<span class="b">classify</span>   intent=summarise  confidence=0.82   <span class="c">(local, no paid call)</span>
+<span class="b">filter</span>     214 deployments → 37   <span class="c">context · modality · auth · quota headroom</span>
+<span class="b">score</span>      cost ÷ p_lb per candidate, free-first
+<span class="b">cap</span>        no model above 60% of this task’s traffic
+<span class="b">dispatch</span>   <span class="g">openrouter:qwen/qwen3.8-27b:free</span>
+<span class="w">  429</span>        → exhausted for this minute, same request moves on
+<span class="b">dispatch</span>   <span class="g">vercel:poolside/laguna-s-2.1-free</span>   <span class="c">first byte in 412 ms</span>
+<span class="b">record</span>     evidence written · shadow trial queued (5%)</div>
+
+    <ol class="steps">
+      <li><div><h3>Classify locally.</h3><p>Intent comes from heuristics and a local model, so routing doesn’t burn a paid call to decide where to spend. Ambiguous prompts merge the profiles of the competing tasks and satisfy both.</p></div></li>
+      <li><div><h3>Filter on hard constraints.</h3><p>Context length, modality, credentials, and quota headroom. Headroom is the minimum of the configured limit and what the provider’s live <code>x-ratelimit-*</code> headers last said.</p></div></li>
+      <li><div><h3>Rank, then cap.</h3><p>Cost per success decides the order. No single model may take more than 60% of a task’s traffic, and manual pins expire after 24 hours, so the system can’t fixate.</p></div></li>
+      <li><div><h3>Fail over before the first byte.</h3><p>A 429, timeout or dropped connection moves the same request to the next ranked arm. Once streaming starts the router is committed, because a half-sent stream can’t be unsent.</p></div></li>
+      <li><div><h3>Write down what happened.</h3><p>Every outcome, including a 404 for a retired model, becomes evidence. The next decision is made against it.</p></div></li>
+    </ol>
+  </div>
+</div></section>
+
+<section id="principles"><div class="col sec">
+  <aside><b>05</b>Principles</aside>
+  <div>
+    <h2>Why it behaves the way it does.</h2>
+    <dl class="pr">
+      <div><dt>Identity is separate from economics</dt><dd>The same weights are different deployments with different prices, limits and reliability. They are scored independently.</dd></div>
+      <div><dt>Prices are beliefs with a history</dt><dd>Each price is stored with when it was adopted, so a past decision is judged against what was known then. Silent price changes raise anomalies.</dd></div>
+      <div><dt>Budgets are reserved, not observed</dt><dd>A session cap reserves <code>prompt estimate + max_tokens</code> before the call, so a limit is a ceiling rather than a suggestion you overshoot by one request.</dd></div>
+      <div><dt>An error is evidence</dt><dd>When a provider retires a model, the 404 marks it uncallable and traffic reroutes. Nobody has to edit a config file at night.</dd></div>
+      <div><dt>Humans are a signal too</dt><dd>Compare mode streams two models over one connection. Your pick is recorded as a weak subjective observation alongside the automatic ones.</dd></div>
+      <div><dt>Every answer names its author</dt><dd>The reply shows which model and provider produced it, what else was shortlisted, and what it cost, speed and latency were.</dd></div>
+    </dl>
+  </div>
+</div></section>
+
+<section id="run"><div class="col sec">
+  <aside><b>06</b>Run it</aside>
+  <div>
+    <h2>Point any OpenAI-compatible client at it.</h2>
+<pre class="cmd"><span class="c"># clone and install</span>
+git clone https://github.com/zerocool909/mininfer-oss.git
+cd mininfer-oss
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -e .
+
+<span class="c"># copy .env.example to .env, add the provider keys you have, then:</span>
+mi proxy --port 8765</pre>
+<pre class="cmd">curl http://127.0.0.1:8765/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Summarise this"}]}'</pre>
+    <p>Open <code>http://127.0.0.1:8765</code> for the dashboard: the model registry with untried, trialing and proven states, the chat playground, and the decision log. The README covers configuration, quotas and the full API contract.</p>
+  </div>
+</div></section>
+
+<footer><div class="col">
+  <span>MinInfer · minimum sufficient inference · MIT licensed</span>
+  <span><a href="https://github.com/zerocool909/mininfer-oss">Source</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/README.md">README</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/CONTRIBUTING.md">Contribute</a></span>
+</div></footer>
+
+<script>
+  // Wilson lower bound — same formula as wilson_lb() in mininfer/router.py (z = 1.96)
+  function wilson(w, n, z){
+    if(n<=0) return 0;
+    const p=w/n, z2=z*z, d=1+z2/n;
+    const c=p+z2/(2*n), m=z*Math.sqrt((p*(1-p)+z2/(4*n))/n);
+    return Math.max(0,(c-m)/d);
+  }
+  const $=id=>document.getElementById(id);
+  function update(){
+    let n=Math.max(1,parseInt($('trials').value)||1);
+    let w=Math.min(n,Math.max(0,parseInt($('wins').value)||0));
+    let fl=Math.min(1,Math.max(0,parseFloat($('floor').value)||0));
+    const raw=w/n, lb=wilson(w,n,1.96), ok=lb>=fl;
+    $('raw').textContent=Math.round(raw*100)+'%';
+    $('lb').textContent=(lb*100).toFixed(1)+'%';
+    $('fill').style.width=(lb*100)+'%';
+    $('fill').classList.toggle('ok',ok);
+    $('naive').style.left=(raw*100)+'%';
+    $('floorline').style.left=(fl*100)+'%';
+    const v=$('verdict');
+    v.classList.toggle('no',!ok);
+    v.innerHTML = ok
+      ? '<strong>Cleared the floor.</strong> '+n+' trials is enough evidence for this model to take real traffic on this task.'
+      : '<strong>Not yet.</strong> '+(raw>=fl?'The raw rate looks fine, but '+n+' trials can’t rule out luck. ':'The lower bound is under the floor. ')+'It stays in the shadow-trial lane until it earns more evidence.';
+  }
+  ['wins','trials','floor'].forEach(id=>$(id).addEventListener('input',update));
+  update();
+</script>
+</body>
+</html>
