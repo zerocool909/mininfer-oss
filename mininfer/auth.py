@@ -66,6 +66,9 @@ PUBLIC_PREFIXES = ("/assets/", "/favicon", "/vite.svg", "/robots.txt",
 ADMIN_PATHS = frozenset({
     "/", "/legacy", "/v1/stats", "/v1/plan", "/v1/providers", "/v1/savings",
     "/v1/local/probe", "/v1/local/register",
+    # The warm-tier probe is an operator switch: it decides whether this server
+    # makes scheduled upstream calls, so it is not a tenant surface.
+    "/v1/probe", "/v1/probe/config", "/v1/probe/run",
     # Hibernation review is an operator decision, not a tenant one: approving a
     # paid model changes what every tenant is charged for.
     "/v1/reviews", "/v1/reviews/decide",

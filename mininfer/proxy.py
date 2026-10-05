@@ -20,6 +20,7 @@ extension (JSON) or in `X-MI-*` headers (streaming).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import pathlib
@@ -36,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth as auth_mod
 from . import db as db_mod
 from . import intent as intent_mod
+from . import probe as probe_mod
 from . import env as env_mod
 from .env import load_env
 from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
@@ -80,8 +82,26 @@ INTENT_MODEL = os.environ.get("MI_INTENT_MODEL", "")
 INTENT_BACKEND = os.environ.get("MI_INTENT_BACKEND", "").strip().lower()
 INTENT_MERGE_BELOW = float(os.environ.get("MI_INTENT_MERGE_BELOW", "0.6"))
 
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Run the optional warm-tier probe loop for the server's lifetime.
+
+    The loop re-reads its on/off and cadence from the registry every tick, so a
+    toggle from the portal takes effect within one tick and needs no restart. It
+    is inert (a bare sleep) until an operator enables it.
+    """
+    task = asyncio.create_task(_probe_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
 app = FastAPI(title="MinInfer", version="0.1.0",
-              description="MinInfer — the cheapest capable model for every task")
+              description="MinInfer — the cheapest capable model for every task",
+              lifespan=_lifespan)
 
 # The React dashboard, when it has been built (`cd web && npm run build`).
 # Serving it from this process keeps the whole thing one origin — no CORS, no
@@ -1189,6 +1209,91 @@ async def set_provider_key(request: Request) -> dict:
     return {"ok": True, "stored": outcome != "already_set", "status": outcome,
             "provider": provider, "env_var": env_var,
             "reply": probe.get("reply") or "key accepted"}
+
+
+# --------------------------------------------------------------------------- #
+# warm tier — the optional background provider probe
+# --------------------------------------------------------------------------- #
+# Off by default and toggled from the portal. One short tick re-reads the config
+# so an operator's change is honoured without a restart; a probe failure is
+# swallowed so a broken provider can never take the server down.
+_PROBE_TICK_SECONDS = 5.0
+
+
+async def _probe_loop() -> None:
+    """Probe configured providers on the configured cadence, forever."""
+    while True:
+        try:
+            store = _store()
+            try:
+                cfg = probe_mod.config(store)
+            finally:
+                store.close()
+            if cfg["enabled"] and probe_mod.is_due(cfg):
+                await asyncio.to_thread(probe_mod.run_probe, _db())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Reported on the next `/v1/probe`; never fatal to the web process.
+            pass
+        await asyncio.sleep(_PROBE_TICK_SECONDS)
+
+
+@app.get("/v1/probe", tags=["operator"])
+def probe_status() -> dict:
+    """The warm tier's settings plus the last health verdict per provider."""
+    store = _store()
+    try:
+        cfg = probe_mod.config(store)
+        health = store.provider_health()
+    finally:
+        store.close()
+    return {
+        "enabled": cfg["enabled"],
+        "interval_seconds": cfg["interval_seconds"],
+        "last_run": cfg["last_run"],
+        "ttl_seconds": probe_mod.HEALTH_TTL,
+        "configured": probe_mod.configured_providers(),
+        "health": health,
+    }
+
+
+@app.post("/v1/probe/config", openapi_extra=_api_schema.PROBE_CONFIG, tags=["operator"])
+async def probe_configure(request: Request) -> dict:
+    """Turn the warm tier on/off and set its cadence. Persisted in the registry."""
+    payload = await request.json()
+    store = _store()
+    try:
+        if "enabled" in payload:
+            store.set_setting(probe_mod.ENABLED_KEY, "1" if payload["enabled"] else "0")
+        if payload.get("interval_seconds") is not None:
+            try:
+                seconds = float(payload["interval_seconds"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="interval_seconds must be a number")
+            if seconds < probe_mod.MIN_INTERVAL:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"interval_seconds must be >= {probe_mod.MIN_INTERVAL:.0f}")
+            store.set_setting(probe_mod.INTERVAL_KEY, str(seconds))
+        store.commit()
+    finally:
+        store.close()
+    return probe_status()
+
+
+@app.post("/v1/probe/run", openapi_extra=_api_schema.PROBE_RUN, tags=["operator"])
+async def probe_run_now(request: Request) -> dict:
+    """Probe the named (or every configured) provider once, off-schedule."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    providers = payload.get("providers") if isinstance(payload, dict) else None
+    if providers is not None and not isinstance(providers, list):
+        raise HTTPException(status_code=400, detail="providers must be a list")
+    return await asyncio.to_thread(probe_mod.run_probe, _db(), providers=providers)
 
 
 @app.post("/v1/providers/test", openapi_extra=_api_schema.PROVIDERS_TEST, tags=["catalog"])

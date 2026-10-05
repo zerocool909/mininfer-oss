@@ -36,6 +36,16 @@ esac
 BIND_HOST="${HOST:-0.0.0.0}"
 BIND_PORT="${PORT:-8000}"
 
+# `.env` is bind-mounted from the host. Docker's default for a *missing* bind
+# source is to create a directory, and a directory where a file is expected used
+# to crash the app on import (IsADirectoryError). The app now tolerates it, but
+# the operator's keys are silently unused, so say clearly where the fix is.
+if [ -d /app/.env ]; then
+    echo "==> WARNING: /app/.env is a DIRECTORY, not a file — provider keys are ignored."
+    echo "    On the host (where you ran docker compose):"
+    echo "        rmdir .env && cp .env.example .env"
+fi
+
 # A command passed to the container (`docker run … mi ingest`, a Fly `[processes]`
 # entry, a k8s CronJob) makes this a *worker*: the registry is already prepared
 # above, so run that command instead of the web server. No argument still means

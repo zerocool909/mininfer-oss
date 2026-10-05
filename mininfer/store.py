@@ -23,6 +23,7 @@ import threading
 from typing import Any, Iterable
 
 from . import db
+from .fetch import utcnow
 from .schema import (CAP_KEYS, NON_MODEL_ERRORS, Deployment, Evidence, Weights)
 
 
@@ -718,6 +719,29 @@ CREATE TABLE IF NOT EXISTS pushed_models (
   deploy_id  TEXT PRIMARY KEY,
   task       TEXT,
   ts         TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Warm-tier provider health — the last result of the optional background probe
+-- (`mininfer.probe`). Kept out of `observations` on purpose: this is about the
+-- *provider* (key still valid? reachable?), not a model's answer quality, and
+-- the router reads it *before* a request instead of deriving it after one.
+-- `checked_at` is what makes a stale failure expire.
+CREATE TABLE IF NOT EXISTS provider_health (
+  provider   TEXT PRIMARY KEY,
+  status     TEXT NOT NULL,          -- ok | auth_error | network_error | http_NNN
+  detail     TEXT,
+  latency_ms REAL,
+  n_models   INTEGER,
+  checked_at TEXT NOT NULL
+);
+
+-- Small key/value bag for operator-toggled runtime settings (the warm tier's
+-- on/off and cadence). In the registry, not a separate file, so a portal toggle
+-- survives a restart and every process sharing the database agrees.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -2318,7 +2342,6 @@ class Store:
 
     def push_model(self, deploy_id: str, task: str | None = None) -> None:
         """Mark a deployment as priority pushed to top 3."""
-        from .fetch import utcnow
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS pushed_models (
               deploy_id  TEXT PRIMARY KEY,
@@ -2347,6 +2370,60 @@ class Store:
         else:
             self.conn.execute("DELETE FROM pushed_models")
         self.conn.commit()
+
+    # ------------------------------------------------------ runtime settings
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET value=excluded.value,"
+            " updated_at=excluded.updated_at",
+            (key, str(value), utcnow()))
+
+    # ------------------------------------------------------- provider health
+
+    def set_provider_health(self, provider: str, status: str, *,
+                            detail: str | None = None,
+                            latency_ms: float | None = None,
+                            n_models: int | None = None,
+                            checked_at: str | None = None) -> None:
+        """Upsert one provider's probe result. Called by `mininfer.probe`."""
+        self.conn.execute(
+            "INSERT INTO provider_health"
+            " (provider, status, detail, latency_ms, n_models, checked_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (provider) DO UPDATE SET status=excluded.status,"
+            " detail=excluded.detail, latency_ms=excluded.latency_ms,"
+            " n_models=excluded.n_models, checked_at=excluded.checked_at",
+            (provider, status, detail, latency_ms, n_models,
+             checked_at or utcnow()))
+
+    def provider_health(self) -> dict[str, dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT provider, status, detail, latency_ms, n_models, checked_at"
+            " FROM provider_health").fetchall()
+        return {r["provider"]: dict(r) for r in rows}
+
+    def unhealthy_providers(self, *, ttl_seconds: float = 900.0) -> set[str]:
+        """Providers whose last probe failed *recently*.
+
+        Staleness is the whole point: with the probe switched off, an old failure
+        must not exclude a provider forever, so anything older than
+        `ttl_seconds` is treated as unknown and admitted. Timestamps are the
+        `utcnow()` shape on both sides, so the lexical `>=` is exact (see
+        `_since`).
+        """
+        cutoff = (dt.datetime.now(dt.timezone.utc)
+                  - dt.timedelta(seconds=float(ttl_seconds))).isoformat(timespec="seconds")
+        rows = self.conn.execute(
+            "SELECT provider FROM provider_health"
+            " WHERE status != 'ok' AND checked_at >= ?", (cutoff,)).fetchall()
+        return {r["provider"] for r in rows}
 
     # ------------------------------------------------------------------- reads
 

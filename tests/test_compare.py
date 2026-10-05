@@ -151,6 +151,25 @@ def test_a_429_alone_still_drives_the_same_estimate(tmp_path):
     s.close()
 
 
+def test_a_zero_priced_paid_arm_does_not_nullify_the_floor(tmp_path):
+    """A paid-shaped arm with zero price (transcription: `price_out=None`) must
+    not zero the paid floor — otherwise a broken free arm keeps ranking at $0."""
+    s = _seed(tmp_path, [
+        ("prov", 0.0, 0.0, True),    # free, about to 429
+        ("zero", 0.0, None, False),  # paid shape, zero cost
+        ("paid", 1.0, 1.0, False),   # the real floor
+    ])
+    s.observe("prov:m0", "t", ok=False, ts="2026-01-01T00:00:00+00:00",
+              error_class="429")
+    s.commit()
+    free_c = next(c for c in _cands(s) if c.deploy_id == "prov:m0")
+    paid_c = next(c for c in _cands(s) if c.deploy_id == "paid:m2")
+    assert free_c.rate_429 == 1.0
+    assert free_c.cost_per_call == pytest.approx(paid_c.cost_per_call)
+    assert free_c.cost_per_call > 0, "a zero-priced paid arm zeroed the floor"
+    s.close()
+
+
 def test_a_healthy_free_arm_stays_free(tmp_path):
     """The regression this could most easily cause: everything looks paid."""
     s = _seed(tmp_path, [("prov", 0.0, 0.0, True)])

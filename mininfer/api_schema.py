@@ -230,6 +230,27 @@ SET_KEY = _body(
     example={"provider": "groq", "api_key": "gsk_..."},
 )
 
+PROBE_CONFIG = _body(
+    {
+        "enabled": {"type": "boolean",
+                    "description": "Turn the background provider health probe on or off."},
+        "interval_seconds": {"type": "number", "minimum": 30,
+                             "description": "How often to probe, in seconds (minimum 30)."},
+    },
+    example={"enabled": True, "interval_seconds": 300},
+)
+
+PROBE_RUN = _body(
+    {
+        "providers": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Probe only these provider ids. Omit to probe every "
+                           "configured provider.",
+        },
+    },
+    example={"providers": ["groq", "openrouter"]},
+)
+
 SEED_QUOTAS = _body(
     {
         "config": {"type": "string",

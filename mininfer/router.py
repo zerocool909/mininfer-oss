@@ -27,6 +27,7 @@ from typing import Any
 
 from . import cache as cache_mod
 from . import leaderboards as lb
+from . import probe as probe_mod
 from .bandit import bandit_order
 from .execute import available_providers
 from .schema import Candidate, TaskProfile
@@ -370,6 +371,11 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
     rf_stats = store.routing_approval_stats(task.name)
     norms = benchmark_norms(store)
     available = available_providers(user_keys=user_keys)
+    # Warm-tier gate: a provider whose most recent probe failed (revoked key,
+    # unreachable host) is not callable even though its key is present in the
+    # environment. `unhealthy_providers` ignores stale verdicts, so this is a
+    # no-op whenever the probe is switched off or has not run recently.
+    available -= store.unhealthy_providers(ttl_seconds=probe_mod.HEALTH_TTL)
     if pushed_models is None:
         pushed_models = store.get_pushed_models(task.name, ttl_hours=policy.pin_ttl_hours)
     pushed_set = set(pushed_models or [])
@@ -476,8 +482,14 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
     # take the worse. Without this, an arm that 429s half the time still shows a
     # cost of zero and wins every ranking, which is the "free but effectively
     # useless" failure the plan calls out.
+    # `floor_cost` is the price of the paid fallback an exhausted free arm
+    # forces. It must be a *positive* paid price: a zero-priced arm that is not
+    # classified free (a transcription model with `price_out=None`, say) would
+    # otherwise set the floor to 0 and nullify the whole penalty — the
+    # 100%-429 free arm then stayed at cost 0 and kept winning the ranking.
     paid = [c.cost_per_call for c in out
-            if c.free_kind is None and math.isfinite(c.cost_per_call)]
+            if c.free_kind is None and math.isfinite(c.cost_per_call)
+            and c.cost_per_call > 0]
     if paid:
         floor_cost = min(paid)
         for c in out:

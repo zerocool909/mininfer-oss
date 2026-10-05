@@ -15,8 +15,9 @@ import {
   HardDriveDownload,
   ShieldCheck,
   Play,
+  Activity,
 } from 'lucide-react'
-import { api, type ProviderInfo, type ProviderModel, type LocalProbeResult } from '@/lib/api'
+import { api, type ProviderInfo, type ProviderModel, type LocalProbeResult, type ProbeStatus } from '@/lib/api'
 import { getUserKeys, setUserKey, removeUserKey, clearAllUserKeys, getLocalEndpoints, setLocalEndpoints } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -38,6 +39,11 @@ export function SettingsTab() {
   const [llamacppUrl, setLlamacppUrl] = useState('http://localhost:8080')
   const [probeResult, setProbeResult] = useState<LocalProbeResult | null>(null)
   const [probing, setProbing] = useState(false)
+
+  // Warm tier — the optional background provider probe.
+  const [probe, setProbe] = useState<ProbeStatus | null>(null)
+  const [probeSaving, setProbeSaving] = useState(false)
+  const [probeRunning, setProbeRunning] = useState(false)
   const [registeredSuccess, setRegisteredSuccess] = useState<string | null>(null)
 
   // Model Explorer Search & Filter State
@@ -110,6 +116,42 @@ export function SettingsTab() {
     }
   }
 
+  // Warm tier handlers. Every call returns the fresh status, so the card renders
+  // from the server's own view rather than an optimistic guess.
+  const handleProbeToggle = async (enabled: boolean) => {
+    setProbeSaving(true)
+    try {
+      setProbe(await api.setProbeConfig({ enabled }))
+    } catch (e) {
+      console.error('Failed to update probe:', e)
+    } finally {
+      setProbeSaving(false)
+    }
+  }
+
+  const handleProbeInterval = async (interval_seconds: number) => {
+    setProbeSaving(true)
+    try {
+      setProbe(await api.setProbeConfig({ interval_seconds }))
+    } catch (e) {
+      console.error('Failed to update probe interval:', e)
+    } finally {
+      setProbeSaving(false)
+    }
+  }
+
+  const handleRunProbe = async () => {
+    setProbeRunning(true)
+    try {
+      await api.runProbe()
+      setProbe(await api.probeStatus())
+    } catch (e) {
+      console.error('Failed to run probe:', e)
+    } finally {
+      setProbeRunning(false)
+    }
+  }
+
   // Load providers and keys
   const loadData = async () => {
     setLoading(true)
@@ -127,6 +169,12 @@ export function SettingsTab() {
       const locals = getLocalEndpoints()
       if (locals.ollama) setOllamaUrl(locals.ollama)
       if (locals.llamacpp) setLlamacppUrl(locals.llamacpp)
+
+      try {
+        setProbe(await api.probeStatus())
+      } catch (e) {
+        console.error('Failed to load probe status:', e)
+      }
     } catch (e) {
       console.error('Failed to load providers:', e)
     } finally {
@@ -451,6 +499,130 @@ export function SettingsTab() {
         {registeredSuccess && (
           <div className="p-3 bg-emerald-500/15 border border-emerald-500/40 rounded-lg text-xs text-emerald-600 dark:text-emerald-400 font-medium">
             {registeredSuccess}
+          </div>
+        )}
+      </div>
+
+      {/* Warm Tier — background provider health probe */}
+      <div className="rounded-xl border border-border bg-card p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border/60 pb-3">
+          <div className="flex items-center gap-2.5">
+            <Activity className={cn('h-5 w-5', probe?.enabled ? 'text-emerald-500' : 'text-muted-foreground')} />
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Warm Tier — Provider Health Probe</h2>
+              <p className="text-xs text-muted-foreground">
+                Checks every configured provider on a timer, so a revoked key or an unreachable host is known before a request fails on it. Off by default.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5 border-border"
+              onClick={handleRunProbe}
+              disabled={probeRunning || !probe || probe.configured.length === 0}
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', probeRunning && 'animate-spin')} />
+              {probeRunning ? 'Checking…' : 'Run now'}
+            </Button>
+            <Button
+              variant={probe?.enabled ? 'default' : 'outline'}
+              size="sm"
+              className={cn('h-7 text-xs gap-1.5',
+                probe?.enabled ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'border-border')}
+              onClick={() => handleProbeToggle(!probe?.enabled)}
+              disabled={probeSaving || !probe}
+            >
+              {probe?.enabled ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+              {probe?.enabled ? 'Enabled' : 'Disabled'}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          <label className="flex items-center gap-2">
+            Cadence
+            <select
+              aria-label="Probe interval"
+              value={probe?.interval_seconds ?? 300}
+              onChange={(e) => handleProbeInterval(Number(e.target.value))}
+              disabled={probeSaving}
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+            >
+              <option value={60}>every 1 minute</option>
+              <option value={300}>every 5 minutes</option>
+              <option value={900}>every 15 minutes</option>
+              <option value={1800}>every 30 minutes</option>
+              <option value={3600}>every hour</option>
+            </select>
+          </label>
+          <span>
+            Last run:{' '}
+            <span className="font-mono">
+              {probe?.last_run ? new Date(probe.last_run).toLocaleTimeString() : 'never'}
+            </span>
+          </span>
+          <span>
+            {probe?.configured.length ?? 0} configured provider{(probe?.configured.length ?? 0) === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        {probe && probe.configured.length === 0 && (
+          <p className="text-[11px] text-muted-foreground italic">
+            No server-side provider keys yet. Use “To server” on a provider below and the probe will start checking it.
+          </p>
+        )}
+
+        {probe && probe.configured.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {probe.configured.map((pid) => {
+              const h = probe.health[pid]
+              const ok = h?.status === 'ok'
+              const bad = Boolean(h) && !ok
+              return (
+                <div
+                  key={pid}
+                  className={cn(
+                    'rounded-lg border p-2.5 text-xs space-y-1',
+                    ok
+                      ? 'border-emerald-500/30 bg-emerald-500/5'
+                      : bad
+                        ? 'border-destructive/40 bg-destructive/5'
+                        : 'border-border/60',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-foreground">{pid}</span>
+                    {h ? (
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                          ok
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                            : 'bg-destructive/15 text-destructive',
+                        )}
+                      >
+                        {ok ? <CheckCircle2 className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+                        {ok ? 'healthy' : h.status}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground">not checked</span>
+                    )}
+                  </div>
+                  {h && (
+                    <div className="text-[10px] text-muted-foreground">
+                      {h.latency_ms != null && <span className="font-mono">{h.latency_ms}ms</span>}
+                      {h.n_models != null && <span> · {h.n_models} models</span>}
+                      <span> · {new Date(h.checked_at).toLocaleTimeString()}</span>
+                    </div>
+                  )}
+                  {h?.detail && (
+                    <div className="text-[10px] text-destructive/90 line-clamp-2">{h.detail}</div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

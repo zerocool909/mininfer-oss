@@ -532,5 +532,45 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ deploy_id, task, prompt }),
     }),
+
+  /**
+   * Warm tier — the optional background provider probe. `status` carries the
+   * on/off, cadence, and the last health verdict per provider.
+   */
+  probeStatus: () => req<ProbeStatus>('/v1/probe'),
+  setProbeConfig: (cfg: { enabled?: boolean; interval_seconds?: number }) =>
+    req<ProbeStatus>('/v1/probe/config', {
+      method: 'POST',
+      body: JSON.stringify(cfg),
+    }),
+  runProbe: () =>
+    req<ProbeRunResult>('/v1/probe/run', { method: 'POST' }),
+}
+
+export interface ProbeHealth {
+  provider: string
+  /** `ok` | `auth_error` | `network_error` | `tls_error` | `http_NNN` */
+  status: string
+  detail: string | null
+  latency_ms: number | null
+  n_models: number | null
+  checked_at: string
+}
+
+export interface ProbeStatus {
+  enabled: boolean
+  interval_seconds: number
+  last_run: string | null
+  /** How long a verdict is trusted before it stops excluding a provider. */
+  ttl_seconds: number
+  /** Providers the server currently holds a key for (what the probe will check). */
+  configured: string[]
+  health: Record<string, ProbeHealth>
+}
+
+export interface ProbeRunResult {
+  checked: number
+  results: ProbeHealth[]
+  last_run: string | null
 }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 
 
 def load_env(path: str | pathlib.Path = ".env") -> bool:
@@ -18,8 +19,19 @@ def load_env(path: str | pathlib.Path = ".env") -> bool:
 
     Returns True when a file was found. python-dotenv is used when installed; a
     minimal parser covers the core install, where dotenv is only a `sync` extra.
+
+    A `.env` that is a *directory* is treated as absent rather than fatal. That
+    shape is the Docker bind-mount footgun: a missing bind source is created as a
+    directory by some Docker versions, and `read_text` on it raised
+    `IsADirectoryError` during import — a crash loop the operator could only fix
+    from the host. A warning names the fix; the server still starts.
     """
     p = pathlib.Path(path)
+    if p.is_dir():
+        print(f"warning: {p} is a directory, not a file — ignoring it. "
+              f"On the host run `rmdir {p} && cp .env.example {p}`.",
+              file=sys.stderr)
+        return False
     if not p.exists():
         return False
     try:
@@ -72,6 +84,17 @@ def set_env_var(path: str | pathlib.Path, key: str, value: str, *,
     half-written secret and other local users cannot read it.
     """
     p = pathlib.Path(path)
+    if p.is_dir():
+        # Same bind-mount footgun as `load_env`. An *empty* directory is the one
+        # we caused, so remove it and carry on; a directory that actually holds
+        # files is the operator's and is never touched — refuse loudly instead of
+        # writing a file they cannot see.
+        try:
+            p.rmdir()
+        except OSError as exc:
+            raise IsADirectoryError(
+                f"{p} is a directory, not a file; remove it and copy "
+                f"{template or '.env.example'} over it") from exc
     created = False
     if not p.exists() and template is not None:
         t = pathlib.Path(template)

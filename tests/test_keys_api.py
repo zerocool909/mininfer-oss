@@ -178,3 +178,29 @@ def test_a_stored_key_shows_as_configured(tmp_path, monkeypatch):
     client.post("/v1/keys", json={"provider": "groq", "api_key": "gsk_x"})
     by_id = {p["id"]: p for p in client.get("/v1/keys").json()["providers"]}
     assert by_id["groq"]["configured"] is True
+
+
+# ------------------------------------- `.env` as a directory (bind-mount footgun)
+
+
+def test_set_env_var_replaces_an_empty_directory(tmp_path):
+    """An empty directory is the shape Docker creates for a missing bind source.
+
+    It cannot be read as a file, so the old code raised `IsADirectoryError` and
+    took the whole server down. It is ours to remove, so the write self-heals.
+    """
+    target = tmp_path / ".env"
+    target.mkdir()
+    assert env.set_env_var(target, "GROQ_API_KEY", "gsk_new") == "written"
+    assert target.is_file()
+    assert "GROQ_API_KEY=gsk_new" in target.read_text(encoding="utf-8")
+
+
+def test_set_env_var_refuses_a_non_empty_directory(tmp_path):
+    """A directory with content is the operator's; never delete it silently."""
+    target = tmp_path / ".env"
+    target.mkdir()
+    (target / "keep").write_text("x")
+    with pytest.raises(IsADirectoryError):
+        env.set_env_var(target, "GROQ_API_KEY", "gsk_new")
+    assert (target / "keep").exists()

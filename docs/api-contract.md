@@ -87,6 +87,9 @@ POST   /v1/anomalies/decide                        experimental
 GET    /v1/economics/deployments/{deploy_id:path}  experimental
 GET    /v1/local/probe                             experimental
 POST   /v1/local/register                          experimental
+GET    /v1/probe                                   experimental
+POST   /v1/probe/config                            experimental
+POST   /v1/probe/run                               experimental
 GET    /                                            internal
 GET    /legacy                                     internal
 GET    /favicon.svg                                internal
@@ -128,9 +131,16 @@ session id is scoped to the caller: a client-supplied id is a label, not a
 boundary.
 
 **Operator surface (`/`, `/legacy`, `/v1/stats`, `/v1/plan`, `/v1/providers`,
-`/v1/economics/*`, `/v1/local/*`).** Exposes provider pricing, routing decisions
-and caller IPs. Admin-only when `MI_ADMIN_TOKEN` is set, and it belongs behind a
-network boundary as well.
+`/v1/economics/*`, `/v1/local/*`, `/v1/probe*`).** Exposes provider pricing,
+routing decisions and caller IPs. Admin-only when `MI_ADMIN_TOKEN` is set, and it
+belongs behind a network boundary as well.
+
+**Warm tier (`/v1/probe`, `/v1/probe/config`, `/v1/probe/run`).** The optional
+background provider health probe, toggled from Settings → Providers. Off by
+default; when on, the server checks each configured provider's `GET /models` on
+a cadence and records the verdict, so a revoked key or an unreachable host is
+known *before* a request fails on it. A failed verdict excludes that provider
+from routing until it recovers or the result expires (`ttl_seconds`).
 
 **`POST /v1/local/probe`** fetches an arbitrary URL in order to test a local
 Ollama or llama.cpp endpoint. It is admin-only by design and is an SSRF surface;

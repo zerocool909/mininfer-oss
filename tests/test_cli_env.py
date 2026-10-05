@@ -71,3 +71,20 @@ def test_proxy_module_loads_env_on_import(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "from-dotenv"
+
+
+def test_load_env_ignores_a_directory(tmp_path, monkeypatch, capsys):
+    """A `.env` directory must not crash import — the Docker bind-mount footgun.
+
+    The old code called `read_text` and raised `IsADirectoryError`, which
+    crash-looped the container on a config the operator had to fix from the host.
+    Now it is treated as "no file" and the warning names the fix.
+    """
+    from mininfer.env import load_env
+
+    (tmp_path / ".env").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MI_TEST_DIR_KEY", raising=False)
+
+    assert load_env() is False
+    assert "is a directory" in capsys.readouterr().err
