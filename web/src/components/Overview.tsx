@@ -1038,7 +1038,7 @@ function HeadroomCell({ q }: { q: QuotaRow }) {
   )
 }
 
-function DeployCell({ deployId }: { deployId: string }) {
+export function DeployCell({ deployId }: { deployId: string }) {
   if (!deployId) return <span className="font-mono text-xs text-muted-foreground">—</span>
   let provider = ''
   let model = deployId
@@ -1054,15 +1054,20 @@ function DeployCell({ deployId }: { deployId: string }) {
     model = deployId.slice(idx + 1)
   }
 
-  // Clean provider prefix if it has nested slashes e.g. openrouter/thinkingmachines/nvfp4
-  if (provider.includes('/')) {
-    provider = provider.split('/')[0]
-  }
+  // The provider segment is *gateway plus upstream*, and both matter:
+  // `openrouter:qwen/qwen3.8-27b:free` and
+  // `openrouter/modelrun/fp4:qwen/qwen3.8-27b:free` are different deployments that
+  // price, rate-limit and fail independently. This used to strip everything after
+  // the first `/` ("clean provider prefix"), which made two such rows identical in
+  // the Selected table — the router looked like it was repeating itself.
 
   return (
     <div className="flex items-center gap-1.5 max-w-[24rem] truncate" title={deployId}>
       {provider && (
-        <span className="shrink-0 rounded border border-border/80 bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span
+          className="max-w-[11rem] shrink-0 truncate rounded border border-border/80 bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+          title={provider}
+        >
           {provider}
         </span>
       )}
