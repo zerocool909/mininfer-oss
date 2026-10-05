@@ -14,7 +14,8 @@ the Python API is not.
 `main` is the release branch and the source of truth. It is **protected**: direct
 pushes are rejected for everyone but the maintainer, a pull request is required,
 and force-pushes and deletions are blocked. A release is cut from a green `main`,
-never from a working tree.
+never from a working tree. `dev` carries the same protection, so the planning
+documents and browser specs there cannot be lost to an accidental force-push.
 
 | Where | Holds | Why |
 |---|---|---|

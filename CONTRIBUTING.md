@@ -128,9 +128,9 @@ bug. Please keep them.
 
 ## Branches
 
-`main` is protected. Direct pushes are rejected for everyone but the maintainer,
-a pull request is required, and force-pushes and deletions are blocked — so all
-changes land through a PR with a green CI.
+`main` and `dev` are both protected. Direct pushes are rejected for everyone but
+the maintainer, a pull request is required, and force-pushes and deletions are
+blocked — so all changes land through a PR with a green CI.
 
 `main` holds the shipped source and the tests that gate a release. The planning
 docs (`PLAN.md`, `BACKLOG.md`, `test_fix.md`), the Playwright specs under
