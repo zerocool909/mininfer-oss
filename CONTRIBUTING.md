@@ -126,8 +126,22 @@ bug. Please keep them.
 3. Add the endpoint to `mininfer/execute.py` if it can serve inference.
 4. Add a test with a recorded payload — do not hit the network in tests.
 
+## Branches
+
+`main` is protected. Direct pushes are rejected for everyone but the maintainer,
+a pull request is required, and force-pushes and deletions are blocked — so all
+changes land through a PR with a green CI.
+
+`main` holds the shipped source and the tests that gate a release. The planning
+docs (`PLAN.md`, `BACKLOG.md`, `test_fix.md`), the Playwright specs under
+`web/e2e/`, and the perf baseline (`tests/test_perf.py`) live on `dev` instead:
+they are not a release gate. See [`docs/RELEASING.md`](docs/RELEASING.md) for the
+full table.
+
 ## Pull requests
 
+- Branch off `main`, push the branch, and open a PR — `main` itself is protected,
+  so a direct push will be refused.
 - Keep the change focused; one idea per PR.
 - Run `pytest -q`, `npm run typecheck` (if you touched `web/`), and
   `./scripts/validate-postgres.sh` before opening it.

@@ -9,14 +9,40 @@ the Python API is not.
 
 ---
 
+## Branching model
+
+`main` is the release branch and the source of truth. It is **protected**: direct
+pushes are rejected for everyone but the maintainer, a pull request is required,
+and force-pushes and deletions are blocked. A release is cut from a green `main`,
+never from a working tree.
+
+| Where | Holds | Why |
+|---|---|---|
+| `main` | Shipped source, plus the tests that gate a release | This is what is cloned, built and released |
+| `dev` | `PLAN.md`, `BACKLOG.md`, `test_fix.md`, `web/e2e/*` (Playwright), `tests/test_perf.py`, `tests/test_teststub.py`, `diagrams/` | Not a release gate: the browser specs need Playwright and a booted stack, and the perf baseline is loose by design |
+| tags / GitHub Releases | The built wheel and container image | Artifacts are generated, never committed |
+| gitignored | `.venv/`, `node_modules/`, `web/dist/`, `dist/`, `build/`, `*.db`, `raw/` | Derived — a build, not a source |
+
+The split is **"is it generated?"**, not **"is it development-related?"**. Tests,
+CI config and deploy manifests are development-related *source* and belong on
+`main`, because `main` is what gets built. Deleting `tests/` from `main` would
+break the `test` CI job (pytest exits `5` on an empty suite) and the release gate
+below, and would leave `tests/test_api_contract.py` unable to police the contract.
+
+---
+
 ## 0. Preconditions
 
 - [ ] `main` is green in CI — all five jobs: `test` (SQLite py3.11/3.12 +
-      Postgres), `frontend`, `acceptance`, `e2e`, `docker`.
+      Postgres), `frontend`, `acceptance`, `line-endings`, `docker`.
 - [ ] No open `test_fix.md` entry without a fix (that file is on the `dev` branch).
 - [ ] Any `docs/api-contract.md` change is in the same commit as the route change
       — `tests/test_api_contract.py` enforces this, so a green `test` job means it
       holds.
+
+> The browser specs under `web/e2e/` live on `dev` and are **not** one of the five
+> jobs above. They are run by hand (or on `dev`) because they need Playwright and
+> a booted `mi proxy`; keeping them out of the `main` gate is deliberate.
 
 ## 1. Decide the version
 
