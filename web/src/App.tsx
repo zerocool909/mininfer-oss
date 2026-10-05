@@ -145,11 +145,16 @@ export function App() {
           >
             <img
               src="/mininfer-icon.svg"
-              alt="MinInfer"
+              alt="min(Infer)"
               className="h-9 w-9 rounded-[9px] object-contain shadow-glow-sm transition-transform group-hover:scale-105"
             />
+            {/* Mirrors the wordmark in mininfer-logo.svg: `min(Infer)` with the
+                function-notation parentheses dimmed against the product name. */}
             <span className="hidden text-base font-semibold tracking-tight text-foreground sm:block">
-              MinInfer
+              <span className="text-brand-teal">min</span>
+              <span className="font-normal text-muted-foreground">(</span>
+              Infer
+              <span className="font-normal text-muted-foreground">)</span>
             </span>
           </button>
 

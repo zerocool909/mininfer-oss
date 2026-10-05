@@ -38,6 +38,8 @@
     --brand-foreground: 0 0% 100%;
     --brand-2: 198 72% 47%;
     --brand-3: 268 60% 62%;
+    /* Wordmark teal: the `min` in min(Infer), matching mininfer-logo.svg */
+    --brand-teal: 161 69% 37%;
     --free: 152 56% 35%;
     --free-foreground: 0 0% 100%;
     --paid: 30 88% 46%;
@@ -72,6 +74,7 @@
     --brand-foreground: 338 52% 13%;
     --brand-2: 198 84% 72%;
     --brand-3: 268 78% 78%;
+    --brand-teal: 160 63% 46%;
     --free: 152 58% 60%;
     --free-foreground: 152 80% 10%;
     --paid: 32 92% 68%;

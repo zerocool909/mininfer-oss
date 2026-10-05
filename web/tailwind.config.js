@@ -17,6 +17,7 @@ export default {
           foreground: 'hsl(var(--brand-foreground))',
           2: 'hsl(var(--brand-2))',
           3: 'hsl(var(--brand-3))',
+          teal: 'hsl(var(--brand-teal))',
         },
         primary: {
           DEFAULT: 'hsl(var(--primary))',

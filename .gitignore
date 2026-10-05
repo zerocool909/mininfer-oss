@@ -32,3 +32,7 @@ dist/
 # Web dashboard: dependencies and build output are both derived.
 web/node_modules/
 web/dist/
+
+# Local design scratch: a side-by-side logo comparison, not part of the docs
+# site. Kept on disk for review, never published.
+docs/logo-options.html

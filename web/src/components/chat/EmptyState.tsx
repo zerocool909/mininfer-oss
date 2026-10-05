@@ -42,7 +42,7 @@ export function EmptyState({ onSelectPrompt }: EmptyStateProps) {
       <div className="mb-6 flex items-center justify-center">
         <img
           src="/mininfer-logo.svg"
-          alt="MinInfer"
+          alt="min(Infer)"
           className="h-24 w-auto max-w-[380px] object-contain drop-shadow-md transition-transform hover:scale-[1.02]"
         />
       </div>
