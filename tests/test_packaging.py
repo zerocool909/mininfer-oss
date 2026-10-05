@@ -89,7 +89,7 @@ def test_the_understanding_extra_stays_out_of_the_default_image():
 
     The web image is ~60 MB and `requirements.lock` is `--universal`; a torch pin
     is platform-specific and would break both. The extra is declared so Phase 2.0
-    (CLOUD_ACTIVITY.md §2.0) can opt in without a code change, and this guard
+    can opt in without a code change, and this guard
     keeps it out of the default install — the failure mode is an image that
     silently grows 40× in a later change.
     """

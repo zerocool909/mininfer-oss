@@ -47,7 +47,7 @@ primary_region = "iad"
   destination = "/data"
 
 # ---------------------------------------------------------------------------
-# One image, three process types (PRODUCTIZATION.md §5 layer ⑤).
+# One image, three process types.
 #
 # `web`    — the stateless API. Scale this with request volume.
 # `worker` — the registry's batch jobs (ingest / metrics). One machine, looping;

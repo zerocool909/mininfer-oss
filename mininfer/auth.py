@@ -34,8 +34,7 @@ Configuration
     Reject request bodies larger than this (`0` disables the check).
 
 The limiter is **in-process**. That is correct for one replica and wrong for
-several — run a single replica behind it, or move the counters to Redis. See
-`PRODUCTIZATION.md`.
+several — run a single replica behind it, or move the counters to Redis.
 """
 from __future__ import annotations
 

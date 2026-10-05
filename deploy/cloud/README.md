@@ -3,9 +3,10 @@
 MinInfer served to other people. Access control on, limits on, state on a
 volume. The profile is `config/profiles/cloud.env`.
 
-**Read `PRODUCTIZATION.md` before offering this to anyone.** It covers the
-product-shape decision (hosted gateway vs BYO-key control plane — the second
-avoids the provider-terms problem), what is still missing, and the infra layers.
+**Decide what you are offering before exposing this to anyone.** The manifests
+here cover the infra layer only; the product-shape choice — hosted gateway vs
+BYO-key control plane, the second avoiding the provider-terms problem — and the
+remaining gaps are yours to settle.
 
 ## Secrets
 
@@ -62,7 +63,7 @@ litestream replicate -exec "uvicorn mininfer.proxy:app --host 0.0.0.0 --port 800
 
 The API and the registry's batch jobs (`mi ingest`, `mi metrics`, `mi bench`)
 share one image, because a fix to the router must land in both — this is the same
-argument `PRODUCTIZATION.md` §3a makes against a second codebase. What differs is
+argument against a second codebase. What differs is
 the **command**, not the artifact:
 
 | Process | Command | Scale |
@@ -111,7 +112,7 @@ platform — the image ships the runtime, the scheduler owns the timing.
 
 The local understanding layer is **not** part of the Phase 1.0 image. It adds a
 PyTorch dependency and a ~2 GB checkpoint, and nothing on the request path needs
-it, so Phase 1.0 ships without it (CLOUD_ACTIVITY.md §2.0). The seam is already
+it, so Phase 1.0 ships without it. The seam is already
 in the tree and inert: `MI_INTENT_BACKEND` / `MI_EXTRACT_BACKEND` do nothing
 unless the `mininfer[understanding]` extra is installed, and the proxy and
 ingest graphs fall back to their existing behaviour when it is not.

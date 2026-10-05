@@ -1,7 +1,7 @@
 """The cloud manifests, pinned as data.
 
-`PRODUCTIZATION.md` §4a moved the registry to Postgres and the limits to Redis;
-`CLOUD_ACTIVITY.md` Phase 1.0 finishes that story in the deploy manifests. A
+The registry moved to Postgres and the limits to Redis, and the deploy manifests
+carry that story. A
 manifest is easy to edit back into the single-writer shape — one `replicas: 1`
 or a dropped `MI_REDIS_URL` — and nothing fails until production, so the
 invariants each manifest promises are asserted here instead.

@@ -123,7 +123,7 @@ def propose(store: Store, *, auto: bool = True, near_window: int = 20) -> tuple[
 
 
 def review_payload(review: list[Proposal]) -> list[dict]:
-    """Shape for an LLM adjudicator or an admin UI (PLAN.md §4a)."""
+    """Shape for an LLM adjudicator or an admin UI."""
     return [
         {"alias_id": p.alias_id, "candidate_id": p.canonical_id,
          "left": p.alias_name, "right": p.canonical_name,

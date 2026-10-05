@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # Validate BOTH routes — the OSS/local variant and the cloud variant.
 #
-# MinInfer is one codebase serving two profiles (PRODUCTIZATION.md §3a):
+# MinInfer is one codebase serving two profiles:
 #
 #   config/profiles/local.env   deploy/local/     open, SQLite, one process
 #   config/profiles/cloud.env   deploy/cloud/     fail closed, Postgres+Redis

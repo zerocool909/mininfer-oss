@@ -1,6 +1,6 @@
 """Ingestion agents — turn an arbitrary webpage into registry rows (Phase 5).
 
-PLAN.md §4a: this is the *agents* layer, and only needed for non-JSON sources.
+This is the *agents* layer, and only needed for non-JSON sources.
 The pipeline is a LangGraph graph:
 
     fetch -> extract -> llm_extract -> normalize -> validate -+-> commit

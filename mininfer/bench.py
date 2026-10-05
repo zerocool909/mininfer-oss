@@ -1,4 +1,4 @@
-"""RouterBench-Lite — a verifiable-reward eval harness (PLAN.md §4b).
+"""RouterBench-Lite — a verifiable-reward eval harness.
 
 The only reason an internal benchmark is worth building is that the reward is
 *verifiable*: SQL executes, JSON parses, a tool call matches a schema, a numeric

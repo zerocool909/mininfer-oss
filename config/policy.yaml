@@ -1,6 +1,6 @@
 # Routing policy. Declarative on purpose: the same file is consumed by the CLI,
 # the future HTTP proxy, and any agent that wants routing without embedding
-# model-selection logic (PLAN.md §7, Phase 4).
+# model-selection logic (Phase 4).
 
 policy:
   name: free_first
@@ -57,7 +57,7 @@ policy:
 
   # Benchmark prior expressed as pseudo-observations. This is what stops an
   # untried arm from being treated as worthless, i.e. it prevents the
-  # rich-get-richer lock-in described in PLAN.md §4c.
+  # rich-get-richer lock-in.
   #
   # Calibration matters: a benchmark measured on hundreds of tasks is stronger
   # evidence than a handful of our own calls, and at 6 the Wilson bound collapsed

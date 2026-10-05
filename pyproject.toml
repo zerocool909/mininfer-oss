@@ -21,8 +21,7 @@ cloud = ["psycopg2-binary>=2.9", "redis>=5.0"]
 # deliberately NOT in the default image or `requirements.lock`. It pulls in
 # PyTorch, which turns the 60 MB image into a multi-GB one, and a torch pin is
 # platform-specific so it cannot live in the `--universal` lock. The seam is
-# declared here so Phase 2.0 can opt in without a code change; see
-# CLOUD_ACTIVITY.md §2.0.
+# declared here so Phase 2.0 can opt in without a code change.
 understanding = ["gliner2[local]>=2.0"]
 
 [project.scripts]

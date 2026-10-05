@@ -3,7 +3,7 @@
 One OpenAI-compatible caller, shared by the bench harness (Phase 2) and the
 future HTTP proxy (Phase 4). We do not hand-write provider SDKs: every listed
 endpoint speaks the OpenAI chat-completions shape, and anything else is deferred
-to LiteLLM later (PLAN.md §6).
+to LiteLLM later.
 
 Rules enforced here:
 
@@ -11,7 +11,7 @@ Rules enforced here:
     unparseable response is returned as an `error_class`, never a silent fallback
     to a wrong host or an empty string.
   * **Error classification is part of the contract.** `429` / `timeout` / `5xx` /
-    `bad_output` feed the router's observation model directly (PLAN.md §3), which
+    `bad_output` feed the router's observation model directly, which
     is what turns a failed call into a future routing signal instead of noise.
 """
 from __future__ import annotations

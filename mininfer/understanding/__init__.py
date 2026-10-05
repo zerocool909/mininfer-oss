@@ -2,8 +2,7 @@
 
 One tiny, local, schema-driven model that answers two questions MinInfer asks
 constantly — *what is this prompt asking for* and *what does this page say a
-model is* — without spending a routed call to answer them. See
-`PRODUCTIZATION.md` and `CLOUD_ACTIVITY.md` §2.0 (Phase 2.0, deferred).
+model is* — without spending a routed call to answer them. Phase 2.0, deferred.
 
 Importing this package is free: the model loads on first use, and every entry
 point returns `None` when the `[understanding]` extra is not installed. Callers

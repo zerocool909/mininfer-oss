@@ -14,7 +14,7 @@
 #
 # `replicas` is no longer pinned to 1. That pin existed because every request
 # writes (a decision, plus an observation per attempt) and SQLite is
-# single-writer — see PRODUCTIZATION.md §4a. With `MI_DB` a Postgres DSN and the
+# single-writer. With `MI_DB` a Postgres DSN and the
 # rate limiter in Redis, N replicas share one registry and one limit. The
 # remaining shared state the web pods touch is the evidence lake; it lives on the
 # worker's volume, and the API stays stateless.
@@ -130,7 +130,7 @@ spec:
           emptyDir: {}
 ---
 # ---------------------------------------------------------------------------
-# The worker: the registry's batch jobs (PRODUCTIZATION.md §5 layer ⑤). It is a
+# The worker: the registry's batch jobs. It is a
 # CronJob, not a Deployment — it must never scale with requests, and `Forbid`
 # makes an overrunning previous run the only reason to skip one.
 # ---------------------------------------------------------------------------

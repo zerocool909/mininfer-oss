@@ -29,7 +29,7 @@ Understanding the defaults is most of understanding the risk:
   open dashboard, and `/v1/search` (which spends money) is reachable. This is
   deliberate and pinned by `tests/test_profiles.py::test_local_profile_is_open`.
   **Do not expose it to a network without setting `MI_API_KEYS` /
-  `MI_ADMIN_TOKEN`** — see `config/profiles/cloud.env` and `PRODUCTIZATION.md`.
+  `MI_ADMIN_TOKEN`** — see `config/profiles/cloud.env`.
 
 - **The admin surface is not for the public internet.** `/`, `/legacy`,
   `/v1/stats`, `/v1/plan`, `/v1/providers`, `/v1/economics/*` and
@@ -39,8 +39,7 @@ Understanding the defaults is most of understanding the risk:
 
 - **`POST /v1/local/probe` fetches an arbitrary URL.** It exists to let an
   operator test a local Ollama/llama.cpp endpoint. It is admin-only and must
-  stay that way; it is an SSRF surface by design and is documented as one in
-  `PRODUCTIZATION.md` (§4, gap 10).
+  stay that way; it is an SSRF surface by design and is documented as one.
 
 - **Provider keys.** MinInfer reads provider credentials from the environment
   (`.env`, platform secrets). The dashboard may keep *user-supplied* provider
@@ -58,5 +57,5 @@ Understanding the defaults is most of understanding the risk:
 
 - A deployment that runs with access control off and is reachable from an
   untrusted network.
-- Free-tier provider terms-of-service questions (see `PRODUCTIZATION.md` §6).
+- Free-tier provider terms-of-service questions.
 - Denial of service from your own provider quotas.

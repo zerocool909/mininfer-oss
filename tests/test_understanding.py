@@ -4,7 +4,7 @@ Two properties matter and neither is about the model's quality:
 
 1. **Absent, it changes nothing.** No import cost, no error, no behaviour change
    in the proxy or the ingest graph. That is what lets the extra stay out of the
-   default image — and what makes Phase 2.0 (CLOUD_ACTIVITY.md §2.0) safe to
+   default image — and what makes Phase 2.0 safe to
    defer while Phase 1.0 ships.
 2. **Present, it wires in.** A model is injected and the proxy tie-break, the
    `decide` heads and the ingest node actually use it — proven here with a fake,

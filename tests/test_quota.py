@@ -2,7 +2,7 @@
 
 The invariant that matters: a free arm costs zero only while its bucket has
 headroom. Without this the router happily sends everything to a drained free
-endpoint that returns 429 forever (PLAN.md §2).
+endpoint that returns 429 forever.
 """
 from __future__ import annotations
 

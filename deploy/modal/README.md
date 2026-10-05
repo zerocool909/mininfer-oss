@@ -62,7 +62,7 @@ modal secret create mininfer MI_DB="…" \
 ```
 
 Without these the service is **open**. That is the same opt-in default the
-container has (`PRODUCTIZATION.md` §3), and it is the right one for a private
+container has, and it is the right one for a private
 deployment and the wrong one for a public URL.
 
 ### 4. A raw-evidence Volume (already declared)
@@ -123,7 +123,7 @@ reconciler offline.
 * **`mi sync`.** It exists for the *local* workflow (SQLite → Supabase mirror). With
   Postgres as the primary there is nothing to mirror: Modal writes to it directly.
 * **The `/v1/economics/reconcile` and `/v1/economics/evidence` POST endpoints.**
-  Deliberately not built — see `PRICING_QUOTA_PLAN.md` §5.1. A remote write surface
+  Deliberately not built. A remote write surface
   for a capability that is already local and re-derivable is surface without value.
 
 ---

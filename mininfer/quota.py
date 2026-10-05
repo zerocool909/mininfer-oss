@@ -1,7 +1,7 @@
 """Declared quota limits, observed provider limits, and the seeding pass.
 
 A free arm costs zero *while its bucket has headroom* and the price of the
-next-best option once it does not (PLAN.md §2). That only works if the router
+next-best option once it does not. That only works if the router
 knows how big the bucket is. This module has two sources for that number, and
 they are not interchangeable:
 

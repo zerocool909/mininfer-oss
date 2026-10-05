@@ -55,7 +55,7 @@ COPY supabase/ /app/supabase/
 #
 # To bake a *populated* catalog instead, delete the `mininfer.db` line from
 # `.dockerignore` and add `COPY mininfer.db /app/seed.db` here — but a stale
-# baked-in catalog is the anti-pattern `PRODUCTIZATION.md` warns about; prefer
+# baked-in catalog is an anti-pattern that goes stale; prefer
 # the scheduled ingest.
 RUN python -c "from mininfer.store import Store; Store('/app/seed.db').close()"
 
@@ -86,14 +86,13 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # =============================================================================
 # Stage 3: Worker — the same runtime, driven by the batch entrypoint.
 #
-# One image, two process types (PRODUCTIZATION.md §5 layer ⑤): `web` runs
+# One image, two process types: `web` runs
 # `uvicorn mininfer.proxy:app`, the `worker` runs `mi ingest` / `mi metrics` /
 # `mi bench` on a schedule. They share the image on purpose — a fix to the router
-# must land in both, which is the argument PRODUCTIZATION.md §3a makes against a
-# second codebase.
+# must land in both, which is the argument against a second codebase.
 #
 # The local understanding layer (GLiNER2.5) is deliberately NOT built here. It
-# is Phase 2.0 (CLOUD_ACTIVITY.md §2.0): it pulls in PyTorch, which turns the
+# is Phase 2.0: it pulls in PyTorch, which turns the
 # ~60 MB web image into a multi-GB one, and nothing on the Phase 1.0 request
 # path needs it. The optional `[understanding]` extra stays declared in
 # pyproject.toml so the seam can be opted into without a code change.

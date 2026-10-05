@@ -2,7 +2,7 @@
 
 The contract that must not drift: a failed primary (429/5xx/timeout) must move to
 the next candidate and record *both* attempts as observations — otherwise a 429
-never demotes the arm that produced it (PLAN.md §3).
+never demotes the arm that produced it.
 """
 from __future__ import annotations
 

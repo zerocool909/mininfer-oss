@@ -10,9 +10,8 @@ three honest outcomes:
     (raise)     never on the optional path; a missing model is not an error
 
 That contract is what lets the proxy and the ingest graph keep their existing
-behaviour, and their existing tests, when the extra is not present. See
-`CLOUD_ACTIVITY.md` §2.0 for why it is deliberately deferred out of the Phase 1.0
-image.
+behaviour, and their existing tests, when the extra is not present. It is
+deliberately deferred out of the Phase 1.0 image.
 
 The default checkpoint is **`fastino/GLiNER2.5-Decide`** — the 340M English
 classification specialist in the GLiNER2.5 family (DeBERTa-v3-large, span

@@ -1,4 +1,4 @@
-"""Contextual bandit — the self-learning half of the router (Phase 6, PLAN.md §4c).
+"""Contextual bandit — the self-learning half of the router (Phase 6).
 
 The deterministic router (`objective: cost_per_success`) is explainable but
 static: it trusts the benchmark prior until observations accumulate, and it never
@@ -10,7 +10,7 @@ correctness).
   * **Thompson sampling.** p(success) is drawn from a Beta posterior seeded by the
     benchmark prior, so an untried arm is *uncertain*, not assumed bad. This is
     what prevents rich-get-richer lock-in where an arm wins only because it was
-    tried first (PLAN.md §4c).
+    tried first.
   * **Reward is verified success, penalty is cost.** Arms are ordered by *sampled*
     cost-per-success, so the bandit explores where exploring is cheap.
   * **Exploration is bounded.** With probability `exploration_eps` it deliberately

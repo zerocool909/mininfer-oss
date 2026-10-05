@@ -1,6 +1,6 @@
 """Routing: constraint-first, score-second.
 
-Order of operations (PLAN.md §2, §3):
+Order of operations:
 
     1. HARD FILTER   capability / context / status / price ceiling. Nothing below
                       this line can be recovered by a good score.

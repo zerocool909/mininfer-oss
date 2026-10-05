@@ -3,7 +3,7 @@
 # These are claims from provider documentation, not measurements — seeded into
 # `quota_buckets` with source: configured. The proxy charges every real call to
 # these buckets and exhausts the minute bucket on an observed 429, so the router
-# demotes a free arm as its headroom drains (PLAN.md §2).
+# demotes a free arm as its headroom drains.
 #
 # Provider limits change. Re-run `mi quota seed` after editing.
 

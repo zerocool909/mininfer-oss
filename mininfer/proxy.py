@@ -3,7 +3,7 @@
 `POST /v1/chat/completions` routes each request through the registry and executes
 via the shared caller in `mi/execute.py`, recording an append-only observation for
 every call — success *and* failure. That is what turns live traffic into the
-"personal router" signal (PLAN.md §4c).
+"personal router" signal.
 
 Model selection is by the request's `model` field, so any OpenAI client (pi, the
 OpenAI SDK, curl) routes with zero code changes:

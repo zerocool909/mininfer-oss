@@ -1,7 +1,7 @@
 """The two routes — OSS/local and cloud — validated end to end.
 
-MinInfer ships as **one codebase serving two profiles** (`PRODUCTIZATION.md`
-§3a). The separation is data, not a fork:
+MinInfer ships as **one codebase serving two profiles**. The separation is data,
+not a fork:
 
     config/profiles/local.env   config/profiles/cloud.env
     deploy/local/               deploy/cloud/
@@ -58,7 +58,7 @@ _PROFILE_KEYS = (
 )
 
 # The surfaces each route exposes. Kept as paths (not handlers) so the matrix
-# reads like the table in `PRODUCTIZATION.md`. `/v1/plan` is admin (it reads the
+# stays in step with the profiles. `/v1/plan` is admin (it reads the
 # registry); `/v1/models` is tenant.
 _TENANT_SURFACES = ("/v1/models",)
 _ADMIN_SURFACES = ("/v1/stats", "/", "/docs", "/openapi.json")

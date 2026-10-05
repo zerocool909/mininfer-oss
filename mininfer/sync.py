@@ -1,4 +1,4 @@
-"""Supabase / Postgres sync (Phase 6, PLAN.md §5).
+"""Supabase / Postgres sync (Phase 6).
 
 The local SQLite registry is the development source of truth; Postgres is the hot
 shared registry and the read-only dashboard's backing store. The schema is the

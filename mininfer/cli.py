@@ -1121,7 +1121,7 @@ def cmd_classify(args) -> int:
             out["note"] = (
                 "[understanding] extra not installed; cue classifier used. "
                 "`pip install 'mininfer[understanding]'` enables local decisions "
-                "and entity extraction (see CLOUD_ACTIVITY.md §2.0)."
+                "and entity extraction."
             )
 
     if backend != "none" and not args.no_extract:
