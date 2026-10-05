@@ -102,33 +102,6 @@ boundary. Inside a container the bind address must be `0.0.0.0` or the port
 mapping cannot reach it, so `docker-compose.yml` sets that explicitly. Same
 semantics, different network namespace.
 
-## TLS / corporate root CAs
-
-**On a normal network there is nothing to do here** — MinInfer verifies against
-`certifi` (the Mozilla roots), which trusts every public provider. This section is
-only for a network that intercepts TLS.
-
-If `curl` works and Python does not (`CERTIFICATE_VERIFY_FAILED`), the root CA is
-in the OS trust store and `certifi` cannot see it:
-
-```bash
-./scripts/make_ca_bundle.sh                       # writes .certs/bundle.pem
-echo "MI_CA_BUNDLE=$PWD/.certs/bundle.pem" >> .env   # `mi proxy` on the host
-```
-
-`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` work as well, so a
-machine already set up for Python or `curl` needs no MinInfer-specific setting.
-The bundle is per-machine by design — it holds *your* network's interception
-root — so `.certs/` is gitignored; never commit it, and never disable
-verification in its place.
-
-In the container no `.env` change is needed: the repo's `.certs/` is mounted at
-`/certs` and `MI_CA_BUNDLE` defaults to `/certs/bundle.pem`. An absent bundle is
-an empty directory, not an error — the code falls back to `certifi`.
-
-Symptom without it: `/v1/plan` works (no upstream call) while
-`/v1/chat/completions` returns 502 `network_error`.
-
 ## What this variant is not
 
 It is not safe to expose. There is no authentication, no rate limit and no body

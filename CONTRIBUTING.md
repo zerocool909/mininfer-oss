@@ -28,16 +28,6 @@ python3 -m mininfer stats
 python3 -m mininfer route general_chat
 ```
 
-`mi ingest` must fetch from provider APIs, so it needs network access. On a
-machine whose TLS trust lives in the system keychain (macOS, corporate proxy),
-`python` may not see the root CA that `curl` does — generate a bundle and point
-`MI_CA_BUNDLE` at it:
-
-```bash
-./scripts/make_ca_bundle.sh
-export MI_CA_BUNDLE="$PWD/.certs/bundle.pem"
-```
-
 Note that routing/execution needs at least one provider key. The *catalog* is
 built keyless (that is the point of Tier 0), but no upstream answers inference
 without a credential, so `mi route` reports `0 eligible` until you set one

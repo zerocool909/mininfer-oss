@@ -71,18 +71,6 @@ def test_k8s_registry_volume_is_not_the_registry():
     assert any("emptyDir" in v for v in volumes.values()), "scratch space for the admin probe"
 
 
-def test_k8s_mounts_the_optional_ca_bundle():
-    """Checklist 7.4: a host-only CA path is invisible inside the pod."""
-    for name in ("Deployment/mininfer", "CronJob/mininfer-worker"):
-        doc = _k8s()[name]
-        cont = (doc["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
-                if name.startswith("CronJob") else _containers(doc["spec"])[0])
-        env = _env_of(cont)
-        assert env["MI_CA_BUNDLE"]["value"].startswith("/etc/mininfer/ca/")
-        mounts = {m["name"]: m for m in cont["volumeMounts"]}
-        assert "ca" in mounts, f"{name} sets MI_CA_BUNDLE but does not mount it"
-
-
 def test_k8s_worker_is_a_batch_job_not_a_service():
     """The registry's batch jobs must not scale with requests."""
     cj = _k8s()["CronJob/mininfer-worker"]
@@ -116,12 +104,10 @@ def test_fly_splits_web_worker_and_verify_and_scopes_http_to_web():
 def test_fly_keeps_replicas_and_shared_state_possible():
     fly = _fly()
     # MI_DB/MI_REDIS_URL are secrets on Fly (they must not be committed), so the
-    # manifest can only promise the *seam*: the env names are documented and the
-    # CA bundle has a home on the volume.
+    # manifest can only promise the *seam*: the env names are documented.
     text = FLY.read_text(encoding="utf-8")
     assert "fly secrets set MI_DB" in text
     assert "fly secrets set MI_REDIS_URL" in text
-    assert fly["env"]["MI_CA_BUNDLE"] == "/data/ca-bundle.pem"
 
 
 def test_the_worker_reconciles_after_ingesting():

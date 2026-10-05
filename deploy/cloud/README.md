@@ -25,9 +25,6 @@ kubectl create secret generic mininfer-secrets \
   --from-literal=database-url="postgresql://mininfer:…@db.internal:5432/mininfer" \
   --from-literal=redis-url="redis://redis.internal:6379/0" \
   --from-file=keys.json=./keys.json
-
-# Optional: a corporate/MITM root CA for outbound provider TLS (checklist 7.4)
-kubectl create configmap mininfer-ca --from-file=ca-bundle.pem=.certs/bundle.pem
 ```
 
 Issue a tenant key, then store only its digest:
@@ -161,9 +158,5 @@ make:
 - **`MI_REDIS_URL` also backs the benchmark-norms cache.** Without it every
   replica rescans the benchmark table on its own 120 s schedule; with it they
   share one cached band (`mininfer/cache.py`).
-- **Provider TLS behind a corporate proxy needs the CA bundle.** k8s mounts the
-  optional `mininfer-ca` ConfigMap at `/etc/mininfer/ca`; Fly expects
-  `/data/ca-bundle.pem` on the volume. The code ignores a missing bundle, so an
-  unset one degrades to `certifi` rather than failing (checklist 7.4).
 - **`/v1/local/register` writes to the registry** and `/v1/local/probe` fetches a
   caller-supplied URL. Both are admin-only; keep them that way.

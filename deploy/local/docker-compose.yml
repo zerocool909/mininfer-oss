@@ -52,14 +52,8 @@ services:
       # Access control stays OFF here (matching config/profiles/local.env); set
       # MI_API_KEYS / MI_ADMIN_TOKEN in `.env` to turn it on. To run the cloud
       # variant locally, use deploy/cloud/ — not this file.
-      # Corporate/macOS root CA. The host path is mounted at /certs and the
-      # bundle is read from there; `scripts/make_ca_bundle.sh` writes
-      # .certs/bundle.pem. Absent, the directory is empty and the code falls
-      # back to certifi rather than failing. See deploy/local/README.md.
-      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
     volumes:
       - mininfer_data:/data
-      - ../../.certs:/certs:ro
       # A key saved from the dashboard ("To server") is written to the server's
       # `.env`. Binding the repo's copy means it lands on the host and survives a
       # `docker compose up` recreate, instead of living in the container's writable
@@ -131,11 +125,9 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
-      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
     volumes:
       # Same volume as the web service: one registry, two processes.
       - mininfer_data:/data
-      - ../../.certs:/certs:ro
       # Read the same `.env` the web service writes, so a key saved from the
       # dashboard is visible to `mi refresh` on its next iteration (each `mi`
       # invocation is a fresh process and calls `load_env`).

@@ -7,9 +7,7 @@
 #     --from-literal=database-url="postgresql://mininfer:…@db.internal:5432/mininfer" \
 #     --from-literal=redis-url="redis://redis.internal:6379/0" \
 #     --from-file=keys.json=./keys.json
-#   # 2. optional: a corporate/MITM root CA for outbound provider TLS
-#   kubectl create configmap mininfer-ca --from-file=ca-bundle.pem=.certs/bundle.pem
-#   # 3. apply
+#   # 2. apply
 #   kubectl apply -f deploy/cloud/k8s.yaml
 #
 # `replicas` is no longer pinned to 1. That pin existed because every request
@@ -19,9 +17,6 @@
 # remaining shared state the web pods touch is the evidence lake; it lives on the
 # worker's volume, and the API stays stateless.
 #
-# The CA bundle is mounted **optional**: a cluster without the ConfigMap still
-# starts, and only outbound TLS to a corporate-proxied provider needs it. Set
-# MI_CA_BUNDLE to the mount path below after creating the ConfigMap (7.4).
 # ===========================================================================
 apiVersion: v1
 kind: Secret
@@ -86,8 +81,6 @@ spec:
             - name: MI_REDIS_URL
               valueFrom:
                 secretKeyRef: {name: mininfer-secrets, key: redis-url}
-            # --- outbound TLS to a corporate-proxied provider (optional) ---
-            - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
             # --- secrets --------------------------------------------------
             - name: MI_ADMIN_TOKEN
               valueFrom:
@@ -103,7 +96,6 @@ spec:
                 secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
           volumeMounts:
             - {name: keys, mountPath: /run/secrets/mininfer, readOnly: true}
-            - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
             # The web pod does not hold the registry (Postgres does); this is
             # scratch space for the admin-only `/v1/local/probe`.
             - {name: scratch, mountPath: /data}
@@ -123,9 +115,6 @@ spec:
       volumes:
         - name: keys
           secret: {secretName: mininfer-secrets, optional: true}
-        # optional: absent unless `kubectl create configmap mininfer-ca` ran
-        - name: ca
-          configMap: {name: mininfer-ca, optional: true}
         - name: scratch
           emptyDir: {}
 ---
@@ -172,7 +161,6 @@ spec:
                 - name: MI_REDIS_URL
                   valueFrom:
                     secretKeyRef: {name: mininfer-secrets, key: redis-url}
-                - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
                 - name: MI_ADMIN_TOKEN
                   valueFrom:
                     secretKeyRef: {name: mininfer-secrets, key: admin-token}
@@ -185,15 +173,12 @@ spec:
                     secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
               volumeMounts:
                 - {name: evidence, mountPath: /data}
-                - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
               resources:
                 requests: {cpu: "250m", memory: "512Mi"}
                 limits: {cpu: "1000m", memory: "1536Mi"}
           volumes:
             - name: evidence
               persistentVolumeClaim: {claimName: mininfer-evidence}
-            - name: ca
-              configMap: {name: mininfer-ca, optional: true}
 ---
 # ---------------------------------------------------------------------------
 # Daily drift check. `mi verify` re-reads every catalogue (bypassing the raw
@@ -235,7 +220,6 @@ spec:
                 - name: MI_REDIS_URL
                   valueFrom:
                     secretKeyRef: {name: mininfer-secrets, key: redis-url}
-                - {name: MI_CA_BUNDLE, value: "/etc/mininfer/ca/ca-bundle.pem"}
                 - name: MI_ADMIN_TOKEN
                   valueFrom:
                     secretKeyRef: {name: mininfer-secrets, key: admin-token}
@@ -247,15 +231,12 @@ spec:
                     secretKeyRef: {name: mininfer-secrets, key: groq-key, optional: true}
               volumeMounts:
                 - {name: evidence, mountPath: /data}
-                - {name: ca, mountPath: /etc/mininfer/ca, readOnly: true}
               resources:
                 requests: {cpu: "250m", memory: "512Mi"}
                 limits: {cpu: "1000m", memory: "1536Mi"}
           volumes:
             - name: evidence
               persistentVolumeClaim: {claimName: mininfer-evidence}
-            - name: ca
-              configMap: {name: mininfer-ca, optional: true}
 ---
 apiVersion: v1
 kind: Service

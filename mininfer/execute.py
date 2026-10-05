@@ -185,15 +185,14 @@ def _refine_error_class(err: str | None, detail: str | None) -> str | None:
 #: `SSLCertVerificationError` text ("unable to get local issuer certificate")
 #: tells an operator nothing actionable; this does. It replaces the raw detail
 #: rather than wrapping it, so it also fits `observations.error_detail`.
-_TLS_HINT = ("certificate verify failed — the root CA is missing from Python's "
-             "trust store. Run scripts/make_ca_bundle.sh and set MI_CA_BUNDLE "
-             "(README: TLS / corporate root CAs)")
+_TLS_HINT = ("certificate verify failed — Python's trust store is missing a "
+             "root CA. Point SSL_CERT_FILE at a PEM bundle of the extra roots")
 
 
 def _network_class(exc: BaseException) -> str:
     """Tell "we could not verify the provider" from "the provider is unreachable".
 
-    A corporate/MITM root missing from our trust store raises an `ssl.SSLError`
+    A root CA missing from our trust store raises an `ssl.SSLError`
     underneath the httpx error. That is *our* configuration, so it is classified
     `tls_error` and kept out of the router's success statistics
     (`schema.NON_MODEL_ERRORS`) — otherwise a bad CA bundle teaches the router

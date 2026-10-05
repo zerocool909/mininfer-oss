@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import re
 from typing import Any, TypedDict
 
@@ -143,10 +142,6 @@ def _agent_llm(deploy_id: str | None):
     if ep.error or not ep.api_key:
         raise RuntimeError(f"agent model {deploy_id!r} not callable: "
                            f"{ep.error or 'no_api_key'}")
-    bundle = os.environ.get("MI_CA_BUNDLE")
-    if bundle and pathlib.Path(bundle).exists():
-        # langchain-openai -> openai SDK -> httpx honours SSL_CERT_FILE.
-        os.environ["SSL_CERT_FILE"] = bundle
 
     return ChatOpenAI(model=ep.model, base_url=ep.base_url, api_key=ep.api_key,
                       temperature=0.0, timeout=120.0)

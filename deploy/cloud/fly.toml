@@ -30,10 +30,6 @@ primary_region = "iad"
   # per-replica, so "120 rpm" becomes "120 rpm per replica".
   MI_DB = "/data/mininfer.db"
   MI_POLICY = "/app/config/policy.yaml"
-  # Optional corporate/MITM root CA for outbound provider TLS. The code ignores
-  # the path when it is absent, so this is safe to leave set. Put the bundle on
-  # the volume: `fly ssh sftp shell` then upload to /data/ca-bundle.pem.
-  MI_CA_BUNDLE = "/data/ca-bundle.pem"
   # Limits from config/profiles/cloud.env. Non-secret, so they belong here.
   MI_RATE_LIMIT_RPM = "120"
   MI_MAX_BODY_BYTES = "1048576"
@@ -41,8 +37,8 @@ primary_region = "iad"
   #   fly secrets set MI_ADMIN_TOKEN=... MI_API_KEYS_FILE=/run/secrets/keys.json
 
 [mounts]
-  # With MI_DB on Postgres this volume holds the raw evidence lake (and the
-  # optional CA bundle above), not the registry.
+  # With MI_DB on Postgres this volume holds the raw evidence lake, not the
+  # registry.
   source = "mininfer_data"
   destination = "/data"
 

@@ -99,10 +99,9 @@ def cmd_ingest(args) -> int:
         if args.sources:
             print("  (named sources only — a bare `mi ingest` sweeps every "
                   "available one)", file=sys.stderr)
-        print("  If the failures are CERTIFICATE_VERIFY_FAILED, your network "
-              "intercepts TLS and\n  Python cannot see its root CA:\n"
-              "    ./scripts/make_ca_bundle.sh && export MI_CA_BUNDLE=$PWD/.certs/bundle.pem\n"
-              "  See README: 'TLS: corporate proxies and corporate roots'.",
+        print("  If the failures are CERTIFICATE_VERIFY_FAILED, Python cannot "
+              "see a root CA\n  that another client already trusts. Point "
+              "SSL_CERT_FILE at a PEM bundle of it.",
               file=sys.stderr)
         return 1
     return 0
@@ -726,7 +725,7 @@ def _listening_pid(port: int) -> int | None:
 
 
 def cmd_proxy(args) -> int:
-    """OpenAI-compatible proxy. Set provider keys + MI_CA_BUNDLE in the env."""
+    """OpenAI-compatible proxy. Set provider keys in the env."""
     try:
         import uvicorn
 

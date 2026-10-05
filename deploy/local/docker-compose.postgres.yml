@@ -77,11 +77,7 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
-      # Corporate/MITM root CA. The host path is mounted at /certs below; see
-      # scripts/make_ca_bundle.sh. Absent, it degrades to certifi.
-      - MI_CA_BUNDLE=${MI_CA_BUNDLE:-/certs/bundle.pem}
     volumes:
-      - ../../.certs:/certs:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
       interval: 30s

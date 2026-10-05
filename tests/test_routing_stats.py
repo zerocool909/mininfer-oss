@@ -1,8 +1,8 @@
 """`routing_stats` must train on the model, not on our own infrastructure.
 
-The bug this pins: a container without the corporate root CA recorded 32
-`network_error`s as model *losses*, so the router was learning that its best arms
-fail. A call that never reached the model (no key, TLS/DNS, a malformed registry
+The bug this pins: a container that could not verify a provider's certificate
+recorded 32 `network_error`s as model *losses*, so the router was learning that
+its best arms fail. A call that never reached the model (no key, TLS/DNS, a malformed registry
 row) is not evidence about the model and must not enter `n` / `wins`.
 
 What must still count is anything the provider said *about this deployment* —
@@ -134,7 +134,7 @@ def test_an_existing_registry_gets_the_corrected_view(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_a_certificate_failure_is_a_tls_error():
-    """The exact shape httpx raises behind a corporate MITM root we don't trust."""
+    """The exact shape httpx raises when a root CA is missing from our store."""
     inner = ssl.SSLCertVerificationError(
         1, "certificate verify failed: unable to get local issuer certificate")
     exc = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
@@ -167,11 +167,10 @@ def test_the_tls_hint_is_actionable_not_a_raw_ssl_string():
     """The detail a user sees must name the fix, not echo OpenSSL.
 
     The dashboard surfaces `error_detail` as "Connectivity failed … Reason:",
-    where `unable to get local issuer certificate` is a dead end. The hint points
-    at the one command that fixes it, and stays short enough to sit in
+    where `unable to get local issuer certificate` is a dead end. The hint names
+    the variable that fixes it, and stays short enough to sit in
     `observations.error_detail`.
     """
-    assert "make_ca_bundle.sh" in execute._TLS_HINT
-    assert "MI_CA_BUNDLE" in execute._TLS_HINT
+    assert "SSL_CERT_FILE" in execute._TLS_HINT
     assert "unable to get local issuer certificate" not in execute._TLS_HINT
     assert len(execute._TLS_HINT) < 200

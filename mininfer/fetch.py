@@ -28,7 +28,7 @@ _UA = "MinInfer/0.1 (+model-intelligence-registry)"
 #: anyway; `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` are **not**, and they are
 #: exactly the names a `requests`/`curl` user already has exported — honouring
 #: them here is what makes "it worked with curl" carry over.
-_CA_BUNDLE_VARS = ("MI_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+_CA_BUNDLE_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
                    "CURL_CA_BUNDLE")
 
 
@@ -39,12 +39,10 @@ def _verify() -> str | bool:
     `True`, so httpx verifies against `certifi` (the Mozilla roots), which already
     trusts every public provider. Nothing here is machine- or device-specific.
 
-    A bundle is only needed behind a TLS-intercepting proxy, where the root CA is
-    the *organisation's own* and therefore exists on that machine and nowhere
-    else. That is why `.certs/` is gitignored and never shipped: committing one
-    machine's trust store would make every clone trust *its* interception root.
-    Generate one where it is needed (see `scripts/make_ca_bundle.sh`) and leave
-    the code alone. Never disable verification.
+    A bundle is only needed when Python's trust store lacks a root that another
+    client already trusts. Point one of `_CA_BUNDLE_VARS` at a PEM bundle to add
+    those anchors; never disable verification instead. `.certs/` is gitignored
+    because such a bundle is machine-specific.
     """
     for name in _CA_BUNDLE_VARS:
         value = os.environ.get(name)

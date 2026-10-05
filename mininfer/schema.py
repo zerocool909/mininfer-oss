@@ -31,8 +31,9 @@ from typing import Any
 # costs the paid fallback). Those are properties of the deployment, which is
 # exactly what the router ranks.
 #
-# The failure this prevents: a container without the corporate root CA recorded
-# 32 `network_error`s as model losses, dragging down the very arms that worked.
+# The failure this prevents: a container that could not verify a provider's
+# certificate recorded 32 `network_error`s as model losses, dragging down the very
+# arms that worked.
 NON_MODEL_ERRORS: frozenset[str] = frozenset({
     "no_api_key",   # our environment has no key for this provider
     "auth_error",   # our key is rejected/revoked (401/403)

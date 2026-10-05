@@ -136,7 +136,7 @@ def test_persist_false_returns_the_bytes_without_writing(monkeypatch):
 # TLS trust is per-machine configuration, never per-device code
 # --------------------------------------------------------------------------- #
 
-_CA_VARS = ("MI_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+_CA_VARS = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 
 
 def _clear_ca(monkeypatch):
@@ -172,14 +172,14 @@ def test_the_standard_ca_variables_are_honoured(monkeypatch, tmp_path, var):
 def test_a_missing_bundle_path_falls_back_to_the_default(monkeypatch):
     """A stale path must not be handed to httpx — that would fail every request."""
     _clear_ca(monkeypatch)
-    monkeypatch.setenv("MI_CA_BUNDLE", "/does/not/exist.pem")
+    monkeypatch.setenv("SSL_CERT_FILE", "/does/not/exist.pem")
     assert F._verify() is True
 
 
-def test_mi_ca_bundle_wins_over_the_standard_variables(monkeypatch, tmp_path):
+def test_the_first_set_variable_wins(monkeypatch, tmp_path):
     _clear_ca(monkeypatch)
     a, b = tmp_path / "a.pem", tmp_path / "b.pem"
     a.write_text("x"); b.write_text("x")
-    monkeypatch.setenv("MI_CA_BUNDLE", str(a))
-    monkeypatch.setenv("SSL_CERT_FILE", str(b))
+    monkeypatch.setenv("SSL_CERT_FILE", str(a))
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(b))
     assert F._verify() == str(a)
