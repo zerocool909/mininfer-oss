@@ -62,6 +62,18 @@
     .ledger-art .win-callout,.ledger-art .labels{opacity:1;animation:none}
   }
 
+  /* heartbeat — the warm-tier provider probe */
+  .pulse{border:1px solid var(--rule);background:var(--wash);border-radius:8px;padding:14px 20px;margin:26px 0 18px}
+  .pulse svg{display:block;width:100%;height:76px}
+  .pulse .line{stroke-dasharray:110 820;stroke-dashoffset:930;animation:beat 3.2s linear infinite}
+  @keyframes beat{to{stroke-dashoffset:0}}
+  @media (prefers-reduced-motion:reduce){.pulse .line{stroke-dasharray:none;stroke-dashoffset:0;animation:none}}
+  .health{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}
+  .chip{display:inline-flex;align-items:center;gap:8px;font:13px/1 var(--mono);padding:8px 12px;border:1px solid var(--rule);border-radius:999px;color:var(--mute)}
+  .chip i{width:8px;height:8px;border-radius:50%;background:var(--mute);flex:none}
+  .chip.ok{color:var(--ink)} .chip.ok i{background:var(--teal)}
+  .chip.bad{color:var(--warn);border-color:var(--warn)} .chip.bad i{background:var(--warn)}
+
   /* sections */
   section{padding:76px 0;border-top:1px solid var(--rule)}
   .sec{display:grid;grid-template-columns:200px 1fr;gap:56px}
@@ -153,6 +165,7 @@
       <a href="#idea">The idea</a>
       <a href="#ledger">Ledger</a>
       <a href="#trust">Trust</a>
+      <a href="#pulse">Heartbeat</a>
       <a href="#route">Routing</a>
       <a href="#run">Run it</a>
       <a class="gh" href="https://github.com/zerocool909/mininfer-oss">GitHub</a>
@@ -278,14 +291,42 @@
   </div>
 </div></section>
 
+<section id="pulse"><div class="col sec">
+  <aside><b>04</b>Heartbeat</aside>
+  <div>
+    <h2>A dead key should fail on a timer, not on your request.</h2>
+    <p class="lede">The registry says what exists. Only a live call says what still works. Left alone, the router finds a revoked key or an unreachable host the expensive way &mdash; by spending a request on it. The optional <b>warm tier</b> asks first, on a cadence, and keeps the answer warm.</p>
+
+    <div class="pulse">
+      <svg viewBox="0 0 560 90" preserveAspectRatio="none" role="img" aria-label="A provider health probe drawn as a heartbeat trace: the server checks each configured provider on a schedule.">
+        <path class="line" d="M0 62 H120 l12 -34 l12 54 l12 -28 l12 8 H300 l12 -34 l12 54 l12 -28 l12 8 H560"
+              fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="health" role="list">
+      <span class="chip ok" role="listitem"><i></i>groq&nbsp;·&nbsp;healthy&nbsp;·&nbsp;12 models&nbsp;·&nbsp;316 ms</span>
+      <span class="chip ok" role="listitem"><i></i>openrouter&nbsp;·&nbsp;healthy&nbsp;·&nbsp;464 models&nbsp;·&nbsp;449 ms</span>
+      <span class="chip bad" role="listitem"><i></i>a-provider&nbsp;·&nbsp;auth_error</span>
+    </div>
+
+    <p>Each check is a provider&rsquo;s own <code>GET /models</code>: cheap, and enough to prove reachability (DNS and TLS) and that the key is still accepted, without inventing a chat model to call. The verdict is recorded per provider &mdash; <code>ok</code>, <code>auth_error</code>, <code>network_error</code>, or the HTTP status &mdash; with latency and model count.</p>
+
+    <ol class="steps">
+      <li><div><h3>Off until you ask.</h3><p>The probe is opt-in, toggled from the dashboard&rsquo;s <b>Settings &rarr; Providers</b> card. A plain <code>docker compose up</code> makes no scheduled upstream calls it was not asked to make.</p></div></li>
+      <li><div><h3>Cheap, on a cadence.</h3><p>A key is checked every five minutes by default, down to 30 seconds. <b>Run now</b> probes every configured provider on demand.</p></div></li>
+      <li><div><h3>The router reads it.</h3><p>A provider whose most recent check failed is dropped from the candidate pool, so the next request skips it instead of spending itself on it. The verdict expires after 15 minutes &mdash; switching the probe off can never exclude a provider forever.</p></div></li>
+    </ol>
+  </div>
+</div></section>
+
 <section id="route"><div class="col sec">
-  <aside><b>04</b>One request</aside>
+  <aside><b>05</b>One request</aside>
   <div>
     <h2>What happens between the prompt and the first token.</h2>
 
     <div class="trace" aria-label="Example routing trace"><span class="c"># POST /v1/chat/completions  model=auto</span>
 <span class="b">classify</span>   intent=summarise  confidence=0.82   <span class="c">(local, no paid call)</span>
-<span class="b">filter</span>     214 deployments → 37   <span class="c">context · modality · auth · quota headroom</span>
+<span class="b">filter</span>     214 deployments → 37   <span class="c">context · modality · auth · quota headroom · probe health</span>
 <span class="b">score</span>      cost ÷ p_lb per candidate, free-first
 <span class="b">cap</span>        no model above 60% of this task’s traffic
 <span class="b">dispatch</span>   <span class="g">openrouter:qwen/qwen3.8-27b:free</span>
@@ -295,7 +336,7 @@
 
     <ol class="steps">
       <li><div><h3>Classify locally.</h3><p>Intent comes from heuristics and a local model, so routing doesn’t burn a paid call to decide where to spend. Ambiguous prompts merge the profiles of the competing tasks and satisfy both.</p></div></li>
-      <li><div><h3>Filter on hard constraints.</h3><p>Context length, modality, credentials, and quota headroom. Headroom is the minimum of the configured limit and what the provider’s live <code>x-ratelimit-*</code> headers last said.</p></div></li>
+      <li><div><h3>Filter on hard constraints.</h3><p>Context length, modality, credentials, quota headroom, and live health. Headroom is the minimum of the configured limit and what the provider’s live <code>x-ratelimit-*</code> headers last said; a provider whose last warm-tier probe failed is skipped until it recovers.</p></div></li>
       <li><div><h3>Rank, then cap.</h3><p>Cost per success decides the order. No single model may take more than 60% of a task’s traffic, and manual pins expire after 24 hours, so the system can’t fixate.</p></div></li>
       <li><div><h3>Fail over before the first byte.</h3><p>A 429, timeout or dropped connection moves the same request to the next ranked arm. Once streaming starts the router is committed, because a half-sent stream can’t be unsent.</p></div></li>
       <li><div><h3>Write down what happened.</h3><p>Every outcome, including a 404 for a retired model, becomes evidence. The next decision is made against it.</p></div></li>
@@ -304,7 +345,7 @@
 </div></section>
 
 <section id="principles"><div class="col sec">
-  <aside><b>05</b>Principles</aside>
+  <aside><b>06</b>Principles</aside>
   <div>
     <h2>Why it behaves the way it does.</h2>
     <dl class="pr">
@@ -314,12 +355,13 @@
       <div><dt>An error is evidence</dt><dd>When a provider retires a model, the 404 marks it uncallable and traffic reroutes. Nobody has to edit a config file at night.</dd></div>
       <div><dt>Humans are a signal too</dt><dd>Compare mode streams two models over one connection. Your pick is recorded as a weak subjective observation alongside the automatic ones.</dd></div>
       <div><dt>Every answer names its author</dt><dd>The reply shows which model and provider produced it, what else was shortlisted, and what it cost, speed and latency were.</dd></div>
+      <div><dt>A dead key fails on a timer</dt><dd>The optional warm-tier probe checks every configured provider on a cadence, so a revoked key or a down host leaves the candidate pool before a request spends itself on it.</dd></div>
     </dl>
   </div>
 </div></section>
 
 <section id="run"><div class="col sec">
-  <aside><b>06</b>Run it</aside>
+  <aside><b>07</b>Run it</aside>
   <div>
     <h2>Point any OpenAI-compatible client at it.</h2>
 <pre class="cmd"><span class="c"># clone and install</span>
@@ -333,7 +375,7 @@ mi proxy --port 8765</pre>
 <pre class="cmd">curl http://127.0.0.1:8765/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","messages":[{"role":"user","content":"Summarise this"}]}'</pre>
-    <p>Open <code>http://127.0.0.1:8765</code> for the dashboard: the model registry with untried, trialing and proven states, the chat playground, and the decision log. The README covers configuration, quotas and the full API contract.</p>
+    <p>Open <code>http://127.0.0.1:8765</code> for the dashboard: the model registry with untried, trialing and proven states, the chat playground, and the decision log. The <b>Settings &rarr; Providers</b> tab also carries the warm-tier toggle and a live health badge per provider. The README covers configuration, quotas and the full API contract.</p>
   </div>
 </div></section>
 

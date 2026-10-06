@@ -36,40 +36,20 @@ jobs:
   # `mininfer/db.py` is the only file that knows the difference, and a change
   # that quietly assumes SQLite passes here without the `test-postgres` job.
   # ---------------------------------------------------------------------------
-  test:
-    name: pytest (${{ matrix.store }}, py${{ matrix.python }})
+  test-sqlite:
+    name: pytest (sqlite, py${{ matrix.python }})
     runs-on: ubuntu-latest
+    # Bounded on purpose: the default is 360 minutes, so a deadlocked test used to
+    # sit in the queue looking "stuck" for hours instead of failing with a log.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - store: sqlite
-            python: "3.11"
-          - store: sqlite
-            python: "3.12"
-          - store: postgres
-            python: "3.11"
-    services:
-      # Only the postgres leg connects, but a service cannot be conditional on a
-      # matrix value without splitting the job in two. An idle container on the
-      # sqlite legs is cheaper than two near-identical jobs to keep in step.
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: mininfer
-          POSTGRES_PASSWORD: mininfer
-          POSTGRES_DB: mininfer
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U mininfer"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+        python: ["3.11", "3.12"]
     env:
-      # An empty DSN is falsy in tests/conftest.py, so the sqlite legs run SQLite
-      # unchanged rather than needing a second code path.
-      MI_TEST_PG_DSN: ${{ matrix.store == 'postgres' && 'postgresql://mininfer:mininfer@127.0.0.1:5432/mininfer' || '' }}
-      PGGSSENCMODE: disable
+      # An empty DSN is falsy in tests/conftest.py, so these run SQLite unchanged
+      # rather than needing a second code path.
+      MI_TEST_PG_DSN: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,6 +63,41 @@ jobs:
       - name: pytest
         run: python -m pytest -q
 
+  # The Postgres leg is its own job so the *service container* starts only where
+  # it is used. One matrix carrying `services:` started `postgres:16` on all
+  # three legs — three image pulls, three health-check waits, and three chances
+  # to hit a Docker Hub rate limit for a database two of them never open. Display
+  # names are unchanged, so required-status-check rules still match.
+  test-postgres:
+    name: pytest (postgres, py3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mininfer
+          POSTGRES_PASSWORD: mininfer
+          POSTGRES_DB: mininfer
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mininfer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MI_TEST_PG_DSN: postgresql://mininfer:mininfer@127.0.0.1:5432/mininfer
+      PGGSSENCMODE: disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e '.[server,dev,agents,sync]'
+      - name: pytest
+        run: python -m pytest -q
+
   # ---------------------------------------------------------------------------
   # The dashboard. `npm run build` does not typecheck — Vite strips types — so
   # `typecheck` is its own step, because that is where the last frontend bug
@@ -91,6 +106,7 @@ jobs:
   frontend:
     name: frontend (typecheck, test, build)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -114,6 +130,7 @@ jobs:
   acceptance:
     name: acceptance (both profiles, live)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -142,6 +159,7 @@ jobs:
   line-endings:
     name: line endings (text files stay LF)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: re-materialise the tree as a Windows checkout would
@@ -166,6 +184,7 @@ jobs:
   docker:
     name: docker (images build from a fresh clone)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: build web (runner) image
