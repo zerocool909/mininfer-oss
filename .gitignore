@@ -33,6 +33,10 @@ dist/
 web/node_modules/
 web/dist/
 
+# Graphify knowledge graph: generated from the source by `/graphify .` and
+# re-derivable at any time. Large (graph.json + graph.html) and never hand-edited.
+graphify-out/
+
 # Local design scratch: a side-by-side logo comparison, not part of the docs
 # site. Kept on disk for review, never published.
 docs/logo-options.html
