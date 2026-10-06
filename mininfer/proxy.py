@@ -99,8 +99,8 @@ async def _lifespan(_app: FastAPI):
             await task
 
 
-app = FastAPI(title="MinInfer", version="0.1.0",
-              description="MinInfer — the cheapest capable model for every task",
+app = FastAPI(title="min(Infer)", version="0.1.0",
+              description="min(Infer) — the cheapest capable model for every task",
               lifespan=_lifespan)
 
 # The React dashboard, when it has been built (`cd web && npm run build`).

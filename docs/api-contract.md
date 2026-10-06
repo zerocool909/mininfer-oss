@@ -4,7 +4,13 @@ What is promised, and what is not.
 
 There is one HTTP surface: the OpenAI-compatible proxy. Most of it is a normal
 OpenAI API — `POST /v1/chat/completions`, `GET /v1/models` — so an existing SDK
-works by pointing `base_url` at MinInfer. The rest is MinInfer's own.
+works by pointing `base_url` at min(Infer). The remaining endpoints are
+min(Infer)-specific.
+
+An agent can point its whole call graph at the same `base_url` with `model: auto`:
+routine steps — summarising a tool result, extracting fields, choosing the next
+action — resolve on free tiers, and a frontier model is used only when a step
+clears a bar that requires it. The endpoint does not change; the task decides.
 
 ## Versioning
 

@@ -82,8 +82,10 @@ _MODEL = {
     "type": "string",
     "default": "auto",
     "description": (
-        "`auto` routes the default task; a task name pins that task; "
-        "`provider:model` calls that deployment directly."
+        "`auto` routes the request to the cheapest capable deployment — free "
+        "tiers first, and a frontier model only when the task's bar demands "
+        "it. A task name pins that task; `provider:model` calls that "
+        "deployment directly."
     ),
 }
 
