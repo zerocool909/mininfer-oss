@@ -167,6 +167,7 @@
       <a href="#trust">Trust</a>
       <a href="#pulse">Heartbeat</a>
       <a href="#route">Routing</a>
+      <a href="#agents">For agents</a>
       <a href="#run">Run it</a>
       <a class="gh" href="https://github.com/zerocool909/mininfer-oss">GitHub</a>
     </nav>
@@ -176,7 +177,7 @@
     <div>
       <p class="eyebrow">Open-source · model intelligence registry</p>
       <h1>Don’t ask which model is best. Ask which is <em>capable enough</em>, at the lowest effective cost.</h1>
-      <p class="dek">MinInfer collects evidence from provider APIs, catalogs, pricing pages and benchmarks, then routes each request to the cheapest deployment that clears the bar for that task. Prefer free. Pay only when necessary.</p>
+      <p class="dek">min(Infer) collects evidence from provider APIs, catalogs, pricing pages and benchmarks, then routes each request to the cheapest deployment that clears the bar for that task. Prefer free. Pay only when necessary.</p>
       <div class="cta">
         <a class="btn" href="#run">Run it locally</a>
         <a class="btn ghost" href="https://github.com/zerocool909/mininfer-oss">Read the source</a>
@@ -185,7 +186,7 @@
 
     <div class="hero-visual">
       <!-- The enhanced Ledger mark: candidate deployments ranked with quality threshold bar and cheapest-capable winner -->
-      <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="The MinInfer Ledger mark: candidate models sorted by cost with a dashed capability threshold. The first model clearing the threshold is highlighted in vibrant teal as the minimum sufficient inference choice.">
+      <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="The min(Infer) Ledger mark: candidate models sorted by cost with a dashed capability threshold. The first model clearing the threshold is highlighted in vibrant teal as the minimum sufficient inference choice.">
         <!-- Capability threshold line -->
         <line class="thresh" x1="12" y1="62" x2="158" y2="62" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
         
@@ -236,7 +237,7 @@
   <div>
     <h2>A decision engine, not a load balancer.</h2>
     <p class="lede">The LLM market moves weekly. Models launch, get retired, change price, hit rate limits, or appear on a new gateway with a free tier. The same weights can cost nothing on one provider and a lot on another.</p>
-    <p>So MinInfer keeps three things apart that most routers blur together: <b>the model</b> (what it can do), <b>the deployment</b> (provider, price, limits, latency, availability), and <b>the task</b> (what has to be true for an answer to count). A request is routed by filtering deployments against the task, then picking the cheapest survivor.</p>
+    <p>So min(Infer) keeps three things apart that most routers blur together: <b>the model</b> (what it can do), <b>the deployment</b> (provider, price, limits, latency, availability), and <b>the task</b> (what has to be true for an answer to count). A request is routed by filtering deployments against the task, then picking the cheapest survivor.</p>
     <p class="pull">The registry describes what exists. Live evidence determines what is usable.</p>
   </div>
 </div></section>
@@ -344,8 +345,30 @@
   </div>
 </div></section>
 
+<section id="agents"><div class="col sec">
+  <aside><b>06</b>For agents</aside>
+  <div>
+    <h2>Most of an agent’s calls aren’t reasoning calls.</h2>
+    <p class="lede">Between the two steps that need judgement sit dozens that don’t: expand a tool result, classify a branch, pull fields out of a page, choose the next action, format arguments, summarise what came back, retry a 429. Multiply them by every run and the bill starts tracking the number of <b>steps</b>, not the difficulty of any one of them.</p>
+    <p>min(Infer) is the seam for that work. Point the whole agent at one OpenAI-compatible endpoint and let each step be routed on its own merits — the frontier model is not removed, it is <b>reserved</b> for the calls that need it.</p>
+
+    <table class="ledger">
+      <thead><tr><th>Agent step</th><th class="hide-s">What it needs</th><th>Where it lands</th></tr></thead>
+      <tbody>
+        <tr><td>Summarise a tool result<small>runs constantly</small></td><td class="hide-s">short output, no tools</td><td>the first free tier that clears</td></tr>
+        <tr><td>Extract fields into JSON<small>schema-bound</small></td><td class="hide-s"><code>structured</code></td><td>the cheapest structured arm</td></tr>
+        <tr><td>Choose the next action<small>tool-calling loop</small></td><td class="hide-s"><code>tools</code>, 32k</td><td>the cheapest tool-capable arm</td></tr>
+        <tr class="win"><td>Plan or synthesise a hard answer<small>rare, decisive</small></td><td class="hide-s">reasoning, 16k</td><td>the frontier arm — and only here</td></tr>
+      </tbody>
+    </table>
+    <p class="pull">The task decides which model runs — not the caller, and not a second, lesser endpoint.</p>
+    <p><b>The free factor is the mechanism, and it is measured.</b> Free-tier deployments win whenever they clear the task’s bar, and the router reads their quota headroom, so it steps to the next arm <i>before</i> the free one 429s. Ranking runs on cost per success, so a free model that fails half the time is priced as expensive as it is — what survives is what keeps completing the work. At agent scale that puts the bulk of the steps at zero marginal cost and keeps the paid tier for the few that earned it.</p>
+    <p class="note">Every step names its author: the response carries the model and provider that answered, and the decision log keeps the shortlist and the rejection reasons, so “why is the agent spending this?” has a per-call answer, not a per-invoice one.</p>
+  </div>
+</div></section>
+
 <section id="principles"><div class="col sec">
-  <aside><b>06</b>Principles</aside>
+  <aside><b>07</b>Principles</aside>
   <div>
     <h2>Why it behaves the way it does.</h2>
     <dl class="pr">
@@ -361,7 +384,7 @@
 </div></section>
 
 <section id="run"><div class="col sec">
-  <aside><b>07</b>Run it</aside>
+  <aside><b>08</b>Run it</aside>
   <div>
     <h2>Point any OpenAI-compatible client at it.</h2>
 <pre class="cmd"><span class="c"># clone and install</span>
@@ -380,7 +403,7 @@ mi proxy --port 8765</pre>
 </div></section>
 
 <footer><div class="col">
-  <span>MinInfer · minimum sufficient inference · MIT licensed</span>
+  <span>min(Infer) · minimum sufficient inference · MIT licensed</span>
   <span><a href="https://github.com/zerocool909/mininfer-oss">Source</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/README.md">README</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/CONTRIBUTING.md">Contribute</a></span>
 </div></footer>
 

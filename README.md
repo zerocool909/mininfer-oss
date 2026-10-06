@@ -34,6 +34,7 @@ The goal is simple:
 <summary><b>Table of contents</b></summary>
 
 - [How a request is routed](#how-a-request-is-routed)
+- [Built for agents](#built-for-agents)
 - [Why min(Infer)?](#why-mininfer)
 - [Core Principles](#core-principles)
 - [Key Features](#key-features)
@@ -76,6 +77,28 @@ flowchart TD
     OT --> FB[Bandit + judge feedback]
     FB -.->|updates priors| QF
 ```
+
+---
+
+## Built for agents
+
+An agent is mostly plumbing. Between the two steps that actually need judgement sit dozens that do not: expand a tool result, classify a branch, pull fields out of a page, choose the next action, format arguments, summarise what came back, retry a 429. Those calls are numerous, bounded and checkable — and sending every one of them to a frontier model is the default that makes an agent's bill scale with the number of **steps** rather than the difficulty of any one of them.
+
+min(Infer) is the seam for that work. Point the whole agent at one OpenAI-compatible endpoint and let each step be routed on its own merits:
+
+| Agent step | What it needs | Where it lands |
+| :-- | :-- | :-- |
+| Summarise a tool result | short output, no tools | the first free tier that clears |
+| Extract fields into JSON | `structured` | the cheapest structured arm |
+| Classify an intent or pick a branch | 4k context, prose out | a free tier |
+| Choose the next action over a state blob | `tools`, 32k context | the cheapest tool-capable arm |
+| Plan, decompose, or synthesise a hard answer | reasoning, 16k context | **the frontier arm — and only here** |
+
+The frontier model is not removed — it is **reserved**. It stays in the pool and wins the calls that need it, while the calls that do not stop paying for it. Nothing is downgraded and no lesser endpoint appears: the **task** decides which model runs, not the caller.
+
+**The free factor is the mechanism, and it is measured.** Free-tier deployments win whenever they clear the task's bar, and the router reads their quota headroom, so it steps to the next arm *before* the free one 429s. Ranking runs on cost per success, so a free model that fails half the time is priced as expensive as it is — what survives is what keeps completing the work. At agent scale that puts the bulk of the steps at zero marginal cost and keeps the paid tier for the few that earned it.
+
+Every step names its author: the response carries the model and provider that answered, and the decision log keeps the shortlist and the rejection reasons. "Why is the agent spending this?" has a per-call answer, not a per-invoice one.
 
 ---
 
