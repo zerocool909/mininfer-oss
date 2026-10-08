@@ -238,6 +238,10 @@ class SQLiteConnection:
     def columns(self, table: str) -> set[str]:
         return {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
 
+    def last_insert_id(self) -> int | None:
+        row = self._conn.execute("SELECT last_insert_rowid()").fetchone()
+        return int(row[0]) if row else None
+
     def commit(self) -> None:
         _retry_locked(self._conn.commit)
 
@@ -290,11 +294,34 @@ class PostgresConnection:
         cur.close()
 
     def columns(self, table: str) -> set[str]:
+        # Scoped to the search path, not just the table name. The test suite runs each
+        # case in its own schema, so an unscoped lookup reports columns from *every*
+        # schema that happens to hold a table by this name: `_migrate` then concludes
+        # the column already exists (it does — elsewhere) and skips the ALTER, and the
+        # index that needs it fails on the schema actually in use. That is exactly how
+        # a newly added column broke only the Postgres leg, and only after the first
+        # test had initialised its own schema.
         cur = self._conn.cursor()
         cur.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_name = %s AND table_schema = ANY(current_schemas(false))",
             (table,))
         return {r["column_name"] for r in cur.fetchall()}
+
+    def last_insert_id(self) -> int | None:
+        """The id of the row just inserted.
+
+        Not `cursor.lastrowid`: psycopg2 always reports 0 there, so the SQLite
+        idiom silently returns a *wrong* id on this engine — which is how decision
+        ids were 0 on Postgres while the rows were numbered normally. `lastval()`
+        is the sequence value this session just produced, i.e. the insert that
+        prompted the call.
+        """
+        cur = self._conn.cursor()
+        cur.execute("SELECT lastval()")
+        row = cur.fetchone()
+        cur.close()
+        return int(row["lastval"]) if row else None
 
     def commit(self) -> None:
         self._conn.commit()

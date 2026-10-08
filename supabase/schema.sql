@@ -287,7 +287,10 @@ create table if not exists observations (
   rate_limit_reason text,
   -- Which session and tenant the call belonged to; null for CLI/benchmark calls.
   session_id   text,
-  tenant_id    text
+  tenant_id    text,
+  -- The difficulty the routing decision was made under, so an outcome can be read
+  -- per difficulty rather than averaged into one number per (deploy, task).
+  effort       text
 );
 create index if not exists idx_obs on observations(deploy_id, task);
 

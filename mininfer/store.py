@@ -631,7 +631,11 @@ CREATE TABLE IF NOT EXISTS observations (
   -- from "tenant with zero". `tenant_id` is a label on shared learning, not a
   -- partition — see `Store.usage_report`.
   session_id   TEXT,
-  tenant_id    TEXT
+  tenant_id    TEXT,
+  -- The difficulty the routing decision was made under. In the base table as well
+  -- as `_ADDED_COLUMNS`, like every other column added after the fact: the ALTER is
+  -- for registries that already exist, not for new ones.
+  effort       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_obs ON observations(deploy_id, task);
 
@@ -2320,13 +2324,15 @@ class Store:
         from .fetch import utcnow
 
         reason_str = json.dumps(reason, default=str) if isinstance(reason, (dict, list)) else str(reason)
-        cur = self.conn.execute(
+        self.conn.execute(
             """INSERT INTO decisions (ts,task,policy,mode,chosen,candidates,reason,tenant_id)
                VALUES (?,?,?,?,?,?,?,?)""",
             (utcnow(), task, policy, mode, chosen, json.dumps(candidates), reason_str,
              tenant_id),
         )
-        return cur.lastrowid
+        # Via the dialect seam, not `cursor.lastrowid`: that is always 0 on
+        # psycopg2, which made every decision id here wrong on Postgres.
+        return self.conn.last_insert_id()
 
     def update_decision_reason(self, decision_id: int | None, reason: dict) -> None:
         """Replace a decision's `reason` after the fact.

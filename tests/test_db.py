@@ -125,3 +125,26 @@ def test_the_default_db_keeps_a_dsn_intact(monkeypatch):
 
     assert proxy._default_db() == dsn
     assert cli._default_db() == dsn
+
+
+def test_record_decision_returns_the_row_it_just_wrote(tmp_path):
+    """Portable, and it has to be: `cursor.lastrowid` is always 0 on psycopg2.
+
+    The SQLite idiom works locally and returns a *wrong* id on Postgres, so every
+    caller of `record_decision` — the decision-id header, the compare preference
+    write, the escalation write-back — silently addressed row 0. This asserts the
+    contract on whichever engine the suite is running against, so the Postgres leg
+    of CI covers it too.
+    """
+    from mininfer.store import Store
+
+    s = Store(tmp_path / "ids.db")
+    first = s.record_decision(task="t", policy="p", mode="auto", chosen="a",
+                              candidates=["a"], reason={})
+    second = s.record_decision(task="t", policy="p", mode="auto", chosen="b",
+                               candidates=["b"], reason={})
+    s.commit()
+    newest = s.conn.execute("SELECT id FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
+    assert second == newest["id"], (second, newest["id"])
+    assert second != first, "each insert must get its own id"
+    s.close()
