@@ -542,7 +542,7 @@ def cmd_route(args) -> int:
     policy.top_k = args.top_k
 
     manual = [s.strip() for s in (args.candidates or "").split(",") if s.strip()]
-    pool = build_candidates(store, task, policy)
+    pool = build_candidates(store, task, policy, effort=cx.level if cx else None)
     dec = route(store, task, policy, mode=args.mode, manual_ids=manual, pool=pool)
 
     print(f"TASK     {task.name}  — {task.description}")
@@ -626,7 +626,7 @@ def cmd_explain(args) -> int:
                                           judge=comp_mod.make_judge(policy.complexity.get("judge")))
         floor_delta = policy.complexity.get("floor_delta", 0.08) if isinstance(policy.complexity, dict) else 0.08
         task = comp_mod.adapt_task_for_complexity(task, cx, floor_delta=floor_delta)
-    pool = build_candidates(store, task, policy)
+    pool = build_candidates(store, task, policy, effort=cx.level if cx else None)
     elig = [c for c in pool if c.rejected is None]
     rej = [c for c in pool if c.rejected]
     elig.sort(key=lambda c: c.cost_per_success)

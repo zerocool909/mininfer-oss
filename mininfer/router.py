@@ -208,6 +208,10 @@ class Policy:
     judge_batch_size: int = 3
     objective: str = "cost_per_success"  # | quality | latency | bandit
     prior_strength: float = 6.0
+    # Ceiling on the weight the task-level posterior carries when it is used as the
+    # prior for a difficulty cell. Without it the cell is drowned by total traffic
+    # (`prior_strength + n_obs` grows without bound). Placeholder pending calibration.
+    effort_shrink_k: float = 50.0
     # free arm with no configured quota: how much do we discount its success
     # probability? Not a calibrated number — a conservative haircut.
     unknown_headroom_factor: float = 0.90
@@ -368,8 +372,12 @@ def _free_kind(d: dict, policy: Policy) -> str | None:
 
 def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
                      user_keys: dict[str, str] | None = None,
-                     pushed_models: list[str] | None = None) -> list[Candidate]:
+                     pushed_models: list[str] | None = None,
+                     effort: str | None = None) -> list[Candidate]:
     stats = store.stats(task.name)
+    # Difficulty-scoped evidence, when the caller routed on a difficulty. Empty when
+    # it did not, which leaves every posterior below exactly as it was before.
+    effort_stats = store.routing_stats_by_effort(task.name, effort) if effort else {}
     rf_stats = store.routing_approval_stats(task.name)
     norms = benchmark_norms(store)
     available = available_providers(user_keys=user_keys)
@@ -397,8 +405,33 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
             weights=task.benchmark_weights)
         s = stats.get(d["deploy_id"], {})
         n_obs, wins = int(s.get("n", 0) or 0), int(s.get("wins", 0) or 0)
-        p_lb = wilson_lb(p_prior * policy.prior_strength + wins,
-                         policy.prior_strength + n_obs, policy.z)
+        # The difficulty cell is this arm's record *at this difficulty only*. It
+        # cannot be stacked on top of `stats` — the task-level view already counts
+        # those observations — so the task posterior's *mean* becomes the prior and
+        # the cell is blended into it. See the branch below for the weight.
+        eff_n = eff_wins = 0
+        if effort:
+            cell = effort_stats.get((d["deploy_id"], task.name, effort)) or {}
+            eff_n = int(cell.get("n", 0) or 0)
+            eff_wins = int(cell.get("wins", 0) or 0)
+        task_n = float(policy.prior_strength + n_obs)
+        p_task = (p_prior * policy.prior_strength + wins) / task_n
+        if eff_n:
+            # Shrinkage strength against a prior no heavier than `effort_shrink_k`.
+            # It has to be *capped*: `prior_strength + n_obs` alone grows with total
+            # traffic, so on a busy task a perfectly good 50-observation difficulty
+            # cell would shift the mean by a fraction of a percent — difficulty
+            # learning that only works on quiet tasks is not learning. The cell's
+            # rows are still counted once (they are inside `stats`), so this blends
+            # rather than stacks.
+            k = min(task_n, float(policy.effort_shrink_k))
+            cell_rate = eff_wins / eff_n
+            p_eff = (eff_n * cell_rate + k * p_task) / (eff_n + k)
+            p_lb = wilson_lb(p_eff * task_n, task_n, policy.z)
+        else:
+            # No cell: byte-for-byte the previous posterior, which is what makes
+            # this change safe to land without re-tuning every existing registry.
+            p_lb = wilson_lb(p_prior * policy.prior_strength + wins, task_n, policy.z)
 
         # Human routing decision RLHF: Beta(2, 2) conjugate prior
         rf = rf_stats.get(d["deploy_id"], {})
@@ -453,6 +486,8 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
             prior_key=prior_key,
             n_obs=n_obs,
             wins=wins,
+            effort_n=eff_n,
+            effort_wins=eff_wins,
             p_lb=p_lb,
             availability=availability,
             headroom=headroom,
@@ -867,14 +902,16 @@ def route(store: Store, task: TaskProfile, policy: Policy, *, mode: str = "auto"
           manual_ids: list[str] | None = None, pool: list[Candidate] | None = None,
           rng: "random.Random | None" = None,
           user_keys: dict[str, str] | None = None,
-          pushed_models: list[str] | None = None) -> Decision:
+          pushed_models: list[str] | None = None,
+          effort: str | None = None) -> Decision:
     effective_pushed = pushed_models
     if effective_pushed is None:
         effective_pushed = store.get_pushed_models(task.name)
     pushed_set = set(effective_pushed or [])
 
     cands = pool if pool is not None else build_candidates(
-        store, task, policy, user_keys=user_keys, pushed_models=effective_pushed)
+        store, task, policy, user_keys=user_keys, pushed_models=effective_pushed,
+        effort=effort)
 
     for c in cands:
         if c.deploy_id in pushed_set:

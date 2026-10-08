@@ -281,3 +281,9 @@ class Candidate:
     traffic_share: float = 0.0
     traffic_capped: bool = False
     anti_fixation_rotated: bool = False
+    #: This arm's observations *at the difficulty the request was routed under*, and
+    #: how many succeeded. Both zero when no difficulty was supplied. They are a
+    #: subset of `n_obs`/`wins`, not an addition: `p_lb` blends the cell with the
+    #: task-level posterior, it does not stack the two.
+    effort_n: int = 0
+    effort_wins: int = 0

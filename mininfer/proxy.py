@@ -2517,13 +2517,15 @@ async def _handle(payload: dict, *, force_route: bool,
             profile = comp_mod.adapt_task_for_complexity(profile, comp, floor_delta=floor_delta)
             complexity_adapted = True
 
-        dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
+        dec = route(store, profile, policy, mode="auto", user_keys=user_keys,
+                    effort=comp.level if comp is not None else None)
         if not dec.chosen and (merged_from or complexity_adapted):
             # The join or reasoning gate is strictly stricter, so it can exclude everything.
             # When it does, the best single base task beats failing completely.
             profile = tasks[task_name]
             merged_from = None
-            dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
+            dec = route(store, profile, policy, mode="auto", user_keys=user_keys,
+                        effort=comp.level if comp is not None else None)
         ranked = [c.deploy_id for c in dec.chosen]
         deploy_ids = [d for d in ranked if _keys_available(d, user_keys, local_endpoints)]
         skipped = [d for d in ranked if d not in deploy_ids]
@@ -2730,7 +2732,8 @@ async def _handle(payload: dict, *, force_route: bool,
             reason["complexity_escalation_blocked"] = "session_budget"
             store.update_decision_reason(dec_id, reason)
         else:
-            esc_dec = route(store, escalated_profile, policy, mode="auto", user_keys=user_keys)
+            esc_dec = route(store, escalated_profile, policy, mode="auto", user_keys=user_keys,
+                            effort=escalated_comp.level)
             failed_dids = {a.deploy_id for a in attempts}
             # The escalated profile is stricter, so the arm that just failed can
             # still top the ranking. Draw from the full eligible ranking — not
@@ -3313,7 +3316,8 @@ def _stream_escalation(*, policy, base_task, complexity, reason, failed,
     floor_delta = float((getattr(policy, "complexity", None) or {}).get("floor_delta", 0.08))
     profile = comp_mod.adapt_task_for_complexity(base_task, escalated_comp,
                                                  floor_delta=floor_delta)
-    dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
+    dec = route(store, profile, policy, mode="auto", user_keys=user_keys,
+                effort=escalated_comp.level)
     cands = [c for c in dec.ranked
              if c.deploy_id not in failed
              and _keys_available(c.deploy_id, user_keys, local_endpoints)]

@@ -65,6 +65,13 @@ policy:
   # made a 'min_success_lb' threshold a near-arbitrary binary cut.
   prior_strength: 25.0
 
+  # Ceiling on the task posterior's weight when it acts as the prior for a
+  # difficulty cell (#complexity routing). The cell is blended against at most this
+  # many pseudo-observations, so a high-traffic task cannot drown the only evidence
+  # about one (arm, difficulty) pair. Placeholder until graded RouterBench calibrates
+  # it, like `floor_delta`.
+  effort_shrink_k: 50.0
+
   # A free arm with no configured quota bucket is discounted, not trusted.
   unknown_headroom_factor: 0.90
 
