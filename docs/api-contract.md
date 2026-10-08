@@ -131,6 +131,14 @@ carrying `error`, not as a truncated answer.
 with MinInfer's routing metadata added under a `mi` key. That key is additive —
 ignore it and you have a plain OpenAI response.
 
+Callers may include `"complexity": "auto" | "low" | "medium" | "high"` in the
+request body. When `"auto"` (the default), min(Infer) analyzes heuristic complexity signals
+(math/logic proofs, code debugging, multi-step constraints vs. formatting/extraction)
+to dynamically decide if reasoning capability is strictly required. If a low-complexity
+model produces an empty response or invalid output, probe-and-escalate automatically
+re-routes the request to a reasoning-tier model.
+
+
 **Sessions (`/v1/session*`).** Budgets are enforced *before* routing, so a
 refused session cannot spend on a fallback chain. When access control is on, the
 session id is scoped to the caller: a client-supplied id is a label, not a

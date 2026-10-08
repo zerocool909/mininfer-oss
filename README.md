@@ -302,6 +302,14 @@ vision
 
 A fast heuristic classifier is used first, with optional model-based classification when confidence is insufficient.
 
+### Prompt Complexity & Reasoning Estimation
+
+Beyond task type, min(Infer) estimates prompt complexity to avoid over-spending on reasoning-class models (e.g. o1/R1/Claude Thinking) for simple prompts, while ensuring complex multi-step reasoning tasks receive capable models:
+
+* **Tier 1 (Zero-Latency Heuristics):** Analyzes mathematical proofs, multi-step logic, code debugging, and constraint counts, counterbalanced by negative attenuation signals (e.g., simple extraction, translation, formatting, or summarization).
+* **Tier 2 (Optional LLM Judge):** For prompts with ambiguous signals near classification thresholds, an optional small model can adjudicate reasoning necessity with JSON-enforced rubric outputs.
+* **Probe-and-Escalate:** If a low-complexity model selected for an inexpensive route fails runtime validation (`empty_content` or `bad_output`), min(Infer) automatically re-routes with reasoning requirements enabled and retries against a higher-capability model.
+
 ### Conservative Quality Estimation
 
 min(Infer) combines benchmark evidence with observed outcomes.
@@ -522,6 +530,15 @@ Or use the CLI entrypoint:
 ```bash
 mi ingest
 mi route general_chat
+
+# Estimate prompt complexity and reasoning need
+mi complexity "Prove by induction that sum(i^2) = n(n+1)(2n+1)/6"
+
+# Route adaptively based on prompt complexity
+mi route general_chat --prompt "Prove by induction that sum(i^2) = n(n+1)(2n+1)/6"
+
+# Inspect decision stats and escalations across past traffic
+mi complexity --report
 ```
 
 ---

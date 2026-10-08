@@ -23,6 +23,28 @@ export interface Meta {
   needsApproval?: boolean
   task?: string
   policy?: string
+  /** Prompt complexity the arm was chosen under, straight from the route frame. */
+  complexity?: ComplexityMeta | null
+  /** The low-complexity arm failed validation and the router retried a tier up. */
+  complexityEscalated?: boolean
+}
+
+/**
+ * What the complexity estimator decided, as routed.
+ *
+ * Arrives in the streaming `route` frame (`complexity`), because the fuller
+ * `mi.reason` block is only on the non-streaming response and the playground
+ * always streams. `signals` are the cue names that fired, so a wrong call is
+ * debuggable — the same contract `intent` keeps.
+ */
+export interface ComplexityMeta {
+  level: string
+  needs_reasoning: boolean
+  confidence: number
+  score: number
+  signals: string[]
+  source: string
+  reason?: string
 }
 
 /**

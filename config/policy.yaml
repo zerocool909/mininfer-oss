@@ -108,6 +108,41 @@ policy:
   # MI_SEARCH_COST_USD.
   session_cost_limit: 0.0
 
+  # --- complexity & reasoning need estimation ---
+  complexity:
+    enabled: true
+    mode: auto               # auto | off | force_low | force_high
+    heuristic_confident: 0.75
+    # Additive quality-bar lift for a `needs_reasoning` prompt: the task's own
+    # `min_success_lb` plus this. A delta (not an absolute floor) is what lets a
+    # demanding task (base 0.55-0.6) actually tighten. Placeholder until the
+    # graded RouterBench run calibrates it.
+    floor_delta: 0.08
+    thresholds:
+      # Calibrated, not guessed: `mi complexity --calibrate` scores these against a
+      # 21-prompt labelled set and sweeps the grid. 0.25/0.65 is joint-best at 90.5%
+      # (19/21). Re-run that command before changing them.
+      low_max: 0.25
+      high_min: 0.65
+    weights:
+      length: 0.15
+      multi_step: 0.45
+      math_logic: 0.85
+      code_debug: 0.80
+      multi_ask: 0.30
+      constraints: 0.25
+      negative: -0.50
+    # Probe-and-escalate: retry one tier up when a low-complexity arm fails
+    # validation. Explicit opt-in, because it spends a second call — and the code
+    # default is off, so a policy without this block never escalates.
+    escalation:
+      enabled: true
+    judge:
+      enabled: false         # set true when a key is available for the judge model
+      model: "google/gemini-2.0-flash-lite-preview-02-05:free"
+      max_chars: 1500
+      timeout_s: 2.0
+
 # What a workload needs, and what one call costs in tokens. Cost-per-success is
 # computed per task, so the same registry produces different rankings per task.
 #

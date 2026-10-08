@@ -67,6 +67,7 @@ import {
   setSessionSummary,
   usableTurns,
   KEEP_TURNS,
+  type ComplexityMeta,
   type Meta,
   type StoredSession,
   type Turn,
@@ -247,12 +248,16 @@ export default function Chat02({
   const messagesFor = (prior: Turn[], question: string) =>
     buildMessages(prior, question, { summary: summaryRef.current.text })
 
-  /** Cost + leaderboards are not in the SSE stream, so resolve them after. */
+  /** Cost + leaderboards are not in the SSE stream, so resolve them after.
+   *  Complexity IS in the stream (the `route` frame), so it is passed through
+   *  rather than re-derived — the decision is already made by then. */
   async function metaFor(
     deploy: string,
     resolvedTask: string,
     needsApproval = false,
     existingAlternatives?: string[],
+    complexity?: ComplexityMeta | null,
+    complexityEscalated?: boolean,
   ): Promise<Meta> {
     try {
       const plan = await api.plan(resolvedTask)
@@ -275,6 +280,8 @@ export default function Chat02({
         alternatives: alts,
         needsApproval,
         task: resolvedTask,
+        complexity: complexity ?? null,
+        complexityEscalated: Boolean(complexityEscalated),
       }
     } catch {
       return {
@@ -284,6 +291,8 @@ export default function Chat02({
         alternatives: (existingAlternatives ?? []).filter((c) => c && c !== deploy),
         needsApproval,
         task: resolvedTask,
+        complexity: complexity ?? null,
+        complexityEscalated: Boolean(complexityEscalated),
       }
     }
   }
@@ -324,10 +333,16 @@ export default function Chat02({
     const decHeader = res.headers.get('X-MI-Decision-Id') ?? res.headers.get('X-MI-Decision-Id')
     const decisionId = decHeader ? parseInt(decHeader, 10) : undefined
     let currentDeploy = deploy || pinned || ''
+    // From the `route` frame: the decision that picked this arm. The richer
+    // `mi.reason` block never reaches a streaming client, so this is the only way
+    // the UI can show *why* — and the only way to spot a misrouted prompt.
+    let currentComplexity: ComplexityMeta | null = null
+    let currentEscalated = false
     patch(id, {
       decisionId,
       meta: { model: currentDeploy, cost: null, tags: [], alternatives: currentAlternatives, needsApproval,
-              task: currentTask || task, policy: policy || undefined },
+              task: currentTask || task, policy: policy || undefined,
+              complexity: currentComplexity, complexityEscalated: currentEscalated },
     })
 
     const read = createSseReader()
@@ -354,16 +369,23 @@ export default function Chat02({
                 currentAlternatives = fAlts as string[]
               }
               if (frame.task) currentTask = frame.task
+              const fComplexity = (frame as Record<string, unknown>).complexity
+              if (fComplexity && typeof fComplexity === 'object') {
+                currentComplexity = fComplexity as ComplexityMeta
+              }
+              if ((frame as Record<string, unknown>).complexity_escalated) currentEscalated = true
               patch(id, {
                 meta: { model: currentDeploy, cost: null, tags: [], alternatives: currentAlternatives, needsApproval,
-                        task: currentTask || task, policy: policy || undefined },
+                        task: currentTask || task, policy: policy || undefined,
+                        complexity: currentComplexity, complexityEscalated: currentEscalated },
               })
             }
           } else if (!currentDeploy && parsed.model) {
             currentDeploy = parsed.model
             patch(id, {
               meta: { model: currentDeploy, cost: null, tags: [], alternatives: currentAlternatives, needsApproval,
-                      task: currentTask || task, policy: policy || undefined },
+                      task: currentTask || task, policy: policy || undefined,
+                      complexity: currentComplexity, complexityEscalated: currentEscalated },
             })
           }
           const delta = deltaText(parsed)
@@ -389,7 +411,8 @@ export default function Chat02({
     }
     const finalDeploy = currentDeploy || deploy || pinned || ''
     patch(id, { text, streaming: false, ms: performance.now() - t0,
-                meta: await metaFor(finalDeploy, currentTask || task, needsApproval, currentAlternatives) })
+                meta: await metaFor(finalDeploy, currentTask || task, needsApproval, currentAlternatives,
+                                    currentComplexity, currentEscalated) })
   }
 
   const compareTurn = async (turn: Turn) => {
@@ -886,6 +909,8 @@ export default function Chat02({
                 task={turn.meta?.task}
                 alternatives={turn.meta?.alternatives}
                 streaming={turn.streaming}
+                complexity={turn.meta?.complexity}
+                complexityEscalated={turn.meta?.complexityEscalated}
               />
               <div className="flex items-center gap-2 py-2 text-[14px] text-muted-foreground">
                 <span className="shimmer font-medium">Generating response…</span>
@@ -918,6 +943,8 @@ export default function Chat02({
             task={turn.meta?.task}
             alternatives={turn.meta?.alternatives}
             streaming={turn.streaming}
+            complexity={turn.meta?.complexity}
+            complexityEscalated={turn.meta?.complexityEscalated}
           />
           <CollapsibleMarkdown text={turn.text} streaming={turn.streaming} />
         </BubbleContent>

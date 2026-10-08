@@ -54,3 +54,50 @@ describe('ModelIdentity', () => {
     expect(screen.getByText('qwen/qwen3.8-27b:free')).toBeTruthy()
   })
 })
+
+describe('ModelIdentity — complexity badge', () => {
+  const high = {
+    level: 'high',
+    needs_reasoning: true,
+    confidence: 0.79,
+    score: 0.85,
+    signals: ['math_logic:1.0'],
+    source: 'heuristic',
+  }
+
+  it('shows the level when a low-complexity prompt is routed cheaply', () => {
+    render(
+      <ModelIdentity
+        model="groq:qwen/qwen3.8-27b"
+        complexity={{ ...high, level: 'low', needs_reasoning: false, score: 0, signals: [] }}
+      />,
+    )
+    const badge = screen.getByTestId('complexity-badge')
+    expect(badge.textContent).toMatch(/low/i)
+    expect(badge.textContent).not.toMatch(/needs reasoning/i)
+  })
+
+  it('flags a prompt that needs reasoning, and names the signals in the tooltip', () => {
+    render(<ModelIdentity model="groq:qwen/qwen3.8-27b" complexity={high} />)
+    const badge = screen.getByTestId('complexity-badge')
+    expect(badge.textContent).toMatch(/high/i)
+    expect(badge.textContent).toMatch(/needs reasoning/i)
+    // The cue that fired has to be visible: a wrong call must be debuggable.
+    expect(badge.getAttribute('title')).toContain('math_logic:1.0')
+  })
+
+  it('renders nothing when the request was not routed (a pinned model has no decision)', () => {
+    render(<ModelIdentity model="groq:qwen/qwen3.8-27b" />)
+    expect(screen.queryByTestId('complexity-badge')).toBeNull()
+  })
+
+  it('marks an escalated retry', () => {
+    render(<ModelIdentity model="groq:qwen/qwen3.8-27b" complexity={high} complexityEscalated />)
+    expect(screen.getByTestId('complexity-escalated').textContent).toMatch(/escalated/i)
+  })
+
+  it('names the judge as the source when Tier 2 decided', () => {
+    render(<ModelIdentity model="groq:qwen/qwen3.8-27b" complexity={{ ...high, source: 'judge' }} />)
+    expect(screen.getByTestId('complexity-badge').textContent).toMatch(/judge/i)
+  })
+})

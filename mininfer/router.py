@@ -237,6 +237,8 @@ class Policy:
     # Maximum time in hours a manually pinned model remains active before expiring
     pin_ttl_hours: float = 24.0
     z: float = 1.96
+    # Complexity estimation and reasoning-floor configuration
+    complexity: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | pathlib.Path) -> tuple["Policy", dict[str, TaskProfile]]:

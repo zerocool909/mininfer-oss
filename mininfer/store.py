@@ -891,7 +891,13 @@ class Store:
         # session or tenant to be attributed to — and reporting must be able to
         # tell "no tenant" from "tenant with zero".
         "observations": {"session_id": "TEXT", "tenant_id": "TEXT",
-                          "rate_limit_reason": "TEXT"},
+                          "rate_limit_reason": "TEXT",
+                          # The difficulty the routing decision was made under. Without it
+                          # every outcome is averaged into one `(deploy, task)` number, and a
+                          # model that is good at easy prompts and bad at hard ones looks
+                          # uniformly mediocre — so the difficulty signal can never be
+                          # recalibrated from outcomes.
+                          "effort": "TEXT"},
         # Provider-reported limits (P5). `limit_n` stays the configured policy;
         # these carry what the provider said, and `headroom` takes the minimum.
         "quota_buckets": {
@@ -924,6 +930,8 @@ class Store:
         for stmt in (
             "CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id, ts)",
             "CREATE INDEX IF NOT EXISTS idx_obs_tenant ON observations(tenant_id, ts)",
+            # The difficulty-aware read path (#3): `(deploy, task, effort)`.
+            "CREATE INDEX IF NOT EXISTS idx_obs_effort ON observations(deploy_id, task, effort)",
             "CREATE INDEX IF NOT EXISTS idx_dec_tenant ON decisions(tenant_id, ts)",
             "CREATE INDEX IF NOT EXISTS idx_sess_tenant ON sessions(tenant_id)",
             # Index on a column `_ADDED_COLUMNS` may have just added, so it cannot
@@ -2058,15 +2066,16 @@ class Store:
         signal_kind: str = "verified", signal_value: float | None = None,
         meta: dict | None = None, session_id: str | None = None,
         tenant_id: str | None = None, rate_limit_reason: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self.conn.execute(
             """INSERT INTO observations (deploy_id,task,ts,ok,error_class,latency_ms,tokens_in,
                tokens_out,cost_usd,signal_kind,signal_value,meta,session_id,tenant_id,
-               rate_limit_reason)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               rate_limit_reason,effort)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (deploy_id, task, ts, int(ok), error_class, latency_ms, tokens_in, tokens_out,
              cost_usd, signal_kind, signal_value, json.dumps(meta or {}), session_id,
-             tenant_id, rate_limit_reason),
+             tenant_id, rate_limit_reason, effort),
         )
 
     def spend_savings(self, *, session_id: str | None = None,
@@ -2248,6 +2257,7 @@ class Store:
         }
         out["saved_usd"] = self.spend_savings(tenant_id=tenant_id, days=days)["saved_usd"]
         return out
+
     def stats(self, task: str | None = None) -> dict[str, dict]:
         q = "SELECT * FROM routing_stats"
         args: tuple = ()
@@ -2255,6 +2265,37 @@ class Store:
             q += " WHERE task=?"
             args = (task,)
         return {r["deploy_id"]: dict(r) for r in self.conn.execute(q, args)}
+
+    def routing_stats_by_effort(self, task: str | None = None,
+                                effort: str | None = None) -> dict[tuple, dict]:
+        """`routing_stats` at the `(deploy_id, task, effort)` grain.
+
+        The router still reads the task-level view; this is the difficulty-aware
+        cut, so a model that is strong on easy prompts and weak on hard ones can be
+        told apart instead of averaged into one mediocre number. Grouping by a
+        nullable `effort` keeps pre-existing rows (NULL) in their own bucket rather
+        than silently folding them into "medium".
+        """
+        q = f"""
+            SELECT deploy_id, task, effort,
+                   COUNT(*) AS n_all,
+                   SUM(CASE WHEN counted THEN 1 ELSE 0 END) AS n,
+                   SUM(CASE WHEN counted THEN ok ELSE 0 END) AS wins
+            FROM (SELECT *, ({_counted_expr()}) AS counted FROM observations) AS obs
+        """
+        where: list[str] = []
+        args: list = []
+        if task:
+            where.append("task=?")
+            args.append(task)
+        if effort:
+            where.append("effort=?")
+            args.append(effort)
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        q += " GROUP BY deploy_id, task, effort"
+        return {(r["deploy_id"], r["task"], r["effort"]): dict(r)
+                for r in self.conn.execute(q, tuple(args))}
 
     def routing_approval_stats(self, task: str | None = None) -> dict[str, dict[str, int]]:
         q = """
@@ -2286,6 +2327,22 @@ class Store:
              tenant_id),
         )
         return cur.lastrowid
+
+    def update_decision_reason(self, decision_id: int | None, reason: dict) -> None:
+        """Replace a decision's `reason` after the fact.
+
+        The row is written before execution — the funnel is known then, the
+        outcome is not — so anything learned during execution has to be written
+        back explicitly. The escalation path is the case that forces it: without
+        this, `complexity_escalated` is set on an in-memory dict after the INSERT
+        and never persisted, so `mi complexity --report` reports an escalation
+        rate that is structurally always zero.
+        """
+        if decision_id is None:
+            return
+        self.conn.execute("UPDATE decisions SET reason = ? WHERE id = ?",
+                          (json.dumps(reason, default=str), decision_id))
+        self.conn.commit()
 
     def update_decision_preference(self, decision_id: int | None, preferred: str,
                                    task: str | None = None) -> None:
@@ -2842,6 +2899,12 @@ class Store:
         """Decisions that recorded an intent block, i.e. where `auto` was used."""
         return [dict(r) for r in self.conn.execute(
             "SELECT task, reason FROM decisions WHERE reason LIKE '%\"intent\"%'"
+            " ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def decisions_with_complexity(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Decisions that recorded a complexity block."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, ts, task, chosen, reason FROM decisions WHERE reason LIKE '%\"complexity\"%'"
             " ORDER BY id DESC LIMIT ?", (limit,))]
 
     def quota_rows(self, limit: int = 40) -> list[dict[str, Any]]:

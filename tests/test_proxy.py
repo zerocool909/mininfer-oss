@@ -221,6 +221,7 @@ class _FakeSession:
     def __init__(self, status_code, chunks, error_class=None):
         self.status_code = status_code
         self.error_class = error_class
+        self.error_detail = None
         self.headers = {}
         self._chunks = chunks
         self.closed = False
@@ -528,3 +529,582 @@ def test_a_long_history_still_reserves_against_the_session(tmp_path, monkeypatch
     assert r.status_code == 200
     assert len(sent[0]) == 5
     assert r.json()["mi"]["session"]["tokens"] == 2
+
+
+def test_complexity_routing_and_logging_in_proxy(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    store = Store(tmp_path / "p.db")
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+
+    # 1. High complexity prompt
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "Prove by induction that sum of cubes is square of sum"}]}
+    )
+    dec_high = store.recent_decisions(limit=1)[0]
+    reason_high = json.loads(dec_high["reason"])
+    assert "complexity" in reason_high
+    assert reason_high["complexity"]["level"] == "high"
+    assert reason_high["complexity"]["needs_reasoning"] is True
+
+    # 2. Low complexity prompt
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "Extract all email addresses from: alice@example.com"}]}
+    )
+    dec_low = store.recent_decisions(limit=1)[0]
+    reason_low = json.loads(dec_low["reason"])
+    assert "complexity" in reason_low
+    assert reason_low["complexity"]["level"] == "low"
+    assert reason_low["complexity"]["needs_reasoning"] is False
+
+    # 3. Explicit override
+    client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "complexity": "high", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    dec_override = store.recent_decisions(limit=1)[0]
+    reason_override = json.loads(dec_override["reason"])
+    assert reason_override["complexity"]["source"] == "override"
+    assert reason_override["complexity"]["level"] == "high"
+    store.close()
+
+
+def test_complexity_escalation_on_low_model_validation_failure(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    store = Store(tmp_path / "p.db")
+    store.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0, benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    store.upsert_weights(Weights("hf:cheap/m", "cheap-model", params_b=7.0, benchmark={"aa_intelligence": 95.0, "coding": 95.0}))
+    store.upsert_deployment(Deployment("cheap:model", "hf:cheap/m", "cheap", "model",
+                                       price_in=0.01, price_out=0.01, context_window=8000, caps={"structured": True}))
+    store.upsert_weights(Weights("hf:reasoning/m", "reasoning-model", params_b=70.0, benchmark={"aa_intelligence": 100.0, "coding": 100.0}))
+    store.upsert_deployment(Deployment("reasoning:model", "hf:reasoning/m", "reasoning", "model",
+                                       price_in=50.0, price_out=50.0, context_window=8000, caps={"structured": True, "reasoning": True}))
+    store.commit()
+    store.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "reasoning"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+
+    from mininfer.router import Policy
+    orig_load = Policy.load
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.top_k = 1
+        return pol, tasks
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+    def fake_runner(**kw):
+        def run(deploy_id, messages, **kw2):
+            if deploy_id == "cheap:model":
+                return CallResult(deploy_id, text="", ok=False, error_class="empty_content",
+                                  tokens_in=5, tokens_out=0)
+            return CallResult(deploy_id, text="escalated success", ok=True,
+                              tokens_in=10, tokens_out=5)
+        return run
+
+    monkeypatch.setattr("mininfer.proxy.Runner", fake_runner)
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+
+    # Prompt that starts as low complexity
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "auto", "messages": [{"role": "user", "content": "Extract all email addresses from snippet"}]}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["choices"][0]["message"]["content"] == "escalated success"
+    assert body["mi"]["selected_model"] == "reasoning:model"
+    assert body["mi"]["reason"].get("complexity_escalated") is True
+    assert body["mi"]["reason"]["complexity"]["source"] == "escalation"
+
+    # Regression: the decision row is written *before* execution, so the escalation
+    # has to be written back explicitly. It used to live only on the in-memory
+    # reason, which made `mi complexity --report`'s escalation rate permanently 0.
+    reopened = Store(tmp_path / "p.db")
+    persisted = json.loads(reopened.recent_decisions(limit=1)[0]["reason"])
+    assert persisted.get("complexity_escalated") is True
+    assert persisted["complexity"]["source"] == "escalation"
+    assert persisted["selected"][0]["deploy_id"] == "reasoning:model"
+    reopened.close()
+
+
+def test_complexity_never_reaches_the_provider_body():
+    """`complexity` is MinInfer's own field; providers reject unknown keys."""
+    from mininfer.proxy import _extra
+
+    forwarded = _extra({"model": "auto", "complexity": "high", "task": "code_edit",
+                        "stream": True, "mi_options": 2, "x-mi-task": "sql_generation",
+                        "messages": [{"role": "user", "content": "hi"}], "tools": []})
+    for mininfer_only in ("model", "complexity", "task", "stream", "mi_options", "x-mi-task"):
+        assert mininfer_only not in forwarded, mininfer_only
+    assert forwarded["messages"] and "tools" in forwarded
+
+
+def test_escalation_is_skipped_when_the_session_budget_refuses(tmp_path, monkeypatch):
+    """The escalation is a second paid call and must clear the same ceiling.
+
+    Stubbing the gate rather than tuning limits keeps this a test of the control
+    flow: no upstream call may happen once the budget check refuses.
+    """
+    import json
+
+    from mininfer import proxy as proxy_mod
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    # This weight has no deployment: it exists to anchor the benchmark norms.
+    # `benchmark_norms` maps each key to its p5/p95 across the registry, so with
+    # only two high-scoring arms cheap:model's 95 sits at p5 and its prior collapses
+    # to the 0.30 floor — it would be rejected for quality and never tried, which
+    # would make this test pass without exercising the escalation at all.
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:cheap/m", "cheap-model", params_b=7.0,
+                                 benchmark={"aa_intelligence": 95.0, "coding": 95.0}))
+    setup.upsert_deployment(Deployment("cheap:model", "hf:cheap/m", "cheap", "model",
+                                       price_in=0.01, price_out=0.01, context_window=8000,
+                                       caps={"structured": True}))
+    setup.upsert_weights(Weights("hf:reasoning/m", "reasoning-model", params_b=70.0,
+                                 benchmark={"aa_intelligence": 100.0, "coding": 100.0}))
+    setup.upsert_deployment(Deployment("reasoning:model", "hf:reasoning/m", "reasoning", "model",
+                                       price_in=50.0, price_out=50.0, context_window=8000,
+                                       caps={"structured": True, "reasoning": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "reasoning"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+
+    from mininfer.router import Policy as _Policy
+    orig_load = _Policy.load
+
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.top_k = 1
+        return pol, tasks
+
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+    calls, gate_calls = [], {"n": 0}
+
+    def fake_runner(**kw):
+        def run(deploy_id, messages, **kw2):
+            calls.append(deploy_id)
+            return CallResult(deploy_id, text="", ok=False,
+                              error_class="empty_content", tokens_in=5, tokens_out=0)
+        return run
+
+    def gate(*a, **k):
+        gate_calls["n"] += 1
+        if gate_calls["n"] == 1:
+            return None                       # the first call is affordable
+        return proxy_mod._error(429, "session_budget_exceeded", "no headroom for escalation")
+
+    monkeypatch.setattr("mininfer.proxy.Runner", fake_runner)
+    monkeypatch.setattr("mininfer.proxy._session_block", gate)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto",
+                          "messages": [{"role": "user", "content": "Extract all emails"}]})
+
+    # 502 is the right answer here: the low arm failed and the escalation was
+    # refused, so no arm answered. What matters is that no second call was made.
+    assert r.status_code == 502, r.text
+    assert calls == ["cheap:model"], f"escalated despite the budget gate: {calls}"
+    assert gate_calls["n"] == 2, "the escalation must re-check the budget"
+
+    reopened = Store(tmp_path / "p.db")
+    persisted = json.loads(reopened.recent_decisions(limit=1)[0]["reason"])
+    assert persisted.get("complexity_escalation_blocked") == "session_budget"
+    assert not persisted.get("complexity_escalated")
+    reopened.close()
+
+
+def test_escalation_is_off_unless_the_policy_opts_in(tmp_path, monkeypatch):
+    """Absent `complexity.escalation`, a missing block must mean off.
+
+    Escalation spends a second, more expensive call, so the code default is off and
+    the shipped policy opts in explicitly. Drop the block and no retry may happen.
+    """
+    import json
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:cheap/m", "cheap-model", params_b=7.0,
+                                 benchmark={"aa_intelligence": 95.0, "coding": 95.0}))
+    setup.upsert_deployment(Deployment("cheap:model", "hf:cheap/m", "cheap", "model",
+                                       price_in=0.01, price_out=0.01, context_window=8000,
+                                       caps={"structured": True}))
+    setup.upsert_weights(Weights("hf:reasoning/m", "reasoning-model", params_b=70.0,
+                                 benchmark={"aa_intelligence": 100.0, "coding": 100.0}))
+    setup.upsert_deployment(Deployment("reasoning:model", "hf:reasoning/m", "reasoning", "model",
+                                       price_in=50.0, price_out=50.0, context_window=8000,
+                                       caps={"structured": True, "reasoning": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "reasoning"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+
+    from mininfer.router import Policy as _Policy
+    orig_load = _Policy.load
+
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.top_k = 1
+        pol.complexity = {k: v for k, v in pol.complexity.items() if k != "escalation"}
+        return pol, tasks
+
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+    calls: list[str] = []
+
+    def fake_runner(**kw):
+        def run(deploy_id, messages, **kw2):
+            calls.append(deploy_id)
+            return CallResult(deploy_id, text="", ok=False,
+                              error_class="empty_content", tokens_in=5, tokens_out=0)
+        return run
+
+    monkeypatch.setattr("mininfer.proxy.Runner", fake_runner)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto",
+                          "messages": [{"role": "user", "content": "Extract all emails"}]})
+
+    assert calls == ["cheap:model"], f"escalated without opting in: {calls}"
+    assert r.status_code == 502
+
+
+def test_the_judge_tier_runs_in_the_proxy_when_enabled(tmp_path, monkeypatch):
+    """`judge.enabled: true` must actually reach the request path, pinned.
+
+    Pinned to `judge.model` means the call never enters the router, so it cannot
+    be classified, escalated, and recurse.
+    """
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    # Anchor weight with no deployment: it exists only to give `benchmark_norms` a
+    # p5/p95 spread. With a single weight hi == lo, the prior collapses to 0.625,
+    # p_lb lands under every quality floor, and nothing is ever eligible.
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0}))
+    setup.upsert_weights(Weights("hf:m", "m", params_b=7.0, benchmark={"aa_intelligence": 90.0}))
+    # Generous on purpose: the ambiguous prompt may classify into a demanding task
+    # (`code_edit` wants 32k + tools) and this test is about the judge, not routing.
+    setup.upsert_deployment(Deployment("openrouter:m", "hf:m", "openrouter", "m",
+                                       price_in=0.1, price_out=0.1, context_window=200000,
+                                       caps={"tools": True, "structured": True, "vision": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"openrouter"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+
+    from mininfer.router import Policy as _Policy
+    orig_load = _Policy.load
+
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.complexity = {**pol.complexity,
+                          "judge": {"enabled": True, "model": "groq:judge"}}
+        return pol, tasks
+
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+    # The judge cache is a module global keyed by prompt, so a prior test could
+    # otherwise satisfy this request without ever calling the judge.
+    from mininfer import complexity as cm
+    cm._DEFAULT_CACHE._cache.clear()
+
+    seen: list[str] = []
+
+    def fake_runner(**kw):
+        def run(deploy_id, messages, **kw2):
+            seen.append(deploy_id)
+            if deploy_id == "groq:judge":
+                return CallResult(deploy_id, text='{"level":"high","needs_reasoning":true,"reason":"judged"}',
+                                  ok=True, tokens_in=1, tokens_out=1)
+            return CallResult(deploy_id, text="answer", ok=True, tokens_in=1, tokens_out=1)
+        return run
+
+    # make_judge imports Runner lazily from execute; the chat call uses proxy's.
+    monkeypatch.setattr("mininfer.execute.Runner", fake_runner)
+    monkeypatch.setattr("mininfer.proxy.Runner", fake_runner)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto",
+                          "messages": [{"role": "user",
+                                        "content": "First refactor the module, then update the tests"}]})
+
+    assert r.status_code == 200, r.text
+    assert "groq:judge" in seen, f"judge never called: {seen}"
+    assert r.json()["mi"]["reason"]["complexity"]["source"] == "judge"
+
+
+def test_outcomes_are_tagged_with_the_effort_they_were_routed_under(tmp_path, monkeypatch):
+    """#3: without the tag, difficulty can never be recalibrated from outcomes.
+
+    Observations were keyed `(deploy_id, task)`, so a model that is good at easy
+    prompts and bad at hard ones averaged into one mediocre number and the
+    difficulty signal had no feedback loop at all.
+    """
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:m", "m", params_b=7.0,
+                                 benchmark={"aa_intelligence": 90.0, "coding": 90.0}))
+    setup.upsert_deployment(Deployment("openrouter:m", "hf:m", "openrouter", "m",
+                                       price_in=0.1, price_out=0.1, context_window=200000,
+                                       caps={"tools": True, "structured": True, "vision": True,
+                                             "reasoning": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"openrouter"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+
+    def fake_runner(**kw):
+        def run(deploy_id, messages, **kw2):
+            return CallResult(deploy_id, text="ok", ok=True, tokens_in=1, tokens_out=1)
+        return run
+
+    monkeypatch.setattr("mininfer.proxy.Runner", fake_runner)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    for prompt in ("Extract all email addresses from the snippet",
+                   "Prove by induction that the sum of cubes is a square"):
+        assert client.post("/v1/chat/completions",
+                           json={"model": "auto",
+                                 "messages": [{"role": "user", "content": prompt}]}).status_code == 200
+
+    reopened = Store(tmp_path / "p.db")
+    by_effort = reopened.routing_stats_by_effort()
+    efforts = {key[2] for key in by_effort}
+    assert {"low", "high"} <= efforts, f"outcomes not tagged per effort: {efforts}"
+    for (deploy_id, _task, effort), row in by_effort.items():
+        assert deploy_id == "openrouter:m"
+        assert row["n"] >= 1 and row["wins"] >= 1, (effort, row)
+    reopened.close()
+
+
+
+
+
+def test_the_streaming_route_frame_carries_complexity(tmp_path, monkeypatch):
+    """The dashboard always streams, and the full `reason` block is non-streaming
+    only. Without `complexity` on the route frame the decision that drove the
+    choice is invisible in the UI — which is exactly the state this fixed.
+    """
+    import json
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    # Anchor weight (no deployment) so `benchmark_norms` has a p5/p95 spread; with
+    # a single weight hi == lo and nothing clears a quality floor.
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:m", "m", params_b=7.0,
+                                 benchmark={"aa_intelligence": 90.0, "coding": 90.0}))
+    setup.upsert_deployment(Deployment("openrouter:m", "hf:m", "openrouter", "m",
+                                       price_in=0.1, price_out=0.1, context_window=200000,
+                                       caps={"tools": True, "structured": True,
+                                             "vision": True, "reasoning": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"openrouter"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+    monkeypatch.setattr("mininfer.proxy.resolve_endpoint",
+                        lambda did, **kw: Endpoint("http://x/v1", "m", "k", {}))
+    monkeypatch.setattr("mininfer.proxy.open_stream",
+                        lambda ep, body, *, deploy_id, timeout=120.0: _FakeSession(
+                            200, [b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                                  b'data: [DONE]\n\n']))
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto", "stream": True,
+                          "messages": [{"role": "user",
+                                        "content": "Prove by induction that sum(i^2) = n(n+1)(2n+1)/6"}]})
+    assert r.status_code == 200, r.text
+
+    frames = [json.loads(line[len("data: "):]) for line in r.text.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    route = next((f["mi"] for f in frames
+                  if isinstance(f.get("mi"), dict) and f["mi"].get("event") == "route"), None)
+    assert route is not None, r.text
+    assert route["complexity"]["level"] == "high"
+    assert route["complexity"]["needs_reasoning"] is True
+    assert route["complexity"]["signals"], "the fired cues must reach the client"
+    assert route["complexity_escalated"] is False
+
+    # The streamed path must tag its outcome too: the dashboard always streams, so
+    # an untagged stream would leave effort-learning with almost no data.
+    s = Store(tmp_path / "p.db")
+    efforts = [r["effort"] for r in
+               s.conn.execute("SELECT effort FROM observations").fetchall()]
+    assert "high" in efforts, efforts
+    s.close()
+
+
+def _escalation_registry(tmp_path):
+    """two tiers: a cheap arm and a reasoning arm, plus a benchmark norm anchor."""
+    setup = Store(tmp_path / "p.db")
+    setup.upsert_weights(Weights("hf:low/m", "low-model", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:cheap/m", "cheap-model", params_b=7.0,
+                                 benchmark={"aa_intelligence": 95.0, "coding": 95.0}))
+    setup.upsert_deployment(Deployment("cheap:model", "hf:cheap/m", "cheap", "model",
+                                       price_in=0.01, price_out=0.01, context_window=8000,
+                                       caps={"structured": True}))
+    setup.upsert_weights(Weights("hf:reasoning/m", "reasoning-model", params_b=70.0,
+                                 benchmark={"aa_intelligence": 100.0, "coding": 100.0}))
+    setup.upsert_deployment(Deployment("reasoning:model", "hf:reasoning/m", "reasoning", "model",
+                                       price_in=50.0, price_out=50.0, context_window=8000,
+                                       caps={"structured": True, "reasoning": True}))
+    setup.commit()
+    setup.close()
+
+
+def _one_arm_per_pass(monkeypatch):
+    from mininfer.router import Policy as _Policy
+    orig_load = _Policy.load
+
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.top_k = 1          # one arm per pass, so the retry is unambiguous
+        return pol, tasks
+
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+
+def test_streaming_escalates_when_every_arm_fails_before_the_first_byte(tmp_path, monkeypatch):
+    """The streaming escalation, before the first frame.
+
+    Escalation used to live only on the non-streaming path, so the dashboard —
+    which always streams — could never show it. It has to run before any byte is
+    emitted, or the caller is already committed to a dead stream.
+    """
+    import json
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    _escalation_registry(tmp_path)
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "reasoning"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+    _one_arm_per_pass(monkeypatch)
+    monkeypatch.setattr("mininfer.proxy.resolve_endpoint",
+                        lambda did, **kw: Endpoint("http://x/v1", "m", "k", {}))
+
+    tried: list[str] = []
+
+    def fake_open_stream(ep, body, *, deploy_id, timeout=120.0):
+        tried.append(deploy_id)
+        if deploy_id == "cheap:model":
+            return _FakeSession(500, [], error_class="http_500")
+        return _FakeSession(200, [b'data: {"choices":[{"delta":{"content":"escalated"}}]}\n\n',
+                                  b'data: [DONE]\n\n'])
+
+    monkeypatch.setattr("mininfer.proxy.open_stream", fake_open_stream)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto", "stream": True,
+                          "messages": [{"role": "user", "content": "Extract all emails"}]})
+
+    assert r.status_code == 200, r.text
+    assert tried == ["cheap:model", "reasoning:model"], tried
+    assert "escalated" in r.text
+
+    frames = [json.loads(line[len("data: "):]) for line in r.text.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    route = next(f["mi"] for f in frames
+                 if isinstance(f.get("mi"), dict) and f["mi"].get("event") == "route")
+    assert route["deploy"] == "reasoning:model"
+    assert route["complexity_escalated"] is True, route
+    assert route["complexity"]["source"] == "escalation"
+
+    # Persisted, not just streamed — otherwise the report shows 0% forever.
+    reopened = Store(tmp_path / "p.db")
+    persisted = json.loads(reopened.recent_decisions(limit=1)[0]["reason"])
+    assert persisted.get("complexity_escalated") is True
+    assert persisted["selected"][0]["deploy_id"] == "reasoning:model"
+
+    # The failed pass is tagged `low` and the retry `high`. Tagging both the same
+    # would destroy the very signal effort-learning is built on.
+    rows = reopened.conn.execute(
+        "SELECT deploy_id, effort FROM observations ORDER BY id").fetchall()
+    assert [(r["deploy_id"], r["effort"]) for r in rows] == [
+        ("cheap:model", "low"), ("reasoning:model", "high")
+    ], [dict(r) for r in rows]
+    reopened.close()
+
+
+def test_streaming_escalation_is_blocked_by_the_session_budget(tmp_path, monkeypatch):
+    """The streaming retry is a second paid call, so it clears the same ceiling."""
+    import json
+
+    from mininfer import proxy as proxy_mod
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    _escalation_registry(tmp_path)
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "reasoning"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+    _one_arm_per_pass(monkeypatch)
+    monkeypatch.setattr("mininfer.proxy.resolve_endpoint",
+                        lambda did, **kw: Endpoint("http://x/v1", "m", "k", {}))
+
+    # Allow the initial check (or the request never starts) and refuse only the
+    # escalation's re-check — a blanket patch would 429 the request upfront and
+    # this test would pass without exercising the retry gate at all.
+    gate_calls = {"n": 0}
+
+    def gate(*a, **k):
+        gate_calls["n"] += 1
+        if gate_calls["n"] == 1:
+            return None
+        return proxy_mod._error(429, "session_budget_exceeded", "no headroom for escalation")
+
+    monkeypatch.setattr("mininfer.proxy._session_block", gate)
+
+    tried: list[str] = []
+
+    def fake_open_stream(ep, body, *, deploy_id, timeout=120.0):
+        tried.append(deploy_id)
+        return _FakeSession(500, [], error_class="http_500")
+
+    monkeypatch.setattr("mininfer.proxy.open_stream", fake_open_stream)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto", "stream": True,
+                          "messages": [{"role": "user", "content": "Extract all emails"}]})
+
+    assert r.status_code == 502, r.text
+    assert tried == ["cheap:model"], f"escalated despite the budget gate: {tried}"
+    assert gate_calls["n"] == 2, "the escalation must re-check the budget"
+
+    reopened = Store(tmp_path / "p.db")
+    persisted = json.loads(reopened.recent_decisions(limit=1)[0]["reason"])
+    assert persisted.get("complexity_escalation_blocked") == "session_budget"
+    assert not persisted.get("complexity_escalated")
+    reopened.close()

@@ -1,5 +1,5 @@
-import { Sparkles, Layers } from 'lucide-react'
-import { splitModelId } from '@/lib/chat'
+import { Sparkles, Layers, Gauge, ArrowUpRight } from 'lucide-react'
+import { splitModelId, type ComplexityMeta } from '@/lib/chat'
 import { cn } from '@/lib/utils'
 
 export interface ModelIdentityProps {
@@ -8,6 +8,23 @@ export interface ModelIdentityProps {
   alternatives?: string[]
   streaming?: boolean
   className?: string
+  /** What the complexity estimator decided for this prompt, if it was routed. */
+  complexity?: ComplexityMeta | null
+  /** The low-complexity arm failed and the router retried a tier up. */
+  complexityEscalated?: boolean
+}
+
+/** The tooltip: every number the router used, so a wrong call is debuggable. */
+function complexityTitle(c: ComplexityMeta, escalated?: boolean): string {
+  const lines = [
+    `complexity: ${c.level} (score ${c.score}, confidence ${c.confidence})`,
+    `needs reasoning: ${c.needs_reasoning}`,
+    `decided by: ${c.source}`,
+  ]
+  if (c.signals?.length) lines.push(`signals: ${c.signals.join(', ')}`)
+  if (c.reason) lines.push(c.reason)
+  if (escalated) lines.push('escalated: the low-complexity arm failed, retried a tier up')
+  return lines.join('\n')
 }
 
 /**
@@ -23,6 +40,8 @@ export function ModelIdentity({
   alternatives = [],
   streaming,
   className,
+  complexity,
+  complexityEscalated,
 }: ModelIdentityProps) {
   let effectiveModel = model
   let effectiveAlternatives = [...(alternatives || [])]
@@ -73,6 +92,45 @@ export function ModelIdentity({
           </span>
         </div>
       </div>
+
+      {/* Complexity (#complexity routing): the level that drove this choice.
+          Present only when the request was routed, so a pinned model shows
+          nothing rather than a misleading default. */}
+      {complexity && (
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span
+            title={complexityTitle(complexity, complexityEscalated)}
+            data-testid="complexity-badge"
+            className={cn(
+              'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+              complexity.needs_reasoning
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                : 'border-border/80 bg-muted/40 text-muted-foreground',
+            )}
+          >
+            <Gauge className="h-3 w-3 opacity-70" strokeWidth={2.2} />
+            {complexity.level}
+            {complexity.needs_reasoning && (
+              <span className="font-medium normal-case tracking-normal">· needs reasoning</span>
+            )}
+            {complexity.source !== 'heuristic' && (
+              <span className="font-normal normal-case tracking-normal opacity-70">
+                ({complexity.source})
+              </span>
+            )}
+          </span>
+          {complexityEscalated && (
+            <span
+              title="The low-complexity arm failed validation; the router retried a tier up"
+              data-testid="complexity-escalated"
+              className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400"
+            >
+              <ArrowUpRight className="h-3 w-3" strokeWidth={2.4} />
+              escalated
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Other selections / router candidate alternatives */}
       {cleanAlternatives.length > 0 && (

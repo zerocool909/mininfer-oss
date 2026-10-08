@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth as auth_mod
 from . import db as db_mod
 from . import intent as intent_mod
+from . import complexity as comp_mod
 from . import probe as probe_mod
 from . import env as env_mod
 from .env import load_env
@@ -562,6 +563,7 @@ def try_fallbacks(
     temperature: float = 0.0,
     session_id: str | None = None,
     tenant_id: str | None = None,
+    effort: str | None = None,
 ) -> tuple[str | None, CallResult, list[Attempt]]:
     """Call candidates in order; return (selected, last_result, attempts).
 
@@ -603,7 +605,7 @@ def try_fallbacks(
                 tokens_out=res.tokens_out, cost_usd=cost,
                 signal_kind="provider_reported", signal_value=1.0 if res.ok else 0.0,
                 session_id=session_id, tenant_id=tenant_id,
-                rate_limit_reason=reason,
+                rate_limit_reason=reason, effort=effort,
             )
             if session_id:
                 store.add_session_usage(session_id, tokens_in=res.tokens_in,
@@ -2342,8 +2344,30 @@ async def compact(request: Request) -> dict:
 
 
 def _extra(payload: dict) -> dict:
+    """The caller's own body, to be forwarded upstream verbatim.
+
+    Every key here is sent straight to the provider, so anything MinInfer reads
+    for routing has to be excluded — a provider that validates its body rejects
+    unknown fields (`complexity` used to leak and 400 on strict gateways).
+    """
     return {k: v for k, v in payload.items()
-            if k not in ("model", "task", "policy", "x-mi-task", "x-mi-task", "stream", "mi_options", "mi_options")}
+            if k not in ("model", "task", "policy", "stream", "mi_options",
+                         "complexity", "x-mi-task")}
+
+
+def _selected_meta(chosen) -> list[dict]:
+    """The `selected` block of a decision reason, one entry per ranked candidate.
+
+    Shared so the pre-execution reason and the post-escalation rewrite cannot
+    drift apart in shape.
+    """
+    return [
+        {"deploy_id": c.deploy_id, "p_lb": round(c.p_lb, 4),
+         "cost_per_success": c.cost_per_success, "free_kind": c.free_kind,
+         "availability": round(c.availability, 4),
+         "leaderboards": c.prior_tags}
+        for c in chosen
+    ]
 
 
 async def _handle(payload: dict, *, force_route: bool,
@@ -2445,6 +2469,7 @@ async def _handle(payload: dict, *, force_route: bool,
 
     routed = force_route or model in ("auto", "route") or model in tasks
     intent = None
+    comp = None
     merged_from: list[str] | None = None
     if routed:
         explicit = task_field or (model if model in tasks else None)
@@ -2472,10 +2497,30 @@ async def _handle(payload: dict, *, force_route: bool,
                     "+".join(tied), [tasks[n] for n in tied])
                 merged_from = tied
 
+        # Complexity estimation & profile adaptation
+        last_prompt_text = intent_mod.last_user_text(messages)
+        complexity_override = payload.get("complexity")
+        comp = comp_mod.classify_complexity(
+            last_prompt_text,
+            override=complexity_override,
+            thresholds=policy.complexity.get("thresholds"),
+            weights=policy.complexity.get("weights"),
+            heuristic_confident=policy.complexity.get("heuristic_confident", 0.75),
+            judge=comp_mod.make_judge(policy.complexity.get("judge")),
+        )
+
+        complexity_adapted = False
+        # Opt-in: absent an explicit `enabled: true`, a missing block means off, so
+        # an upgrade cannot silently change routing (the warm-tier probe convention).
+        if policy.complexity.get("enabled", False):
+            floor_delta = float(policy.complexity.get("floor_delta", 0.08))
+            profile = comp_mod.adapt_task_for_complexity(profile, comp, floor_delta=floor_delta)
+            complexity_adapted = True
+
         dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
-        if not dec.chosen and merged_from:
-            # The join is strictly stricter, so it can exclude everything. When it
-            # does, the best single guess beats no answer.
+        if not dec.chosen and (merged_from or complexity_adapted):
+            # The join or reasoning gate is strictly stricter, so it can exclude everything.
+            # When it does, the best single base task beats failing completely.
             profile = tasks[task_name]
             merged_from = None
             dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
@@ -2486,13 +2531,7 @@ async def _handle(payload: dict, *, force_route: bool,
             "funnel": dec.funnel,
             "why": dec.why,
             "diversity": dec.diversity,
-            "selected": [
-                {"deploy_id": c.deploy_id, "p_lb": round(c.p_lb, 4),
-                 "cost_per_success": c.cost_per_success, "free_kind": c.free_kind,
-                 "availability": round(c.availability, 4),
-                 "leaderboards": c.prior_tags}
-                for c in dec.chosen
-            ],
+            "selected": _selected_meta(dec.chosen),
             "skipped_no_key": skipped,
             "origin": origin_info,
         }
@@ -2503,6 +2542,7 @@ async def _handle(payload: dict, *, force_route: bool,
                 meta["explicit"] = explicit
                 meta["agreed"] = intent.task == explicit
             reason["intent"] = meta
+        reason["complexity"] = comp.as_dict()
         reason["profile"] = profile.name
         if merged_from:
             reason["merged_from"] = merged_from
@@ -2603,7 +2643,7 @@ async def _handle(payload: dict, *, force_route: bool,
             sel, res, _ = await asyncio.to_thread(
                 try_fallbacks, [did], messages, runner,
                 task_name=task_name, store=store, session_id=session_id,
-                tenant_id=caller_tenant)
+                tenant_id=caller_tenant, effort=comp.level if comp is not None else None)
             last = res
             if sel:
                 results.append((sel, res))
@@ -2621,17 +2661,104 @@ async def _handle(payload: dict, *, force_route: bool,
                      reason=reason)
 
     if stream:
+        # The streaming twin of the escalation below. `_stream` is handed the policy
+        # *name* (for the response header), so it cannot read the complexity config
+        # itself — this closure carries the routing context it needs, and mutates
+        # `reason` before the route frame is built so the dashboard sees the
+        # escalated level and the `escalated` marker.
+        escalate = None
+        if comp is not None:
+            def escalate(failed_ids: set[str]) -> list[str] | None:
+                return _stream_escalation(
+                    policy=policy, base_task=tasks.get(task_name), complexity=comp,
+                    reason=reason, failed=failed_ids, user_keys=user_keys,
+                    local_endpoints=local_endpoints, store=store,
+                    session_id=session_id, messages=payload.get("messages") or [],
+                    payload=payload, decision_id=dec_id)
+
         return await _stream(deploy_ids, payload, task_name=task_name, store=store,
                              policy=policy.name, reason=reason, alternatives=alternatives,
                              intent=intent, session_id=session_id, tenant_id=caller_tenant,
                              user_keys=user_keys, local_endpoints=local_endpoints,
-                             decision_id=dec_id)
+                             decision_id=dec_id, escalate=escalate,
+                             effort=comp.level if comp is not None else None)
 
     runner = Runner(extra_body=_extra(payload), user_keys=user_keys, local_endpoints=local_endpoints)
     selected, res, attempts = await asyncio.to_thread(
         try_fallbacks,
         deploy_ids, messages, runner, task_name=task_name, store=store,
-        session_id=session_id, tenant_id=caller_tenant)
+        session_id=session_id, tenant_id=caller_tenant,
+        # Tag the outcome with the difficulty it was routed under, so
+        # `routing_stats_by_effort` can tell "good at easy, bad at hard" apart.
+        effort=comp.level if comp is not None else None)
+
+    # Complexity escalation check:
+    # If the chosen model was routed as low complexity, but failed validation (bad_output, empty_content)
+    # or all low-complexity arms failed, escalate once to reasoning tier if configured.
+    escalation_cfg = (getattr(policy, "complexity", None) or {}).get("escalation", {})
+    can_escalate = (
+        escalation_cfg.get("enabled", False)
+        and routed
+        and comp is not None
+        and comp.level == "low"
+        and (selected is None or getattr(res, "error_class", None) in ("bad_output", "empty_content"))
+    )
+    if can_escalate:
+        escalated_comp = comp_mod.Complexity(
+            level="high",
+            needs_reasoning=True,
+            confidence=1.0,
+            score=comp.score,
+            signals=(*comp.signals, "escalation:low_failed"),
+            source="escalation",
+            reason="low-complexity route failed validation; escalated to reasoning tier",
+        )
+        floor_delta = float((getattr(policy, "complexity", None) or {}).get("floor_delta", 0.08))
+        escalated_profile = comp_mod.adapt_task_for_complexity(
+            tasks[task_name], escalated_comp,
+            floor_delta=floor_delta,
+        )
+
+        # Escalation is a *second* paid call, at a higher tier than the one the
+        # budget reserved for. Re-check the ceiling before spending: checking once
+        # before the first call and then spending again is how a "ceiling" becomes
+        # a suggestion you overshoot by a call — the exact invariant `_session_block`
+        # documents. An unaffordable escalation is skipped, not charged.
+        esc_block = _session_block(policy, store, session_id, messages=messages,
+                                   max_tokens=payload.get("max_tokens") or 1024)
+        if esc_block is not None:
+            reason["complexity_escalation_blocked"] = "session_budget"
+            store.update_decision_reason(dec_id, reason)
+        else:
+            esc_dec = route(store, escalated_profile, policy, mode="auto", user_keys=user_keys)
+            failed_dids = {a.deploy_id for a in attempts}
+            # The escalated profile is stricter, so the arm that just failed can
+            # still top the ranking. Draw from the full eligible ranking — not
+            # `chosen` (top_k) — or a top_k of 1 leaves no fallback and the
+            # escalation can never retry.
+            esc_cands = [c for c in esc_dec.ranked
+                         if c.deploy_id not in failed_dids
+                         and _keys_available(c.deploy_id, user_keys, local_endpoints)]
+            esc_deploy_ids = [c.deploy_id for c in esc_cands][:max(1, policy.top_k)]
+            if esc_deploy_ids:
+                esc_selected, esc_res, esc_attempts = await asyncio.to_thread(
+                    try_fallbacks,
+                    esc_deploy_ids, messages, runner, task_name=task_name, store=store,
+                    session_id=session_id, tenant_id=caller_tenant,
+                    effort=escalated_comp.level)
+                attempts.extend(esc_attempts)
+                if esc_selected is not None:
+                    selected = esc_selected
+                    res = esc_res
+                    reason["complexity_escalated"] = True
+                    reason["complexity"] = escalated_comp.as_dict()
+                    # The decision row was written before execution, so it still
+                    # names the arm that failed. Rewrite it to name the one that
+                    # answered, or the log and `mi complexity --report` describe a
+                    # choice nobody took and the escalation rate stays 0 forever.
+                    reason["selected"] = _selected_meta(esc_cands[:max(1, policy.top_k)])
+                    store.update_decision_reason(dec_id, reason)
+
     session = _session_payload(policy, store, session_id)
     if selected is not None and session_id:
         # The answer, stored with the question, in one transaction that is also
@@ -3148,21 +3275,101 @@ def _usage_tokens(usage: dict | None) -> tuple[int | None, int | None, float | N
         (float(cost) if cost is not None else None)
 
 
+def _stream_escalation(*, policy, base_task, complexity, reason, failed,
+                       user_keys, local_endpoints, store, session_id, messages,
+                       payload, decision_id) -> list[str] | None:
+    """One-tier retry for a streaming request whose arms all failed.
+
+    The streaming twin of the escalation in `_handle`, and it must stay in
+    lock-step with it: same gate (a low-complexity route that could not be
+    called), same budget re-check before spending a second call, and the same
+    write-back to the decision — without that, `mi complexity --report` reports an
+    escalation rate of zero forever.
+
+    Returns the widened candidate ids, or `None` when escalation does not apply.
+    """
+    cfg = (getattr(policy, "complexity", None) or {}).get("escalation", {})
+    if not cfg.get("enabled", False):
+        return None
+    if complexity is None or complexity.level != "low" or base_task is None:
+        return None
+
+    blocked = _session_block(policy, store, session_id, messages=messages,
+                             max_tokens=payload.get("max_tokens") or 1024)
+    if blocked is not None:
+        reason["complexity_escalation_blocked"] = "session_budget"
+        store.update_decision_reason(decision_id, reason)
+        return None
+
+    escalated_comp = comp_mod.Complexity(
+        level="high",
+        needs_reasoning=True,
+        confidence=1.0,
+        score=complexity.score,
+        signals=(*complexity.signals, "escalation:low_failed"),
+        source="escalation",
+        reason="low-complexity route failed validation; escalated to reasoning tier",
+    )
+    floor_delta = float((getattr(policy, "complexity", None) or {}).get("floor_delta", 0.08))
+    profile = comp_mod.adapt_task_for_complexity(base_task, escalated_comp,
+                                                 floor_delta=floor_delta)
+    dec = route(store, profile, policy, mode="auto", user_keys=user_keys)
+    cands = [c for c in dec.ranked
+             if c.deploy_id not in failed
+             and _keys_available(c.deploy_id, user_keys, local_endpoints)]
+    esc_ids = [c.deploy_id for c in cands][:max(1, policy.top_k)]
+    if not esc_ids:
+        return None
+
+    # Written back BEFORE any frame is emitted, so the `route` frame the dashboard
+    # reads carries the escalated level and the `escalated` marker.
+    reason["complexity_escalated"] = True
+    reason["complexity"] = escalated_comp.as_dict()
+    reason["selected"] = _selected_meta(cands[:max(1, policy.top_k)])
+    store.update_decision_reason(decision_id, reason)
+    return esc_ids
+
+
 async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alternatives,
                   intent=None, session_id=None, tenant_id=None,
                   user_keys: dict[str, str] | None = None,
                   local_endpoints: dict[str, str] | None = None,
-                  decision_id: int | None = None):
+                  decision_id: int | None = None,
+                  escalate=None, effort: str | None = None):
     """Relay the first candidate that accepts the request.
 
     Fallback only runs *before* any byte reaches the caller: once an upstream
     returns 200 we are committed to it, because a half-sent SSE stream cannot be
     un-sent. Failures before that point are recorded and the next arm is tried.
+
+    When *every* arm fails before committing, `escalate(failed)` gets one chance to
+    widen the list — the same one-tier retry the non-streaming path does. It has to
+    happen inside this function, because by the time it returns the response is
+    already committed.
     """
     extra = _extra(payload)
     attempts: list[tuple[str, str]] = []
+    failed: set[str] = set()
     last_detail: str | None = None
-    for did in deploy_ids:
+    escalated = False
+    idx = 0
+    # An index loop rather than `for did in deploy_ids`, so an escalation can
+    # *extend* the candidate list and keep going without re-indenting the body.
+    while True:
+        if idx >= len(deploy_ids):
+            if escalated or escalate is None:
+                break
+            more = escalate(failed)
+            if not more:
+                break
+            deploy_ids = list(deploy_ids) + list(more)
+            escalated = True
+            # The retry is routed against the raised bar, so its outcome belongs in
+            # the `high` bucket — the failed first pass stays `low`. Tagging both
+            # the same would destroy exactly the signal effort-learning needs.
+            effort = "high"
+        did = deploy_ids[idx]
+        idx += 1
         head = did.partition(":")[0].split("/")[0]
         ukey = (user_keys or {}).get(head)
         ubase = (local_endpoints or {}).get(head)
@@ -3172,9 +3379,10 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             store.record_usage(did)
             store.observe(did, task_name, ok=False, ts=utcnow(), error_class=err,
                           signal_kind="provider_reported", session_id=session_id,
-                          tenant_id=tenant_id)
+                          tenant_id=tenant_id, effort=effort)
             store.commit()
             attempts.append((did, err))
+            failed.add(did)
             continue
 
         body = {"max_tokens": 2048, **extra, "model": ep.model, "messages": payload["messages"]}
@@ -3196,10 +3404,11 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             store.observe(did, task_name, ok=False, ts=utcnow(),
                           error_class=sess.error_class, signal_kind="provider_reported",
                           session_id=session_id, tenant_id=tenant_id,
-                          rate_limit_reason=rl_reason)
+                          rate_limit_reason=rl_reason, effort=effort)
             store.commit()
             last_detail = sess.error_detail
             attempts.append((did, sess.error_class or "error"))
+            failed.add(did)
             continue
 
         store.record_usage(did)
@@ -3232,6 +3441,12 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                     "alternatives": [d for d in deploy_ids if d != did],
                     "needs_approval": bool(reason.get("needs_approval")),
                     "decision_id": decision_id,
+                    # The router's `reason` block — which carries this — exists only
+                    # on the non-streaming response, and the dashboard always
+                    # streams. Without it here the complexity decision is invisible
+                    # in the UI even though it drove the choice.
+                    "complexity": reason.get("complexity"),
+                    "complexity_escalated": bool(reason.get("complexity_escalated")),
                 }
                 yield _sse_frame({"mi": init_data, "model": did})
 
@@ -3299,7 +3514,8 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                           signal_kind="provider_reported",
                           signal_value=1.0 if ok else 0.0,
                           tokens_in=tin, tokens_out=tout, cost_usd=cost,
-                          session_id=session_id, tenant_id=tenant_id)
+                          session_id=session_id, tenant_id=tenant_id,
+                          effort=effort)
                 if session_id:
                     s.add_session_usage(session_id, tokens_in=tin,
                                         tokens_out=tout, cost_usd=cost,

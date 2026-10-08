@@ -516,6 +516,15 @@ def cmd_route(args) -> int:
         print(f"unknown task {args.task!r}; known: {', '.join(tasks)}", file=sys.stderr)
         return 2
     task = tasks[args.task]
+    cx = None
+    if getattr(args, "prompt", None) or getattr(args, "complexity", None):
+        from . import complexity as comp_mod
+
+        override = None if args.complexity in (None, "auto") else args.complexity
+        cx = comp_mod.classify_complexity(args.prompt or "", override=override, policy_config=policy.complexity,
+                                          judge=comp_mod.make_judge(policy.complexity.get("judge")))
+        floor_delta = policy.complexity.get("floor_delta", 0.08) if isinstance(policy.complexity, dict) else 0.08
+        task = comp_mod.adapt_task_for_complexity(task, cx, floor_delta=floor_delta)
     if args.objective:
         policy.objective = args.objective
     if getattr(args, "bandit", False):
@@ -539,6 +548,10 @@ def cmd_route(args) -> int:
     print(f"TASK     {task.name}  — {task.description}")
     print(f"POLICY   {policy.name}  objective={policy.objective}  top_k={policy.top_k}"
           f"  strategy={dec.strategy}")
+    if cx:
+        print(f"COMPLEXITY {cx.level.upper()} (score={cx.score:.2f}, needs_reasoning={cx.needs_reasoning}, source={cx.source})")
+        if cx.signals:
+            print(f"           signals: {', '.join(cx.signals)}")
     print(f"TOKENS   ~{task.tokens_in} in / ~{task.tokens_out} out per call")
     f = dec.funnel
     print(f"FUNNEL   {f['total']} deployments -> {f['after_hard_filter']} eligible "
@@ -586,10 +599,13 @@ def cmd_route(args) -> int:
         print(f"       context  {c.context_window or '?':>9}   "
               f"latency {c.latency_ms if c.latency_ms is not None else '?'}")
 
+    decision_reason = {"funnel": dec.funnel, "why": dec.why, "diversity": dec.diversity, "strategy": dec.strategy}
+    if cx:
+        decision_reason["complexity"] = cx.as_dict()
     store.record_decision(task=task.name, policy=policy.name, mode=args.mode,
                           chosen=dec.chosen[0].deploy_id if dec.chosen else "",
                           candidates=[c.deploy_id for c in dec.chosen],
-                          reason=json.dumps({"funnel": dec.funnel, "why": dec.why, "diversity": dec.diversity, "strategy": dec.strategy}))
+                          reason=json.dumps(decision_reason))
     store.commit()
     store.close()
     return 0
@@ -601,12 +617,23 @@ def cmd_explain(args) -> int:
     if getattr(args, "include_uncredentialed", False):
         policy.require_callable = False
     task = tasks[args.task]
+    cx = None
+    if getattr(args, "prompt", None) or getattr(args, "complexity", None):
+        from . import complexity as comp_mod
+
+        override = None if args.complexity in (None, "auto") else args.complexity
+        cx = comp_mod.classify_complexity(args.prompt or "", override=override, policy_config=policy.complexity,
+                                          judge=comp_mod.make_judge(policy.complexity.get("judge")))
+        floor_delta = policy.complexity.get("floor_delta", 0.08) if isinstance(policy.complexity, dict) else 0.08
+        task = comp_mod.adapt_task_for_complexity(task, cx, floor_delta=floor_delta)
     pool = build_candidates(store, task, policy)
     elig = [c for c in pool if c.rejected is None]
     rej = [c for c in pool if c.rejected]
     elig.sort(key=lambda c: c.cost_per_success)
 
     print(f"WHY NOT — {task.name}: {len(elig)} eligible, {len(rej)} rejected\n")
+    if cx:
+        print(f"COMPLEXITY: {cx.level.upper()} (score={cx.score:.2f}, needs_reasoning={cx.needs_reasoning}, source={cx.source})\n")
     print(f"{'deployment':46s} {'p_lb':>5s} {'$/call':>10s} {'$/success':>10s}  note")
     for c in elig[:args.top]:
         print(f"{c.deploy_id:46s} {c.p_lb:5.2f} {_money(c.cost_per_call):>10s} "
@@ -1068,6 +1095,166 @@ def cmd_intent(args) -> int:
     return 0
 
 
+def _complexity_report(args) -> int:
+    """Summarize recorded decisions by complexity level, reasoning need, and escalations."""
+    store = _open(args)
+    rows = store.decisions_with_complexity(args.limit)
+    by_effort = store.routing_stats_by_effort()
+    store.close()
+
+    if not rows:
+        print("no decisions with complexity recorded yet (run requests through the proxy first)")
+        return 0
+
+    from collections import Counter
+    levels: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
+    signals_count: Counter[str] = Counter()
+    needs_reasoning_count = 0
+    escalated_count = 0
+    chosen_by_level: dict[str, Counter[str]] = {"low": Counter(), "medium": Counter(), "high": Counter()}
+
+    for row in rows:
+        try:
+            reason = json.loads(row["reason"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        c = reason.get("complexity") or {}
+        lvl = c.get("level", "unknown")
+        levels[lvl] += 1
+        src = c.get("source", "unknown")
+        sources[src] += 1
+        if c.get("needs_reasoning"):
+            needs_reasoning_count += 1
+        if reason.get("complexity_escalated"):
+            escalated_count += 1
+        for s in c.get("signals") or []:
+            sig_name = s.split(":")[0]
+            signals_count[sig_name] += 1
+        if row.get("chosen"):
+            chosen_by_level.setdefault(lvl, Counter())[row["chosen"]] += 1
+
+    total = len(rows)
+    print(f"COMPLEXITY DECISIONS SUMMARY ({total} scanned)\n")
+    print("DISTRIBUTION BY LEVEL")
+    for lvl in ("low", "medium", "high"):
+        n = levels.get(lvl, 0)
+        pct = (n / total * 100) if total else 0
+        bar = "#" * int(pct / 4)
+        print(f"  {lvl.upper():6s}  {n:5d}  ({pct:5.1f}%)  {bar}")
+
+    print(f"\nREASONING NEEDED: {needs_reasoning_count}/{total} ({(needs_reasoning_count/total*100) if total else 0:.1f}%)")
+    print(f"ESCALATIONS     : {escalated_count}/{total} ({(escalated_count/total*100) if total else 0:.1f}%)")
+
+    print("\nDECISION SOURCES")
+    for src, count in sources.most_common():
+        print(f"  {src:12s}  {count:5d}")
+
+    if signals_count:
+        print("\nTOP ACTIVE SIGNALS")
+        for sig, count in signals_count.most_common(8):
+            print(f"  {sig:16s} {count:5d}")
+
+    print("\nTOP WINNING MODELS PER TIER")
+    for lvl in ("low", "medium", "high"):
+        models = chosen_by_level.get(lvl)
+        if models:
+            top_m = ", ".join(f"{m} ({c})" for m, c in models.most_common(2))
+            print(f"  {lvl.upper():6s}: {top_m}")
+
+    # Outcomes by the effort they were routed under (#3). Decisions show *what*
+    # was chosen; this shows whether it worked, per difficulty — the loop that
+    # makes `floor_delta` calibratable from real results rather than intuition.
+    if by_effort:
+        per_level: dict[str, list[int]] = {}
+        for (_deploy, _task, effort), row in by_effort.items():
+            agg = per_level.setdefault(effort or "untagged", [0, 0])
+            agg[0] += int(row["n"] or 0)
+            agg[1] += int(row["wins"] or 0)
+        print("\nOUTCOMES BY EFFORT (observations tagged at routing time)")
+        for lvl in sorted(per_level):
+            n, wins = per_level[lvl]
+            rate = (wins / n * 100) if n else 0.0
+            print(f"  {lvl:10s} n={n:5d}  wins={wins:5d}  ({rate:5.1f}%)")
+
+    return 0
+
+
+def _complexity_calibrate() -> int:
+    """Accuracy of the heuristic on the labelled set, plus the best thresholds.
+
+    Exists because `low_max` / `high_min` were picked before there was any way to
+    check them. This is that check — and it deliberately does NOT retune the signal
+    patterns to fit its own 21 prompts, which would be overfitting a hand-labelled
+    toy set.
+    """
+    from . import complexity as comp_mod
+
+    try:
+        policy, _ = Policy.load(_policy_path())
+        th = (policy.complexity or {}).get("thresholds")
+        w = (policy.complexity or {}).get("weights")
+    except Exception:
+        th = w = None
+
+    cur = comp_mod.calibrate(weights=w, thresholds=th)
+    print(f"CALIBRATION SET     : {cur['n']} hand-labelled prompts")
+    print(f"CURRENT THRESHOLDS  : {cur['accuracy']:.1%} accurate ({cur['correct']}/{cur['n']})")
+    for want, row in cur["confusion"].items():
+        print(f"  want {want:6s}: " + "  ".join(f"{k}={v}" for k, v in row.items()))
+
+    print("\nBEST THRESHOLDS BY ACCURACY (ties break toward the shipped values)")
+    for r in comp_mod.sweep_thresholds(weights=w)[:3]:
+        print(f"  low_max={r['low_max']:<5} high_min={r['high_min']:<5} "
+              f"accuracy={r['accuracy']:.1%} ({r['correct']}/{r['n']})")
+
+    print("\nNOTE: `floor_delta` is not calibrated here — that needs graded\n"
+          "RouterBench runs across difficulty tiers, not prompt labels.")
+    return 0
+
+
+def cmd_complexity(args) -> int:
+    """Estimate complexity and reasoning need of a prompt, or report decision stats."""
+    from . import complexity as comp_mod
+
+    if getattr(args, "report", False):
+        return _complexity_report(args)
+
+    if getattr(args, "calibrate", False):
+        return _complexity_calibrate()
+
+    text = args.prompt or sys.stdin.read()
+    if not text.strip():
+        print("nothing to classify (pass a prompt or pipe one in)", file=sys.stderr)
+        return 2
+
+    # Honour the configured judge here too, so `mi complexity` and the proxy
+    # agree on the answer for the same prompt. Best-effort: an unreadable policy
+    # falls back to the heuristic, never to an error.
+    try:
+        policy, _ = Policy.load(getattr(args, "policy", None) or _policy_path())
+        judge_cfg = (policy.complexity or {}).get("judge")
+    except Exception:
+        judge_cfg = None
+    res = comp_mod.classify_complexity(text, override=args.override,
+                                       judge=comp_mod.make_judge(judge_cfg))
+    if args.json:
+        print(json.dumps(res.as_dict(), indent=2))
+        return 0
+
+    print(f"PROMPT       {' '.join(text.split())[:84]}")
+    print(f"COMPLEXITY   {res.level.upper():6s}  needs_reasoning={res.needs_reasoning}  "
+          f"confidence={res.confidence:.2f}  source={res.source}")
+    print(f"SCORE        {res.score:.2f}  ({res.reason})")
+    if res.signals:
+        print("SIGNALS")
+        for s in res.signals:
+            print(f"  {s}")
+    else:
+        print("SIGNALS      none matched")
+    return 0
+
+
 def cmd_classify(args) -> int:
     """Structured understanding: task, routing heads and entities.
 
@@ -1434,6 +1621,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="rank by Thompson-sampled cost-per-success")
         s.add_argument("--explore-eps", type=float,
                        help="epsilon-greedy exploration probability (bandit)")
+        s.add_argument("--prompt", default="", help="user prompt to estimate complexity from")
+        s.add_argument("--complexity", choices=["auto", "low", "medium", "high"], default=None,
+                       help="override or hint complexity level")
         s.set_defaults(fn=fn)
 
     b = sub.add_parser("bench", help="run RouterBench against a deployment")
@@ -1492,6 +1682,19 @@ def main(argv: list[str] | None = None) -> int:
     it.add_argument("--limit", type=int, default=500, help="decisions to scan")
     it.add_argument("--policy", default=str(POLICY))
     it.set_defaults(fn=cmd_intent)
+
+    cx = sub.add_parser("complexity",
+                        help="estimate complexity and reasoning need of a prompt")
+    cx.add_argument("prompt", nargs="?", default="")
+    cx.add_argument("--override", choices=["low", "medium", "high"], default=None,
+                    help="force complexity level")
+    cx.add_argument("--report", action="store_true",
+                    help="report complexity distribution and escalation stats from decision logs")
+    cx.add_argument("--limit", type=int, default=500, help="decisions to scan")
+    cx.add_argument("--calibrate", action="store_true",
+                    help="report heuristic accuracy on the labelled set and the best thresholds")
+    cx.add_argument("--json", action="store_true", help="output as JSON")
+    cx.set_defaults(fn=cmd_complexity)
 
     cl = sub.add_parser("classify",
                         help="local decision: task + provider/cost/context/style + entities")
