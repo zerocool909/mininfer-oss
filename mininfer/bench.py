@@ -50,6 +50,10 @@ class BenchTask:
     check: dict
     tokens_in: int
     tokens_out: int
+    #: Hand-labelled intrinsic difficulty. This is the graded axis the effort
+    #: calibration needs: without it a policy can only be scored on the average, and
+    #: an average is exactly what hides "great at easy, bad at hard".
+    difficulty: str = "medium"
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +305,11 @@ def _sql_task(n: int, question: str, reference_sql: str, schema: list[str], data
     prompt = (f"You have a SQLite database with this schema and data:\n\n{ddl}\n\n"
               f"Write ONE SQL query that answers: {question}\n"
               f"Return only the SQL, no explanation, no markdown fences.")
-    return BenchTask(f"sql-{n:02d}", "sql", prompt,
+    tid = f"sql-{n:02d}"
+    return BenchTask(tid, "sql", prompt,
                      {"schema": schema, "data": data, "reference_sql": reference_sql},
-                     tokens_in=700, tokens_out=120)
+                     tokens_in=700, tokens_out=120,
+                     difficulty=DIFFICULTY_BY_ID.get(tid, "medium"))
 
 
 _SQL = [
@@ -387,8 +393,10 @@ def _extraction_task(n: int, prompt: str, expected: dict) -> BenchTask:
     fields = ", ".join(expected)
     prompt = (prompt + "\n\nExtract these fields as a JSON object with these exact keys: "
               + fields + ". Return only JSON.")
-    return BenchTask(f"extract-{n:02d}", "extraction", prompt,
-                     {"expected": expected}, tokens_in=400, tokens_out=150)
+    tid = f"extract-{n:02d}"
+    return BenchTask(tid, "extraction", prompt,
+                     {"expected": expected}, tokens_in=400, tokens_out=150,
+                     difficulty=DIFFICULTY_BY_ID.get(tid, "medium"))
 
 
 _EXTRACTION = [
@@ -430,9 +438,11 @@ def _tool_task(n: int, request: str, tools: list[dict], name: str, args: dict) -
     prompt = ("Available tools (JSON):\n" + json.dumps(tools, ensure_ascii=False)
               + "\n\nRespond with exactly one JSON object of the form"
               ' {"name": "<tool>", "arguments": {<params>}}.\n\nUser request: ' + request)
-    return BenchTask(f"tool-{n:02d}", "tool_call", prompt,
+    tid = f"tool-{n:02d}"
+    return BenchTask(tid, "tool_call", prompt,
                      {"tools": tools, "expected_name": name, "expected_args": args},
-                     tokens_in=400, tokens_out=120)
+                     tokens_in=400, tokens_out=120,
+                     difficulty=DIFFICULTY_BY_ID.get(tid, "medium"))
 
 
 _TOOLS = [
@@ -461,9 +471,11 @@ _TOOLS = [
 
 
 def _reasoning_task(n: int, prompt: str, answer: float, tolerance: float = 1e-2) -> BenchTask:
-    return BenchTask(f"reason-{n:02d}", "reasoning", prompt,
+    tid = f"reason-{n:02d}"
+    return BenchTask(tid, "reasoning", prompt,
                      {"answer": answer, "tolerance": tolerance},
-                     tokens_in=300, tokens_out=60)
+                     tokens_in=300, tokens_out=60,
+                     difficulty=DIFFICULTY_BY_ID.get(tid, "medium"))
 
 
 _REASONING = [
@@ -490,6 +502,36 @@ def build_tasks() -> list[BenchTask]:
         tasks.append(_reasoning_task(i, prompt, answer))
     return tasks
 
+
+
+#: Hand-labelled difficulty per task id, the input to `calibrate_floor_delta`.
+#:
+#: The rule, so it can be argued with rather than trusted: `low` is one obvious
+#: step (single table, one filter, one arithmetic operation); `medium` needs a join,
+#: a group, or a second step; `high` needs a subquery, a self-join, a ratio of
+#: aggregates, or an anti-join. Small and hand-made on purpose — the same caveat as
+#: `complexity.CALIBRATION_SET` — and it is an *input* to calibration, not a claim
+#: about any model.
+DIFFICULTY_BY_ID: dict[str, str] = {
+    "sql-01": "low",     "sql-02": "medium", "sql-03": "medium", "sql-04": "low",
+    "sql-05": "low",     "sql-06": "high",   "sql-07": "medium", "sql-08": "high",
+    "sql-09": "medium",  "sql-10": "high",   "sql-11": "low",    "sql-12": "medium",
+    "sql-13": "low",     "sql-14": "high",   "sql-15": "low",    "sql-16": "medium",
+    "sql-17": "low",     "sql-18": "medium", "sql-19": "high",   "sql-20": "high",
+    "extract-01": "low", "extract-02": "low", "extract-03": "medium", "extract-04": "low",
+    "extract-05": "medium", "extract-06": "low", "extract-07": "medium", "extract-08": "low",
+    "extract-09": "low", "extract-10": "medium",
+    "tool-01": "low", "tool-02": "low", "tool-03": "medium",
+    "tool-04": "medium", "tool-05": "low", "tool-06": "medium",
+    # Within `hard_reasoning`, most of these are one-step: the task profile is strict,
+    # the prompts are not. That gap is precisely what the effort axis is for.
+    "reason-01": "low", "reason-02": "medium", "reason-03": "medium",
+    "reason-04": "low", "reason-05": "low", "reason-06": "low",
+}
+
+#: `floor_delta` values the calibration sweeps. 0.0 is the flat floor — the
+#: control the delta has to beat.
+DEFAULT_FLOOR_DELTA_GRID: tuple[float, ...] = (0.0, 0.04, 0.08, 0.12, 0.16)
 
 TASKS = build_tasks()
 TASKS_BY_FAMILY = {f: [t for t in TASKS if t.family == f] for f in FAMILIES}
@@ -591,3 +633,138 @@ def self_test() -> tuple[int, int]:
         else:
             failed += 1
     return passed, failed
+
+
+# --------------------------------------------------------------------------- #
+# routed bench: score the *decision*, graded by difficulty
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(slots=True)
+class RoutedRow:
+    task: str
+    difficulty: str
+    deploy_id: str
+    ok: bool
+    error: str | None
+    cost_usd: float | None
+    #: Whether the classifier put this prompt in the `needs_reasoning` band. Only
+    #: those prompts are affected by `floor_delta` at all — on the rest the sweep is
+    #: measuring noise, and identical rows across the grid mean *inert*, not *flat*.
+    needs_reasoning: bool = False
+
+
+@dataclass(slots=True)
+class RoutedReport:
+    family: str
+    floor_delta: float
+    rows: list[RoutedRow] = field(default_factory=list)
+
+    def by_difficulty(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for r in self.rows:
+            agg = out.setdefault(r.difficulty, {"n": 0, "ok": 0, "cost_usd": 0.0})
+            agg["n"] += 1
+            agg["ok"] += int(r.ok)
+            agg["cost_usd"] += r.cost_usd or 0.0
+        for agg in out.values():
+            agg["success_rate"] = round(agg["ok"] / agg["n"], 4) if agg["n"] else 0.0
+            agg["cost_per_success"] = (round(agg["cost_usd"] / agg["ok"], 6)
+                                       if agg["ok"] else None)
+            agg["cost_usd"] = round(agg["cost_usd"], 6)
+        return out
+
+    def summary(self) -> dict:
+        by = self.by_difficulty()
+        n = sum(a["n"] for a in by.values())
+        ok = sum(a["ok"] for a in by.values())
+        cost = sum(a["cost_usd"] for a in by.values())
+        return {"family": self.family, "floor_delta": self.floor_delta,
+                "n": n, "ok": ok,
+                "success_rate": round(ok / n, 4) if n else 0.0,
+                "cost_usd": round(cost, 6),
+                "cost_per_success": round(cost / ok, 6) if ok else None,
+                "by_difficulty": by,
+                # How much of this set the delta can even act on. Zero means the
+                # recommendation below is meaningless however tidy it looks.
+                "exercises_delta": sum(1 for r in self.rows if r.needs_reasoning)}
+
+
+def run_routed_bench(store: Store, family: str, runner, *, policy, tasks_by_name,
+                     floor_delta: float, limit: int | None = None,
+                     write: bool = False, classify=None) -> RoutedReport:
+    """Route every graded task and score the *decision*, not one deployment.
+
+    `run_bench` measures how a deployment performs; this measures how the router
+    performs at a given `floor_delta`, split by the task's difficulty. That split is
+    the only way to see whether the delta helps the hard prompts without taxing the
+    easy ones — which is the entire claim under test.
+    """
+    from .complexity import adapt_task_for_complexity, classify_complexity
+    from .router import route
+
+    classify = classify or classify_complexity
+    profile = tasks_by_name[FAMILY_ROUTE_TASK[family]]
+    report = RoutedReport(family=family, floor_delta=floor_delta)
+
+    for t in TASKS_BY_FAMILY[family][:limit]:
+        cx = classify(t.prompt)
+        adapted = adapt_task_for_complexity(profile, cx, floor_delta=floor_delta)
+        dec = route(store, adapted, policy, mode="auto", effort=cx.level)
+        if not dec.chosen:
+            report.rows.append(RoutedRow(t.task_id, t.difficulty, "", False,
+                                         "no_candidates", None))
+            continue
+        deploy_id = dec.chosen[0].deploy_id
+        res: CallResult = runner(deploy_id, [{"role": "user", "content": t.prompt}])
+        verified, _score = verify(t, res.text) if res.ok else (False, 0.0)
+        ok = bool(res.ok and verified)
+        error = res.error_class if not res.ok else (None if verified else "bad_output")
+        tin = res.tokens_in or t.tokens_in
+        tout = res.tokens_out or t.tokens_out
+        cost = _cost_usd(store, deploy_id, tin, tout) if res.ok else None
+        report.rows.append(RoutedRow(t.task_id, t.difficulty, deploy_id, ok, error, cost,
+                                     needs_reasoning=bool(cx.needs_reasoning)))
+
+        if write:
+            # A routed bench call burns real quota, and the effort tag is what feeds
+            # the very loop this calibrates — so it is recorded like production.
+            store.record_usage(deploy_id)
+            if res.error_class == "429":
+                store.exhaust(deploy_id, window="minute")
+            store.observe(deploy_id, FAMILY_ROUTE_TASK[family], ok=ok, ts=utcnow(),
+                          error_class=error, latency_ms=res.latency_ms,
+                          tokens_in=tin, tokens_out=tout, cost_usd=cost,
+                          signal_kind="verified", effort=cx.level)
+    if write:
+        store.commit()
+    return report
+
+
+def calibrate_floor_delta(store: Store, family: str, runner, *, policy, tasks_by_name,
+                          grid: tuple[float, ...] | None = None,
+                          limit: int | None = None, write: bool = False,
+                          tolerance: float = 0.0, classify=None) -> dict:
+    """Sweep `floor_delta`; recommend the cheapest that is no worse.
+
+    The comparison is deliberately not "which delta wins most" — it is "which delta
+    reaches the same success for less". A delta that buys hard-prompt accuracy by
+    paying more on every easy prompt is not an improvement, and the per-difficulty
+    split is what makes that visible.
+    """
+    deltas = grid or DEFAULT_FLOOR_DELTA_GRID
+    runs = [run_routed_bench(store, family, runner, policy=policy,
+                             tasks_by_name=tasks_by_name, floor_delta=d,
+                             limit=limit, write=write, classify=classify).summary()
+            for d in deltas]
+
+    ranked = [r for r in runs if r["cost_per_success"] is not None]
+    if not ranked:
+        return {"family": family, "grid": list(deltas), "runs": runs,
+                "recommended": None, "exercises_delta": 0}
+    best = max(r["success_rate"] for r in ranked)
+    eligible = [r for r in ranked if r["success_rate"] >= best - tolerance]
+    recommended = min(eligible, key=lambda r: (r["cost_per_success"], r["floor_delta"]))
+    return {"family": family, "grid": list(deltas), "runs": runs,
+            "recommended": recommended,
+            "exercises_delta": max((r.get("exercises_delta", 0) for r in runs), default=0)}

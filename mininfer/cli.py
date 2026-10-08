@@ -658,6 +658,67 @@ def cmd_explain(args) -> int:
     return 0
 
 
+def _bench_calibrate_floor(args) -> int:
+    """Sweep `floor_delta` over graded tasks and report success and cost per difficulty.
+
+    Routing is local and free, so the only cost is the model calls: the grid is
+    `len(grid) x tasks` calls per family. `--dry-run` skips the observation writes,
+    not the calls — there is no way to calibrate a floor without calling models.
+    """
+    from . import bench as bench_mod
+    from .router import Policy
+
+    policy, tasks = Policy.load(args.policy)
+    store = _open(args)
+    families = list(bench_mod.FAMILIES) if args.family == "all" else [args.family]
+    runner = Runner(api_key=args.api_key, base_url=args.base_url, model=args.model,
+                    timeout=args.timeout, max_tokens=args.max_tokens)
+    try:
+        for family in families:
+            grid = bench_mod.DEFAULT_FLOOR_DELTA_GRID
+            graded = len(bench_mod.TASKS_BY_FAMILY[family][:args.limit or None])
+            print(f"\n{family}: {graded} graded tasks x {len(grid)} deltas "
+                  f"= up to {graded * len(grid)} calls")
+            rep = bench_mod.calibrate_floor_delta(
+                store, family, runner, policy=policy, tasks_by_name=tasks,
+                limit=args.limit or None, write=not args.dry_run)
+            for run in rep["runs"]:
+                cps = run["cost_per_success"]
+                cps_s = "\u2014" if cps is None else f"${cps:.6f}"
+                bits = []
+                for lvl in ("low", "medium", "high"):
+                    agg = run["by_difficulty"].get(lvl)
+                    if not agg:
+                        continue
+                    label = f"{lvl}={agg['ok']}/{agg['n']}"
+                    if agg["cost_per_success"] is not None:
+                        label += f" @${agg['cost_per_success']:.6f}"
+                    bits.append(label)
+                print(f"  floor_delta={run['floor_delta']:<5} "
+                      f"success={run['success_rate']:.1%}  cost/success={cps_s}  "
+                      + "  ".join(bits))
+            exh = rep.get("exercises_delta", 0)
+            if not exh:
+                # The trap this guard exists for: every delta produces identical rows
+                # because the classifier never said `needs_reasoning`, so the sweep
+                # measured nothing. Five tidy rows would otherwise read as "the floor
+                # does not matter", which is the opposite of the truth.
+                print(f"  WARNING: no task in {family} is classified as needing reasoning,")
+                print("           so `floor_delta` is inert across this whole set. The sweep")
+                print("           cannot choose a value here \u2014 add prompts that actually")
+                print("           require multi-step reasoning before trusting any number.")
+            rec = rep["recommended"]
+            if rec is None:
+                print("  nothing succeeded at any delta \u2014 nothing to recommend")
+            elif exh:
+                print(f"  ({exh} of {graded} tasks exercised the delta)")
+                print(f"  RECOMMENDED floor_delta={rec['floor_delta']} "
+                      f"({rec['success_rate']:.1%}, ${rec['cost_per_success']:.6f}/success)")
+    finally:
+        store.close()
+    return 0
+
+
 def cmd_bench(args) -> int:
     """RouterBench: verifiable-reward eval. `--self-test` needs no network/key."""
     if args.self_test:
@@ -669,6 +730,9 @@ def cmd_bench(args) -> int:
             if not ok:
                 print(f"  FAIL {t.task_id}")
         return 1 if failed else 0
+
+    if getattr(args, "calibrate_floor", False):
+        return _bench_calibrate_floor(args)
 
     if not args.deploy:
         print("bench: --deploy is required (or use --self-test)", file=sys.stderr)
@@ -1632,6 +1696,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--self-test", action="store_true",
                    help="verify gold answers offline; no network, no writes")
     b.add_argument("--dry-run", action="store_true", help="run but do not write observations")
+    b.add_argument("--calibrate-floor", action="store_true",
+                   help="sweep floor_delta over the graded tasks and recommend one")
     b.add_argument("--base-url", help="override provider endpoint")
     b.add_argument("--api-key", help="override API key")
     b.add_argument("--model", help="override model id sent to the endpoint")
