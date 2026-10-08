@@ -1108,3 +1108,136 @@ def test_streaming_escalation_is_blocked_by_the_session_budget(tmp_path, monkeyp
     assert persisted.get("complexity_escalation_blocked") == "session_budget"
     assert not persisted.get("complexity_escalated")
     reopened.close()
+
+
+# --------------------------------------------------------------------------- #
+# stream verification (opt-in): a 200 that produced garbage is a failed arm
+# --------------------------------------------------------------------------- #
+
+_PROMPT = "Extract the email and the phone number from this snippet"
+_VALID = '{"email": "a@b.com", "phone": "+1 555 0100"}'
+
+
+def test_should_verify_gates_on_policy_and_the_shape_of_the_task():
+    from mininfer.proxy import _should_verify
+    from mininfer.router import Policy
+    from mininfer.schema import TaskProfile
+
+    structured = TaskProfile(name="extraction", tokens_in=2500, tokens_out=300,
+                             require={"structured": True})
+    prose = TaskProfile(name="general_chat", tokens_in=800, tokens_out=1200, require={})
+
+    assert not _should_verify(Policy(), structured, {}), "opt-in"
+    on = Policy(stream_verify={"enabled": True})
+    assert _should_verify(on, structured, {})
+
+    assert not _should_verify(on, prose, {}), "nothing verifiable in prose"
+    assert not _should_verify(on, structured, {"tools": [{}]}), "tool calls are not replayable"
+    assert not _should_verify(on, None, {}), "no task profile, no check"
+
+    long_form = TaskProfile(name="extraction", tokens_in=2500, tokens_out=4000,
+                            require={"structured": True})
+    assert not _should_verify(on, long_form, {}), \
+        "buffering a long answer trades the streaming UX for a check nobody asked for"
+
+
+def test_structured_verdict_accepts_json_and_rejects_prose():
+    from mininfer.proxy import _structured_verdict
+
+    assert _structured_verdict(_PROMPT, _VALID, "stop") is None
+    assert _structured_verdict(_PROMPT, f"```json\n{_VALID}\n```", "stop") is None
+
+    assert _structured_verdict(_PROMPT, "Sure! Here is what I found in the text.", "stop") == "bad_output"
+    assert _structured_verdict(_PROMPT, "", "stop") == "bad_output"
+    # A truncated structured answer cannot parse, and the provider said so.
+    assert _structured_verdict(_PROMPT, _VALID, "length") == "bad_output"
+
+
+def test_stream_verify_skips_an_arm_that_answers_with_prose(tmp_path, monkeypatch):
+    """The verifier's whole point.
+
+    Without it the first arm to accept the connection wins a streaming request
+    regardless of what it produced, and the caller discovers the problem when they
+    try to parse it.
+    """
+    import json
+
+    monkeypatch.setenv("MI_DB", str(tmp_path / "p.db"))
+    monkeypatch.setenv("MI_POLICY", "config/policy.yaml")
+    setup = Store(tmp_path / "p.db")
+    setup.upsert_weights(Weights("hf:anchor", "anchor", params_b=1.0,
+                                 benchmark={"aa_intelligence": 10.0, "coding": 10.0}))
+    setup.upsert_weights(Weights("hf:cheap/m", "cheap-model", params_b=7.0,
+                                 benchmark={"aa_intelligence": 95.0, "coding": 95.0}))
+    setup.upsert_deployment(Deployment("cheap:model", "hf:cheap/m", "cheap", "model",
+                                       price_in=0.01, price_out=0.01, context_window=32000,
+                                       caps={"structured": True}))
+    setup.upsert_weights(Weights("hf:good/m", "good-model", params_b=8.0,
+                                 benchmark={"aa_intelligence": 99.0, "coding": 99.0}))
+    setup.upsert_deployment(Deployment("good:model", "hf:good/m", "good", "model",
+                                       price_in=0.02, price_out=0.02, context_window=32000,
+                                       caps={"structured": True}))
+    setup.commit()
+    setup.close()
+
+    monkeypatch.setattr("mininfer.router.available_providers", lambda **k: {"cheap", "good"})
+    monkeypatch.setattr("mininfer.proxy._keys_available", lambda did, *a, **k: True)
+    monkeypatch.setattr("mininfer.proxy.resolve_endpoint",
+                        lambda did, **kw: Endpoint("http://x/v1", "m", "k", {}))
+
+    from mininfer.router import Policy as _Policy
+    orig_load = _Policy.load
+
+    def patched_load(path):
+        pol, tasks = orig_load(path)
+        pol.stream_verify = {"enabled": True, "max_output_tokens": 800}
+        return pol, tasks
+
+    monkeypatch.setattr("mininfer.router.Policy.load", patched_load)
+
+    def sse(payload):
+        return ("data: " + json.dumps(payload) + "\n\n").encode()
+
+    prose = (sse({"choices": [{"delta": {"content": "Sure! Here is what I found in the text."}}]})
+             + b"data: [DONE]\n\n")
+    valid = (sse({"choices": [{"delta": {"content": _VALID}}]})
+             + sse({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+             + b"data: [DONE]\n\n")
+
+    tried: list[str] = []
+
+    def fake_open_stream(ep, body, *, deploy_id, timeout=120.0):
+        tried.append(deploy_id)
+        return _FakeSession(200, list(_chunks(prose if deploy_id == "cheap:model" else valid)))
+
+    monkeypatch.setattr("mininfer.proxy.open_stream", fake_open_stream)
+
+    client = TestClient(__import__("mininfer.proxy", fromlist=["app"]).app)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "auto", "stream": True,
+                          "messages": [{"role": "user", "content": _PROMPT}]})
+
+    assert r.status_code == 200, r.text
+    # The prose arm was tried, rejected, and skipped — nothing of it was emitted.
+    assert tried[:2] == ["cheap:model", "good:model"], tried
+    assert "Sure! Here is what I found" not in r.text, "the rejected answer leaked to the caller"
+
+    frames = [json.loads(line[len("data: "):]) for line in r.text.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    route = next(f["mi"] for f in frames
+                 if isinstance(f.get("mi"), dict) and f["mi"].get("event") == "route")
+    assert route["deploy"] == "good:model"
+    assert "a@b.com" in r.text
+
+    reopened = Store(tmp_path / "p.db")
+    rows = {r["deploy_id"]: r for r in reopened.conn.execute(
+        "SELECT deploy_id, ok, error_class FROM observations").fetchall()}
+    assert rows["cheap:model"]["ok"] == 0
+    assert rows["cheap:model"]["error_class"] == "bad_output"
+    assert rows["good:model"]["ok"] == 1
+    reopened.close()
+
+
+def _chunks(blob: bytes) -> list[bytes]:
+    """Split an SSE blob into frames so the fake session looks like a real one."""
+    return [b"data: " + part for part in blob.split(b"data: ")[1:]]

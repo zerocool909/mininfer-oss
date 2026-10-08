@@ -72,6 +72,16 @@ policy:
   # it, like `floor_delta`.
   effort_shrink_k: 50.0
 
+  # Buffer a short, structured *streamed* answer and check it before emitting it, so
+  # an arm that answered 200 with prose where JSON was required counts as a failed
+  # arm and the next candidate gets the request. Off by default: nothing is rendered
+  # until the upstream finishes, which is the streaming UX traded for the guarantee.
+  # Only applies to tasks that require `structured`, have no tool calls, and expect
+  # little output — there is nothing verifiable in long prose.
+  stream_verify:
+    enabled: false
+    max_output_tokens: 800
+
   # A free arm with no configured quota bucket is discounted, not trusted.
   unknown_headroom_factor: 0.90
 

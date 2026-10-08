@@ -24,6 +24,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 import threading
 import time
 import uuid
@@ -2683,7 +2684,8 @@ async def _handle(payload: dict, *, force_route: bool,
                              intent=intent, session_id=session_id, tenant_id=caller_tenant,
                              user_keys=user_keys, local_endpoints=local_endpoints,
                              decision_id=dec_id, escalate=escalate,
-                             effort=comp.level if comp is not None else None)
+                             effort=comp.level if comp is not None else None,
+                             verify=_should_verify(policy, tasks.get(task_name), payload))
 
     runner = Runner(extra_body=_extra(payload), user_keys=user_keys, local_endpoints=local_endpoints)
     selected, res, attempts = await asyncio.to_thread(
@@ -2924,6 +2926,70 @@ def _merge_usage(a: dict | None, b: dict | None) -> dict | None:
 # One continuation, never a loop: a model that stops early twice is a property of
 # the model, and paying forever for it is not a fix.
 _MAX_CONTINUATIONS = 1
+
+_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S | re.I)
+
+
+def _json_like(text: str) -> object | None:
+    """The JSON in `text`, fenced or bare, or `None` when there is none.
+
+    Permissive about the wrapper, strict about the payload: a `structured` task is
+    satisfied by parseable JSON, and that is the only thing that can be checked for
+    free. Fenced first because models wrap far more often than they do not.
+    """
+    if not text:
+        return None
+    fenced = _JSON_FENCE.search(text)
+    candidate = (fenced.group(1) if fenced else text).strip()
+    for attempt in (candidate, None):
+        if attempt is None:
+            m = re.search(r"[{\[].*[}\]]", candidate, re.S)
+            if not m:
+                return None
+            attempt = m.group(0)
+        try:
+            return json.loads(attempt)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None
+
+
+def _structured_verdict(prompt: str, text: str, finish: str | None) -> str | None:
+    """`None` when a `structured` answer is usable, else an error class.
+
+    Free checks only — no judge call. A truncated answer cannot parse, a provider
+    error relayed as text is not an answer, and a reply with no JSON in it is prose
+    where structure was required. This is what lets a streamed request skip an arm
+    that answered 200 and produced garbage, which is otherwise indistinguishable
+    from success until the caller parses it.
+    """
+    if finish == "length":
+        return "bad_output"
+    from .judge import evaluate_heuristics  # local: judge imports execute, not this
+    if not evaluate_heuristics(prompt, text)[0]:
+        return "bad_output"
+    if _json_like(text) is None:
+        return "bad_output"
+    return None
+
+
+def _should_verify(policy, base_task, payload) -> bool:
+    """Whether a streamed request buffers for verification before emitting.
+
+    Off unless the policy opts in, and then only for what the free checks can
+    actually judge: a short structured answer with no tool calls. Long prose has
+    nothing verifiable in it, and buffering it would trade the whole point of
+    streaming for a check that cannot be made.
+    """
+    cfg = getattr(policy, "stream_verify", None) or {}
+    if not cfg.get("enabled", False):
+        return False
+    if payload.get("tools"):
+        return False          # tool calls are not replayable from text
+    if base_task is None or not (getattr(base_task, "require", None) or {}).get("structured"):
+        return False
+    cap = int(cfg.get("max_output_tokens", 800))
+    return int(getattr(base_task, "tokens_out", 0) or 0) <= cap
 
 
 def _looks_truncated(text: str, finish_reason: str | None) -> bool:
@@ -3339,7 +3405,8 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                   user_keys: dict[str, str] | None = None,
                   local_endpoints: dict[str, str] | None = None,
                   decision_id: int | None = None,
-                  escalate=None, effort: str | None = None):
+                  escalate=None, effort: str | None = None,
+                  verify: bool = False):
     """Relay the first candidate that accepts the request.
 
     Fallback only runs *before* any byte reaches the caller: once an upstream
@@ -3352,6 +3419,7 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
     already committed.
     """
     extra = _extra(payload)
+    prompt_text = intent_mod.last_user_text(payload.get("messages") or [])
     attempts: list[tuple[str, str]] = []
     failed: set[str] = set()
     last_detail: str | None = None
@@ -3415,6 +3483,30 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             failed.add(did)
             continue
 
+        prefetched: list[bytes] | None = None
+        if verify:
+            # Buffer the *whole* answer before emitting anything, so an arm that
+            # answered 200 with unusable output is treated as a failed arm and the
+            # next candidate gets the request. Only possible before the first byte —
+            # which is why it lives here and not after the response is committed. It
+            # is the latency the feature trades for that guarantee, hence opt-in and
+            # limited to short structured answers.
+            prefetched = list(sess.chunks())
+            raw = b"".join(prefetched)
+            finish_pre: str | None = None
+            for ch in prefetched:
+                finish_pre = _sse_finish_reason(ch) or finish_pre
+            verdict = _structured_verdict(prompt_text, _sse_deltas(raw), finish_pre)
+            if verdict is not None:
+                store.record_usage(did)
+                store.observe(did, task_name, ok=False, ts=utcnow(), error_class=verdict,
+                              signal_kind="provider_reported", session_id=session_id,
+                              tenant_id=tenant_id, effort=effort)
+                store.commit()
+                attempts.append((did, verdict))
+                failed.add(did)
+                continue
+
         store.record_usage(did)
         # A stream that *opened* still carries the limit headers (they arrive with
         # the response, before any chunk), so a successful stream is evidence too.
@@ -3455,7 +3547,7 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                 yield _sse_frame({"mi": init_data, "model": did})
 
                 while True:
-                    for chunk in current.chunks():
+                    for chunk in (prefetched if prefetched is not None else current.chunks()):
                         # Read usage without consuming the frame: it is already
                         # part of the client's byte stream and suppressing it
                         # would be a contract change for no gain.
@@ -3485,6 +3577,7 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                         break
                     answer = "".join(parts)
                     if (not tool_turn and continues < _MAX_CONTINUATIONS
+                            and prefetched is None
                             and _looks_truncated(answer, finish)):
                         current.close()
                         continues += 1

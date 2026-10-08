@@ -157,6 +157,10 @@ class Policy:
     require: dict[str, bool] = field(default_factory=dict)
     min_context: int = 0
     min_success_lb: float = 0.0
+    # Buffer a short structured *streamed* answer and check it before emitting it,
+    # so an arm that answered 200 with garbage is treated as failed and the next
+    # candidate gets the request. Off by default: it costs the streaming UX.
+    stream_verify: dict = field(default_factory=dict)
     # What to do when a source never reported a required capability. 'reject' is
     # safe and is the default; 'allow' trades correctness for coverage, which is
     # only reasonable when the caller can retry after a validation failure.
