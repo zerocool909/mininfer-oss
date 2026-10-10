@@ -28,7 +28,7 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from .normalize import normalize, params_b_from_name
+from .normalize import normalize, normalize_identity, params_b_from_name
 from .store import Store
 
 # Similarity at or above this is proposed for review. Nothing is auto-merged
@@ -41,6 +41,11 @@ _PARAM_TOKEN = re.compile(r"\d+(?:\.\d+)?b", re.I)
 def _key(display_name: str, hf_repo: str | None) -> str:
     """Comparison key = normalised name, param count retained."""
     return normalize(hf_repo.split("/")[-1] if hf_repo else display_name)
+
+
+def _identity_key(display_name: str, hf_repo: str | None) -> str:
+    """The name with variant tokens kept, so a merge cannot hide one."""
+    return normalize_identity(hf_repo.split("/")[-1] if hf_repo else display_name)
 
 
 def _params(name: str) -> float | None:
@@ -70,6 +75,7 @@ def propose(store: Store, *, auto: bool = True, near_window: int = 20) -> tuple[
     ordered = sorted(rows, key=rank)
     canonical_for: dict[str, str] = {}
     name_for: dict[str, str] = {}
+    identity_for: dict[str, str] = {}
 
     for r in ordered:
         wid = r["weights_id"]
@@ -78,9 +84,23 @@ def propose(store: Store, *, auto: bool = True, near_window: int = 20) -> tuple[
         k = _key(r["display_name"], r["hf_repo"])
         if not k:
             continue
+        ik = _identity_key(r["display_name"], r["hf_repo"])
         if (canonical := canonical_for.get(k)) is None:
             canonical_for[k] = wid
             name_for[k] = r["display_name"]
+            identity_for[k] = ik
+            continue
+
+        # The names match only after stripping a variant token (`turbo`,
+        # `thinking`, `-online`, `-beta`, `-extended`) — exactly the Whisper case,
+        # where `whisper-large-v3-turbo` is a smaller model. An exact-name match is
+        # not evidence enough; send it to review rather than auto-merge on it.
+        if identity_for.get(k) != ik:
+            review.append(Proposal(
+                wid, canonical, r["display_name"], name_for[k], 1.0,
+                f"identical only after stripping a variant token "
+                f"({identity_for.get(k)} vs {ik}) — needs confirmation",
+            ))
             continue
 
         p = Proposal(wid, canonical, r["display_name"], name_for[k], 1.0,

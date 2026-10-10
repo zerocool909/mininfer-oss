@@ -40,6 +40,7 @@ The goal is simple:
 - [Key Features](#key-features)
 - [Quick Start](#quick-start)
 - [CLI](#cli)
+- [Reliability: reputation, backups, last resort](#reliability-reputation-backups-last-resort)
 - [Running the Proxy](#running-the-proxy)
 - [Arena Comparison](#arena-comparison)
 - [Architecture](#architecture)
@@ -448,6 +449,98 @@ X-MI-Candidates
 
 # Quick Start
 
+## 0. Prerequisites &mdash; do these first
+
+Every line below is **required** for the features to work end to end. Skipping
+one is a known failure mode (see the table at the end).
+
+| Requirement | Version | Why |
+|---|---|---|
+| Python | **3.11+** | `@dataclass(slots=True)`; 3.9/3.10 crash at import |
+| Node.js + npm | 20+ | builds the dashboard into `web/dist` (skip with Docker) |
+| Docker *(optional)* | &mdash; | the image builds the SPA and pins deps |
+
+**POSIX (bash)**
+
+```bash
+git clone https://github.com/zerocool909/mininfer-oss.git && cd mininfer-oss
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[server,agents]'   # server = proxy/dashboard · agents = mi scout / add-url
+cp .env.example .env                # REQUIRED: read at startup, and bind-mounted by compose
+npm --prefix web install && npm --prefix web run build   # REQUIRED for the React dashboard
+```
+
+**Windows (PowerShell)**
+
+```powershell
+git clone https://github.com/zerocool909/mininfer-oss.git; cd mininfer-oss
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e ".[server,agents]"
+Copy-Item .env.example .env
+npm --prefix web install; npm --prefix web run build
+# or just: .\run.cmd   (it does all of the above, idempotently, then runs `mi proxy`)
+```
+
+> Use `python -m mininfer ...` or activate the venv. `mi` lives in
+> `.venv/Scripts` and is **not** on `PATH` otherwise.
+
+### Mandatory `.env` values
+
+```ini
+OPENROUTER_API_KEY=...   # or GROQ_API_KEY / GEMINI_API_KEY / … — at least ONE model provider key
+TINYFISH_API_KEY=...     # web search: the scout's research and chat grounding
+MI_CHAT_SEARCH=auto      # ground time-sensitive chat answers instead of guessing
+MI_AGENT_MODELS=...      # free-first agent chain (optional; ships a sensible default)
+MI_LAST_RESORT=...       # reserved arm, so a request always gets an answer
+```
+
+`.env` is read **at startup** — restart the proxy after editing it. There is no
+key-less path to inference: with no provider key the proxy returns `503
+no_api_key`.
+
+### First run, in order
+
+```bash
+mi ingest        # pull provider catalogues
+mi resolve       # merge model identities across sources
+mi quota seed    # free-tier limits for the quota card
+mi scout         # research each free model (needs [agents] + TINYFISH_API_KEY)
+mi proxy         # http://127.0.0.1:8765/
+```
+
+### Verify (all should pass)
+
+```bash
+mi doctor                                # every mandatory check, with the fix for each failure
+curl -s localhost:8765/healthz           # {"ok": true}
+curl -s localhost:8765/v1/models | head  # a catalogue, not an error
+mi recommend summarise                   # 2-3 primaries + 2 backups (+ last resort)
+mi reputation                            # per-provider/model verdicts
+```
+
+Open `http://127.0.0.1:8765/` → the React dashboard, and a populated **Free models** tab.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `dataclass() got an unexpected keyword argument 'slots'` | Python < 3.11 (e.g. Anaconda base) | activate `.venv`, or `conda deactivate` |
+| `'mi' is not recognized` | venv not active | activate it, or call `.venv/Scripts/mi` |
+| Dashboard looks old / plain HTML | `web/dist` not built | `npm --prefix web run build` |
+| `WARNING: /app/.env is a DIRECTORY` | compose made a dir for a missing file | `rmdir .env && cp .env.example .env` |
+| `503 no_api_key` / `0 eligible` | no model provider key | set `OPENROUTER_API_KEY` or another |
+| `mi scout`: "agent runtime is not installed" | `[agents]` extra missing | `pip install -e '.[agents]'` |
+| Scout dossiers have no sources | `TINYFISH_API_KEY` unset (the scout is TinyFish-only) | set it; otherwise dossiers are facts-only |
+| A grounded answer cites generic Wikipedia pages (e.g. *Mumbai*, *Gujarat* for a weather query) | chat search used `auto`, and Wikipedia answered first, so the fresher tiers were never reached | it now prefers TinyFish; set `TINYFISH_API_KEY`, or `MI_CHAT_SEARCH_PROVIDER=tinyfish` |
+| HTTP 402 from search | TinyFish daily free allowance used | wait for 00:00 UTC, or add credit |
+| A provider keeps 429ing | free-tier rate limit | the fallback chain + last resort cover it; `mi reputation` names it |
+| A compare/shortlist includes a model that can't answer (safety, TTS, music) | it predates the special-purpose gate, or the task opted in | `mi explain TASK` shows `unsupported: … model`; drop `allow_roles` or update |
+| `port 8765 already in use` | another process | `mi proxy --port 8766` |
+
+Deep detail — schema, algorithms, every tunable — is in [`appendix.md`](appendix.md).
+
+---
+
 ## 1. Install
 
 ```bash
@@ -611,8 +704,60 @@ Gateway + upstream separation achieved
 | `mi leaderboards [SUBSTR]` | Compare ingested benchmark sources                      |
 | `mi metrics`               | Enrich deployments with performance metrics             |
 | `mi add-url URL`           | Ingest evidence from an arbitrary webpage               |
+| `mi scout`                 | Agentic form guide: write a dossier for every free model (needs `[agents]`) |
+| `mi dossiers [SUBSTR]`     | Print the model form guide — what each free arm is for  |
+| `mi dossier-report`        | Calibrate the dossier routing prior from decisions + outcomes |
+| `mi doctor`                | Check the mandatory setup; prints the fix for each failure |
+| `mi reputation [--task T] [--days D]` | Provider/model outcome verdicts — 429s, timeouts, health |
+| `mi recommend TASK`        | 2–3 primary arms for a task + 2 backups (≥1 untested) |
 | `mi refresh`               | Re-ingest every available source and re-derive (the cron target) |
 | `mi proxy`                 | Start the OpenAI-compatible routing proxy               |
+
+---
+
+# Reliability: reputation, backups, last resort
+
+Every request is recorded whatever the outcome, so **which arms fail — and how —
+is learnable**. Three pieces build on that log:
+
+- **`mi reputation [--task T] [--days D]`** rolls outcomes up per
+  `(provider, model, task)` and gives a verdict — `healthy`, `degraded`,
+  `retire` — gated on a **minimum sample**, so one 429 never condemns an arm. A
+  429/timeout is attributed at the **provider** level too: an outage behind a
+  gateway demotes that gateway rather than being rediscovered arm by arm.
+- **`mi recommend TASK`** (also `GET /v1/recommend`) returns **2–3 primary arms
+  plus 2 backups**, distinct by gateway/upstream, with one backup slot reserved
+  for an **untested** arm — so the router keeps learning instead of re-using the
+  same winner until its quota dies.
+- **A reserved last resort.** Set `last_resort: <deploy_id>` in
+  `config/policy.yaml` (or `MI_LAST_RESORT`). It is never ranked and never
+  displaces a cheaper arm; it is tried only after the chain is exhausted, so a
+  request can run out of free arms but not out of an answer.
+
+**A probe failure is not a provider outage.** Only a revoked key (`auth_error`)
+or a hard `401`/`403` removes a provider from the pool; a `network_error` or
+`tls_error` is *our own* connectivity and is retried, not punished. Excluding on
+it once blackholed every provider at the same time — one probe without a network
+marked groq and openrouter unhealthy together, leaving zero eligible arms.
+
+**Right model, right job.** Every task defaults to general-purpose text
+generators. A special-purpose model — a safety/moderation classifier, an
+embedding or rerank model, ASR/TTS, an image or music generator — is rejected by
+the hard filter even when it is free and untested, because a task requiring no
+capability would otherwise admit one and exploration would then pick it (a music
+model, a TTS voice and a content classifier were all served for prose). A task
+that genuinely wants a role opts in with `allow_roles: [safety]` in
+`config/policy.yaml`.
+
+**No model becomes the default.** The router caps any single arm at
+`max_model_share_pct` (60%) of a task's traffic, the dossier/anonymity priors are
+bounded, and the agents (`mi scout`, `mi add-url`, `mi resolve --adjudicate`)
+run on a **free-first chain that rotates** across arms instead of pinning to
+whichever answered last — otherwise one free tier is exhausted while the others
+sit idle. Set the chain with `MI_AGENT_MODELS`; see the appendix.
+
+For the deep version — evidence confidence rungs, the merge guard, the dossier
+prior, the full reputation schema — see [`appendix.md`](appendix.md).
 
 ---
 

@@ -259,7 +259,7 @@
         <tr><td>Frontier model<small>last resort</small></td><td>$0.060</td><td>0.97</td><td class="hide-s">$0.0619</td><td>fallback 2</td></tr>
       </tbody>
     </table>
-    <p class="note">Illustrative numbers. Free arms that clear the quality floor all tie at zero, so the router breaks ties with a small exploration bonus. That is what stops one free model from answering every request.</p>
+    <p class="note">Illustrative numbers. Free arms that clear the quality floor all tie at zero, so the router breaks ties with a small exploration bonus. The shortlist is <b>2&ndash;3 primaries plus 2 backups</b>, one backup reserved for an <b>untested</b> arm, and a <b>last resort</b> that is tried only when the chain is exhausted &mdash; so a request can run out of free arms but not out of an answer.</p>
   </div>
 </div></section>
 
@@ -333,7 +333,7 @@
 <span class="b">dispatch</span>   <span class="g">openrouter:qwen/qwen3.8-27b:free</span>
 <span class="w">  429</span>        → exhausted for this minute, same request moves on
 <span class="b">dispatch</span>   <span class="g">vercel:poolside/laguna-s-2.1-free</span>   <span class="c">first byte in 412 ms</span>
-<span class="b">record</span>     evidence written · shadow trial queued (5%)</div>
+<span class="b">record</span>     evidence written · reputation updated · shadow trial queued (5%)</div>
 
     <ol class="steps">
       <li><div><h3>Classify locally.</h3><p>Intent comes from heuristics and a local model, so routing doesn’t burn a paid call to decide where to spend. Ambiguous prompts merge the profiles of the competing tasks and satisfy both.</p></div></li>
@@ -379,6 +379,8 @@
       <div><dt>Humans are a signal too</dt><dd>Compare mode streams two models over one connection. Your pick is recorded as a weak subjective observation alongside the automatic ones.</dd></div>
       <div><dt>Every answer names its author</dt><dd>The reply shows which model and provider produced it, what else was shortlisted, and what it cost, speed and latency were.</dd></div>
       <div><dt>A dead key fails on a timer</dt><dd>The optional warm-tier probe checks every configured provider on a cadence, so a revoked key or a down host leaves the candidate pool before a request spends itself on it.</dd></div>
+      <div><dt>Failures are attributed, not just counted</dt><dd>Every request is recorded whatever the outcome. A 429 or timeout is usually the provider, not the model, so the rollup demotes the gateway once instead of rediscovering the outage arm by arm &mdash; and a verdict needs a minimum sample before it is issued.</dd></div>
+      <div><dt>No model becomes the default</dt><dd>Traffic is capped per task, and the agents rotate across a free-first chain rather than pinning to whichever arm answered last. One free tier is never exhausted while the others sit idle.</dd></div>
     </dl>
   </div>
 </div></section>

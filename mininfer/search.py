@@ -10,6 +10,10 @@ Three providers behind one call, chosen for cost in that order:
   it is markup scraping, so it is treated exactly like the Vercel metrics page —
   the raw bytes are snapshotted before parsing and the parser is a pure function
   of that snapshot.
+* ``tinyfish`` — the structured free tier for agents. One GET with an
+  ``X-API-Key`` header (``TINYFISH_API_KEY``), returns JSON with URLs, titles,
+  snippets and metadata. Free up to 12,000 requests/day (resets 00:00 UTC);
+  beyond that it answers ``402 INSUFFICIENT_CREDITS`` until a wallet is funded.
 * ``tavily`` — the paid tier, and the only one built for this job (it returns
   extracted page content rather than links). Server-owned key
   (``TAVILY_API_KEY``), because the point of putting search behind the proxy is
@@ -44,12 +48,13 @@ from .fetch import (
     utcnow,
 )
 
-PROVIDERS = ("wikipedia", "duckduckgo", "tavily")
-FREE_PROVIDERS = ("wikipedia", "duckduckgo")
+PROVIDERS = ("wikipedia", "duckduckgo", "tinyfish", "tavily")
+FREE_PROVIDERS = ("wikipedia", "duckduckgo", "tinyfish")
 
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 TAVILY_API = "https://api.tavily.com/search"
+TINYFISH_API = "https://api.search.tinyfish.ai"
 
 #: List price for one basic Tavily search. Verified against their pricing page:
 #: 1,000 credits/month free, then $0.008 per credit.
@@ -170,6 +175,34 @@ def parse_duckduckgo(payload: bytes, limit: int) -> list[dict]:
     return out
 
 
+def parse_tinyfish(payload: bytes, limit: int) -> list[dict]:
+    """TinyFish Search JSON -> results.
+
+    `results[]` carries `title`, `url`, `snippet` and, depending on
+    `domain_type`, extra metadata (publisher, authors, citation count). The
+    shared trio is what every consumer of this module reads; the extras are kept
+    so a news/academic search loses nothing.
+    """
+    try:
+        j = json.loads(payload)
+    except ValueError:
+        return []
+    out = []
+    for hit in (j.get("results") or [])[:limit]:
+        row = {
+            "title": hit.get("title") or "",
+            "url": hit.get("url") or "",
+            "snippet": (hit.get("snippet") or "")[:2000],
+        }
+        # Preserve the structured extras when present, absent when not.
+        for field in ("site_name", "date", "publisher", "authors", "venue",
+                      "year", "cited_by_count", "pdf_url"):
+            if hit.get(field) is not None:
+                row[field] = hit[field]
+        out.append(row)
+    return out
+
+
 def parse_tavily(payload: bytes, limit: int) -> list[dict]:
     try:
         j = json.loads(payload)
@@ -190,6 +223,7 @@ def parse_tavily(payload: bytes, limit: int) -> list[dict]:
 PARSERS = {
     "wikipedia": parse_wikipedia,
     "duckduckgo": parse_duckduckgo,
+    "tinyfish": parse_tinyfish,
     "tavily": parse_tavily,
 }
 
@@ -226,6 +260,23 @@ def _url_for(provider: str, query: str, limit: int) -> str:
 def _call(provider: str, query: str, limit: int, *, timeout: float,
           force: bool) -> Snapshot:
     """One provider, one snapshot. Raises on transport failure."""
+    if provider == "tinyfish":
+        key = os.environ.get("TINYFISH_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("TINYFISH_API_KEY is not set")
+        with httpx.Client(timeout=timeout, verify=_verify(),
+                          follow_redirects=True) as c:
+            r = c.get(TINYFISH_API, params={"query": query},
+                      headers={"X-API-Key": key, "User-Agent": _UA})
+            if r.status_code == 402:
+                # The provider's own daily free allowance is the ceiling here:
+                # 12,000 requests/day, reset at 00:00 UTC. Surface it distinctly
+                # rather than as a generic 4xx.
+                raise RuntimeError(
+                    "tinyfish: daily free allowance exhausted (402 INSUFFICIENT_CREDITS)")
+            r.raise_for_status()
+        return _snapshot("tinyfish", str(r.url), r.content, "json")
+
     if provider == "tavily":
         key = os.environ.get("TAVILY_API_KEY", "").strip()
         if not key:
@@ -257,13 +308,78 @@ def _call(provider: str, query: str, limit: int, *, timeout: float,
                      "json" if provider == "wikipedia" else "html")
 
 
+#: The env var each keyed search provider reads. Exposed so the portal can
+#: configure a search key through the same verified `/v1/keys` flow as a model
+#: provider — otherwise TinyFish is `.env`-only and cannot be set from the UI.
+PROVIDER_ENV = {
+    "tinyfish": "TINYFISH_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+}
+
+
+def verify_key(provider: str, api_key: str, *, timeout: float = 15.0
+               ) -> tuple[bool, str]:
+    """Check a search provider key with one minimal query. `(ok, detail)`.
+
+    Called by the portal's "To server" step, so a key the provider rejects is
+    never written to `.env`. A provider that is reachable but over its free
+    allowance (TinyFish 402) or rate-limited (429) still proves the key is valid,
+    so those count as accepted with a note.
+    """
+    provider = (provider or "").strip().lower()
+    if provider not in PROVIDER_ENV:
+        return False, f"{provider!r} is not a search provider"
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return False, "empty key"
+    try:
+        with httpx.Client(timeout=timeout, verify=_verify(),
+                          follow_redirects=True) as c:
+            if provider == "tinyfish":
+                r = c.get(TINYFISH_API, params={"query": "ping"},
+                          headers={"X-API-Key": api_key, "User-Agent": _UA})
+                if r.status_code == 401:
+                    return False, "TinyFish rejected the key (401)"
+                if r.status_code == 402:
+                    return True, "TinyFish key accepted (daily free allowance used)"
+                if r.status_code in (403, 429):
+                    return True, f"TinyFish key accepted ({r.status_code})"
+                r.raise_for_status()
+                return True, "TinyFish key accepted"
+            r = c.post(TAVILY_API,
+                       json={"api_key": api_key, "query": "ping",
+                             "max_results": 1, "search_depth": "basic"},
+                       headers={"User-Agent": _UA, "Content-Type": "application/json"})
+        if r.status_code in (401, 403):
+            return False, f"Tavily rejected the key ({r.status_code})"
+        r.raise_for_status()
+        return True, "Tavily key accepted"
+    except Exception as exc:  # noqa: BLE001 - a probe failure is a returned verdict
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def allow_paid() -> bool:
+    """Whether `auto` may fall through to the paid Tavily tier.
+
+    Default on, so behaviour is unchanged. Set `MI_SEARCH_ALLOW_PAID=0` for a
+    free-only "birthright" search: an empty free tier is then an empty result,
+    never a silent $0.008 charge.
+    """
+    raw = os.environ.get("MI_SEARCH_ALLOW_PAID", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def search_cost(provider: str = "auto") -> float:
     """Worst-case price of a search, before running it.
 
     `auto` reserves the paid tier's rate because it can fall through to it, which
-    is the number a budget has to check against. Env-overridable so a deployment
-    on a different plan is not stuck with a hardcoded rate.
+    is the number a budget has to check against. Zero when the paid tier is
+    disabled (`MI_SEARCH_ALLOW_PAID=0`), because then it genuinely cannot be
+    reached. Env-overridable so a deployment on a different plan is not stuck
+    with a hardcoded rate.
     """
+    if provider == "auto" and not allow_paid():
+        return 0.0
     if provider not in ("auto", "tavily"):
         return 0.0
     try:
@@ -303,7 +419,10 @@ def search(
     if provider != "auto" and provider not in PARSERS:
         return SearchResult(query, provider, error=f"unknown provider {provider!r}")
 
-    order = FREE_PROVIDERS + ("tavily",) if provider == "auto" else (provider,)
+    if provider == "auto":
+        order = FREE_PROVIDERS + (("tavily",) if allow_paid() else ())
+    else:
+        order = (provider,)
     tried: list[str] = []
     last_error: str | None = None
     for name in order:

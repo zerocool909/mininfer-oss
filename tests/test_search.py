@@ -76,7 +76,21 @@ def test_tavily_results_use_extracted_content():
                      "score": 0.9}]
 
 
-@pytest.mark.parametrize("parser", [S.parse_wikipedia, S.parse_tavily])
+def test_tinyfish_results_carry_the_shared_trio_plus_metadata():
+    payload = json.dumps({"query": "q", "total_results": 2, "page": 0, "results": [
+        {"position": 1, "site_name": "a.example", "title": "T", "snippet": "s",
+         "url": "https://a.example/", "date": "2026-06-01"},
+        {"position": 2, "title": "U", "url": "https://b.example/", "snippet": "t"},
+    ]}).encode()
+    rows = S.parse_tinyfish(payload, 5)
+    assert rows == [
+        {"title": "T", "url": "https://a.example/", "snippet": "s",
+         "site_name": "a.example", "date": "2026-06-01"},
+        {"title": "U", "url": "https://b.example/", "snippet": "t"},
+    ]
+
+
+@pytest.mark.parametrize("parser", [S.parse_wikipedia, S.parse_tinyfish, S.parse_tavily])
 def test_json_parsers_survive_rubbish(parser):
     assert parser(b"not json at all", 5) == []
     assert parser(b"{}", 5) == []
@@ -124,7 +138,7 @@ def test_auto_falls_through_a_blocked_free_tier(monkeypatch):
     })
     r = S.search("something obscure")
     assert r.provider == "tavily"
-    assert r.tried == ["wikipedia", "duckduckgo", "tavily"]
+    assert r.tried == ["wikipedia", "duckduckgo", "tinyfish", "tavily"]
     assert r.cost_usd == 0.008  # the paid tier is priced into the result
     assert r.results[0]["snippet"] == "body"
 
@@ -133,17 +147,35 @@ def test_auto_reports_why_every_provider_failed(monkeypatch):
     seen = _stub(monkeypatch, {
         "wikipedia": RuntimeError("boom"),
         "duckduckgo": _DDG_BLOCKED,
+        "tinyfish": RuntimeError("TINYFISH_API_KEY is not set"),
         "tavily": RuntimeError("TAVILY_API_KEY is not set"),
     })
     r = S.search("q")
     assert not r.ok and r.results == []
     assert "tavily" in (r.error or "")
-    assert seen == ["wikipedia", "duckduckgo", "tavily"]
+    assert seen == ["wikipedia", "duckduckgo", "tinyfish", "tavily"]
 
 
 def test_free_tier_answer_costs_nothing(monkeypatch):
     _stub(monkeypatch, {"wikipedia": _wiki_payload(("A", "b"))})
     assert S.search("x").cost_usd == 0.0
+
+
+def test_auto_stops_at_the_free_tiers_when_paid_is_disallowed(monkeypatch):
+    """Birthright mode: an empty free tier is an empty result, not a bill."""
+    monkeypatch.setenv("MI_SEARCH_ALLOW_PAID", "0")
+    seen = _stub(monkeypatch, {})
+    r = S.search("q")
+    assert seen == ["wikipedia", "duckduckgo", "tinyfish"]
+    assert "tavily" not in seen and not r.ok
+
+
+def test_search_cost_reflects_the_allowed_tiers(monkeypatch):
+    monkeypatch.setenv("MI_SEARCH_ALLOW_PAID", "0")
+    assert S.search_cost("auto") == 0.0          # cannot reach the paid tier
+    assert S.search_cost("tavily") == 0.008      # an explicit paid ask is still priced
+    monkeypatch.setenv("MI_SEARCH_ALLOW_PAID", "1")
+    assert S.search_cost("auto") == 0.008
 
 
 def test_explicit_provider_is_not_a_fallback_chain(monkeypatch):

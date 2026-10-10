@@ -231,3 +231,19 @@ def test_run_now_probes_and_stores(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     assert client.post("/v1/probe/run").json()["checked"] >= 1
     assert client.get("/v1/probe").json()["health"]["groq"]["status"] == "ok"
+
+
+def test_a_transient_network_error_does_not_exclude_a_provider(tmp_path):
+    """Our own connectivity is not the provider's fault.
+
+    Excluding on `network_error` blackholes every arm behind the gateway for the
+    whole TTL: one probe without a network marked both groq and openrouter
+    unhealthy and left the router with zero eligible arms.
+    """
+    s = Store(tmp_path / "n.db")
+    s.set_provider_health("openrouter", "network_error")
+    s.set_provider_health("groq", "tls_error")
+    assert s.unhealthy_providers(ttl_seconds=900) == set()
+    s.set_provider_health("groq", "http_401")     # a hard auth refusal does exclude
+    assert s.unhealthy_providers(ttl_seconds=900) == {"groq"}
+    s.close()

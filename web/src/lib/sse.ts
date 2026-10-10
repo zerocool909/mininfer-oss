@@ -98,6 +98,52 @@ export function miFrame(payload: unknown): MiFrame | null {
   return j?.mi ?? j?.mininfer ?? null
 }
 
+/** What a chat turn did with the live web, from `X-MI-Search*`. */
+export interface SearchState {
+  used: boolean
+  /** off | auto | on — how the decision was reached. */
+  mode?: string
+  /** Which provider answered (tinyfish, wikipedia, …). */
+  provider?: string
+  /** Why the search was deemed necessary, e.g. `time:latest`. */
+  why?: string
+  /** When `used` is false, the reason it was skipped or refused. */
+  reason?: string
+  remaining?: number
+  sources?: { title?: string; url?: string }[]
+}
+
+/** `X-MI-Search: used=1; provider=tinyfish; why=time:latest; remaining=87` */
+function parseSearch(headers: Headers): SearchState | null {
+  const raw = headers.get('X-MI-Search')
+  if (!raw) return null
+  const kv: Record<string, string> = {}
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    kv[part.slice(0, eq).trim()] = part.slice(eq + 1).trim()
+  }
+  let sources: { title?: string; url?: string }[] = []
+  const rawSources = headers.get('X-MI-Search-Sources')
+  if (rawSources) {
+    try {
+      const parsed = JSON.parse(rawSources)
+      if (Array.isArray(parsed)) sources = parsed
+    } catch {
+      sources = []
+    }
+  }
+  return {
+    used: kv.used === '1',
+    mode: kv.mode,
+    provider: kv.provider,
+    why: kv.why,
+    reason: kv.reason,
+    remaining: kv.remaining !== undefined ? Number(kv.remaining) : undefined,
+    sources,
+  }
+}
+
 /** Header values a streamed reply carries instead of a JSON envelope. */
 export function streamHeaders(headers: Headers) {
   const deploy = headers.get('X-MI-Deploy') ?? ''
@@ -110,6 +156,8 @@ export function streamHeaders(headers: Headers) {
     task,
     policy,
     needsApproval,
+    /** Whether/how this turn was grounded in the live web. */
+    search: parseSearch(headers),
     /** Every candidate in the fallback chain, minus the one that answered. */
     alternatives: cands
       .split(',')

@@ -125,6 +125,37 @@ policy:
   # MI_SEARCH_COST_USD.
   session_cost_limit: 0.0
 
+  # --- model dossiers (the `mi scout` form guide) --------------------------
+  # `mi scout` writes a task-fit dossier per free model (core competency, and
+  # when to use it). When enabled, that prior nudges the ranking of the arms it
+  # covers — bounded, confidence-gated, and faded by observations — so a free arm
+  # is picked for the task it fits rather than by the best generic benchmark
+  # prior alone. It is a prior, not a rule: the quality floor is judged on the
+  # *evidence* posterior, so a dossier can reorder eligible arms but can never
+  # lift one over the floor. 0.0 (the default) leaves the ranking unchanged.
+  dossier_weight: 0.0
+  # The penalty for a task the dossier warns against. Separate from the boost
+  # because a wrong horse is worse than a missing one.
+  dossier_penalty_weight: 0.0
+  # Observations that halve the dossier's influence, so real outcomes win.
+  dossier_shrink_k: 20.0
+  # Freshness: half-life decays the influence, max age drops it entirely.
+  dossier_half_life_days: 30.0
+  dossier_max_age_days: 90.0
+  # Below this confidence the dossier gets no vote.
+  dossier_min_confidence: 0.6
+  # Shadow mode: compute and record the adjustment but do NOT apply it, so its
+  # effect can be measured against real outcomes before it is trusted.
+  dossier_shadow: false
+
+  # --- always an answer ----------------------------------------------------
+  # A reserved arm tried only after the ranked chain is exhausted. It is never
+  # ranked and never displaces a cheaper arm; it exists so a request can run out
+  # of free arms but not out of an answer. Chosen to be a *different provider*
+  # from the free-tier chain (Groq, keyed and fast) so it survives an OpenRouter
+  # outage, and it must be callable — `MI_LAST_RESORT` overrides this value.
+  last_resort: groq:qwen/qwen3.8-27b
+
   # --- complexity & reasoning need estimation ---
   complexity:
     enabled: true
@@ -169,6 +200,13 @@ policy:
 # is the weightage: every listed key contributes, defaulting to 1.0, so a task can
 # favour whichever leaderboard actually predicts its kind of work.
 tasks:
+  # Every task defaults to general-purpose text generators. A special-purpose
+  # model — a safety/moderation classifier, an embedding or rerank model, ASR or
+  # TTS, an image or music generator — is rejected unless the task names its role
+  # in `allow_roles: [safety]`. Without this gate a task that requires no
+  # capability (`general_chat`) admits any free arm, and exploration then serves
+  # exactly the wrong ones (a music model, a TTS voice, a content classifier).
+  #
   # The catch-all. Without it, a prompt that trips no cue falls through to
   # `code_edit` — which demands 32K context, a 0.55 quality floor and tool support
   # — so "Hello, how are you?" was routed as a coding task. `confidence` is 0.0

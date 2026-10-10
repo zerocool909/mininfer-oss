@@ -82,6 +82,37 @@ def pytest_configure(config):
     store_mod.Store.__init__ = redirected
 
 
+#: Tuning knobs a developer's `.env` may set, loaded into `os.environ` when
+#: `mininfer.proxy` is imported. Left ambient, `MI_CHAT_SEARCH=auto` would make
+#: every test that posts a cue-bearing prompt hit the real search network — the
+#: suite must not depend on the machine's configuration.
+_AMBIENT_ENV = (
+    "MI_CHAT_SEARCH", "MI_CHAT_SEARCH_PROVIDER", "MI_SEARCH_DAILY_LIMIT",
+    "MI_SEARCH_ALLOW_PAID",
+    "MI_SCOUT_TONE", "MI_SCOUT_SEARCH_PROVIDER",
+    # These change routing/agent behaviour, so a developer's `.env` must not leak
+    # into a test that asserts an exact chain.
+    "MI_AGENT_MODEL", "MI_AGENT_MODELS", "MI_INTENT_MODEL",
+    "MI_SESSION_TOKEN_LIMIT", "MI_SESSION_COST_LIMIT",
+)
+
+#: A whitespace value disables the reserve: `route()` strips and falls back to
+#: `None` when the result is empty, which beats `config/policy.yaml`'s operator
+#: value without inventing an arm. Tests that assert an exact call chain must not
+#: inherit it; tests that exercise the reserve set `MI_LAST_RESORT` themselves.
+_LAST_RESORT_OFF = " "
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_tuning(monkeypatch):
+    """Import the app (which loads `.env`) once, then clear the knobs it set."""
+    import mininfer.proxy  # noqa: F401  - ensures `load_env()` has run
+    for var in _AMBIENT_ENV:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MI_LAST_RESORT", _LAST_RESORT_OFF)
+    yield
+
+
 @pytest.fixture
 def pg_or_sqlite():
     return "postgres" if DSN else "sqlite"

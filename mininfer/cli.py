@@ -458,6 +458,28 @@ def cmd_sources(args) -> int:
 
 def cmd_resolve(args) -> int:
     store = _open(args)
+
+    # Recovery: undo merges that hid a variant (whisper-v3 vs v3-turbo). Run before
+    # `propose`, because the absorbed model no longer exists as a live row for
+    # `propose` to see.
+    if getattr(args, "split_variants", False):
+        cands = store.variant_split_candidates()
+        if not cands:
+            print("no variant merges to split")
+            store.close()
+            return 0
+        print(f"variant merges: {len(cands)} canonical(s) hiding a variant")
+        for c in cands:
+            rep = store.unmerge_variant(c["canonical_id"], dry_run=args.dry_run)
+            for s in rep["splits"]:
+                print(f"  {c['canonical_id']}")
+                print(f"    split {s['identity']!r} onto {s['target']}"
+                      f"  ({len(s['deployments'])} deployment(s))")
+        store.commit()
+        print("dry-run: nothing written" if args.dry_run else "splits applied")
+        store.close()
+        return 0
+
     merged, review = propose(store, auto=not args.no_auto)
     store.commit()
     print(f"auto-merged: {len(merged)}")
@@ -1492,6 +1514,319 @@ def cmd_search(args) -> int:
     return 0
 
 
+def _print_scouted(d: dict) -> None:
+    """One line per arm as `mi scout` walks the registry."""
+    if d.get("error"):
+        print(f"  ! {d['deploy_id']}: {d['error']}")
+        return
+    print(f"  ok {d['display_name']}  conf={d.get('confidence', 0.0):.2f}")
+    if d.get("warrior"):
+        print(f"     warrior: ⚔ {d['warrior']}")
+    if d.get("story"):
+        print(f"     story:   {d['story'][:150]}")
+    comp = (d.get("core_competency") or "").strip()
+    if comp:
+        print(f"     core: {comp[:110]}")
+    best = d.get("best_for") or []
+    if best:
+        print(f"     capabilities: {', '.join(best)}")
+
+
+def cmd_scout(args) -> int:
+    """Build/refresh the model form guide: an agent-written dossier per free arm.
+
+    This is the "keeps checking" feature: one pass is `mi scout`, and
+    `mi scout --interval 21600` re-runs it every six hours, skipping arms whose
+    dossier is still younger than `--max-age` — the same cadence the `worker`
+    process already uses for `mi ingest`.
+    """
+    from . import scout as scout_mod
+    from .router import Policy
+
+    if getattr(args, "tone", None):
+        os.environ["MI_SCOUT_TONE"] = args.tone
+    _, tasks = Policy.load(args.policy)
+    store = _open(args)
+
+    def one_pass() -> int:
+        rep = scout_mod.scout(
+            store, limit=args.limit, agent_model=args.agent_model,
+            search_enabled=not args.no_search, force=args.force,
+            max_age_hours=args.max_age, dry_run=args.dry_run,
+            only_new=args.only_new,
+            task_names=list(tasks), on_arm=_print_scouted)
+        store.commit()
+        print(f"\nscanned {rep['scanned']}  written {rep['written']}  "
+              f"skipped-fresh {rep['skipped_fresh']}  errors {rep['errors']}"
+              + ("  (dry-run: nothing written)" if args.dry_run else ""))
+        return 0 if rep["errors"] == 0 else 1
+
+    if args.interval:
+        import time
+        print(f"scout loop: every {args.interval}s (Ctrl-C to stop)")
+        try:
+            while True:
+                one_pass()
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\nstopped")
+            store.close()
+            return 0
+    rc = one_pass()
+    store.close()
+    return rc
+
+
+def cmd_dossiers(args) -> int:
+    """The form guide table: what every free arm is good at and when to use it."""
+    store = _open(args)
+    rows = store.dossiers(substr=args.substr or None, limit=args.limit or None)
+    store.close()
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no dossiers yet — run `mi scout` first", file=sys.stderr)
+        return 1
+    for r in rows:
+        print(f"\n{r['display_name']}  [{r['provider']}]  "
+              f"conf={r.get('confidence') or 0.0:.2f}")
+        print(f"  deploy: {r['deploy_id']}  updated: {r.get('generated_at')}")
+        if r.get("warrior"):
+            print(f"  warrior: ⚔ {r['warrior']}")
+        if r.get("story"):
+            print(f"  story:  {r['story'][:200]}")
+        if r.get("core_competency"):
+            print(f"  core:   {r['core_competency']}")
+        if r.get("best_for"):
+            print(f"  best:   {', '.join(json.loads(r['best_for'] or '[]'))}")
+        if r.get("when_to_use"):
+            print(f"  use:    {', '.join(json.loads(r['when_to_use'] or '[]'))}")
+        if r.get("summary"):
+            print(f"  bg:     {r['summary'][:160]}")
+    return 0
+
+
+def _win_rate(wins: int, n: int) -> str:
+    return f"{100.0 * wins / n:.1f}%" if n else "—"
+
+
+def cmd_dossier_report(args) -> int:
+    """Calibrate the dossier routing prior from recorded decisions and outcomes.
+
+    Two questions, both answerable from the decision log plus observations:
+
+      * In shadow mode, how often would the dossier-adjusted ranking have picked
+        a different arm, and among those — where both arms have a track record —
+        whose arm actually won more often on that task?
+      * Do dossier-aligned picks win more often than neutral ones?
+
+    A counterfactual is only scored where *both* arms have observations on the
+    task, so the report never claims a comparison it cannot support.
+    """
+    store = _open(args)
+    decisions = store.decisions_with_dossier(args.limit)
+    stats_cache: dict[str, dict] = {}
+
+    def rate(task: str, deploy: str) -> tuple[int, int]:
+        if task not in stats_cache:
+            stats_cache[task] = store.stats(task)
+        s = stats_cache[task].get(deploy) or {}
+        return int(s.get("n", 0) or 0), int(s.get("wins", 0) or 0)
+
+    aligned_n = aligned_w = neutral_n = neutral_w = warned_n = warned_w = 0
+    considered = differed = both_known = shadow_better = served_better = 0
+    for d in decisions:
+        try:
+            reason = json.loads(d["reason"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        task, served = d["task"], d["chosen"]
+        sel = reason.get("selected") or []
+        dossier = sel[0].get("dossier") if sel else None
+        n, w = rate(task, served)
+        if dossier:
+            if dossier.get("reason") == "when_not_to_use":
+                warned_n += n
+                warned_w += w
+            else:
+                aligned_n += n
+                aligned_w += w
+        else:
+            neutral_n += n
+            neutral_w += w
+
+        shadow = reason.get("shadow_chosen")
+        if shadow:
+            considered += 1
+            if shadow != served:
+                differed += 1
+                sn, sw = rate(task, shadow)
+                vn, vw = rate(task, served)
+                if sn and vn:
+                    both_known += 1
+                    sr, vr = sw / sn, vw / vn
+                    if sr > vr:
+                        shadow_better += 1
+                    elif vr > sr:
+                        served_better += 1
+
+    store.close()
+    report = {
+        "dossier_decisions": len(decisions),
+        "shadow_counterfactuals": considered,
+        "shadow_differed": differed,
+        "shadow_both_observed": both_known,
+        "shadow_better": shadow_better,
+        "served_better": served_better,
+        "served_outcomes": {
+            "aligned": {"n": aligned_n, "wins": aligned_w},
+            "neutral": {"n": neutral_n, "wins": neutral_w},
+            "warned": {"n": warned_n, "wins": warned_w},
+        },
+    }
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    if not decisions:
+        print("no dossier decisions recorded yet — enable shadow mode and route some"
+              " traffic, or run `mi scout` first", file=sys.stderr)
+        return 1
+    print(f"decisions with a dossier: {len(decisions)}")
+    print(f"shadow counterfactuals:   {considered}  (differed from served: {differed})")
+    if both_known:
+        print(f"  both arms observed:     {both_known}  "
+              f"shadow better: {shadow_better} ({_win_rate(shadow_better, both_known)}), "
+              f"served better: {served_better}")
+    else:
+        print("  both arms observed:     0  (needs more traffic before it can be scored)")
+    print("served-arm outcomes by dossier alignment:")
+    print(f"  aligned  n={aligned_n:<6} win-rate {_win_rate(aligned_w, aligned_n)}")
+    print(f"  neutral  n={neutral_n:<6} win-rate {_win_rate(neutral_w, neutral_n)}")
+    print(f"  warned   n={warned_n:<6} win-rate {_win_rate(warned_w, warned_n)}")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    """Check the mandatory setup and print exactly how to fix what is missing.
+
+    Every check here maps to a real first-run failure: a Python 3.9 interpreter,
+    a missing extra, an absent `.env`, no provider key, an unbuilt dashboard, an
+    empty registry. Exit is non-zero when a **required** check fails; optional
+    ones (search key, agents extra) warn.
+    """
+    import importlib.util
+    import pathlib as _pathlib
+
+    from .execute import ENDPOINTS
+    from . import search as search_mod
+
+    results: list[tuple[str, str, str | None]] = []
+
+    def check(ok: bool, label: str, fix: str = "", *, optional: bool = False) -> None:
+        level = "PASS" if ok else ("WARN" if optional else "FAIL")
+        results.append((level, label, None if ok else (fix or None)))
+
+    import sys as _sys
+    check(_sys.version_info >= (3, 11),
+          f"Python >= 3.11 (found {_sys.version.split()[0]})",
+          "install Python 3.11+ and recreate the venv with it")
+    check(all(importlib.util.find_spec(m) for m in ("fastapi", "uvicorn")),
+          "[server] extra (fastapi + uvicorn)", "pip install -e '.[server]'")
+    check(all(importlib.util.find_spec(m) for m in
+              ("langgraph", "langchain_openai", "bs4")),
+          "[agents] extra (langgraph + langchain-openai + bs4)",
+          "pip install -e '.[agents]'", optional=True)
+
+    env_file = _pathlib.Path(".env")
+    check(env_file.is_file(), ".env exists (read at startup)",
+          "cp .env.example .env  (compose bind-mounts it too)")
+
+    configured = [pid for pid, (_, env, _) in ENDPOINTS.items()
+                  if env and os.environ.get(env)]
+    check(bool(configured), "at least one model provider key",
+          "set OPENROUTER_API_KEY (or GROQ_API_KEY / …) in .env, then restart")
+    tf = bool(os.environ.get(search_mod.PROVIDER_ENV["tinyfish"]))
+    check(tf, f"web search key ({search_mod.PROVIDER_ENV['tinyfish']})",
+          "set TINYFISH_API_KEY for scout research + chat grounding", optional=True)
+
+    check(_pathlib.Path("web/dist/index.html").is_file(),
+          "dashboard built (web/dist)",
+          "npm --prefix web install && npm --prefix web run build", optional=True)
+
+    try:
+        store = Store(args.db)
+        counts = store.counts()
+        n = int(counts.get("deployments", 0) or 0)
+        store.close()
+    except Exception as exc:  # noqa: BLE001
+        check(False, "registry readable", f"{type(exc).__name__}: {exc}")
+    else:
+        check(n > 0, f"registry populated ({n} deployments)",
+              "mi ingest && mi resolve && mi quota seed")
+
+    width = max(len(label) for _, label, _ in results)
+    for level, label, fix in results:
+        mark = {"PASS": "ok  ", "WARN": "warn", "FAIL": "FAIL"}[level]
+        print(f"[{mark}] {label.ljust(width)}" + (f"  -> {fix}" if fix else ""))
+
+    failed = sum(1 for level, _, _ in results if level == "FAIL")
+    warned = sum(1 for level, _, _ in results if level == "WARN")
+    print("\n" + (f"{failed} required check(s) failed" if failed
+                  else "all required checks passed")
+          + (f", {warned} optional missing" if warned else ""))
+    return 1 if failed else 0
+
+
+def cmd_reputation(args) -> int:
+    """Provider/model outcome verdicts, derived from the observation log."""
+    store = _open(args)
+    rows = store.reputation(days=args.days or None, task=args.task or None)
+    store.close()
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no observations yet", file=sys.stderr)
+        return 1
+    print(f"{'verdict':13s} {'provider':24s} {'model':42s} {'n':>4s} {'429%':>5s}"
+          f" {'to%':>5s} {'win%':>5s}")
+    for r in rows:
+        n = r["n"] or 1
+        print(f"{r['verdict']:13s} {(r['provider'] or '')[:23]:24s} {r['deploy_id'][:41]:42s}"
+              f" {r['n']:4d} {100 * r['n_429'] / n:5.0f} {100 * r['n_timeout'] / n:5.0f}"
+              f" {100 * r['win_rate']:5.0f}")
+    return 0
+
+
+def cmd_recommend(args) -> int:
+    """Primary arms plus backups for a task, with the reasons."""
+    from .router import recommend
+
+    store = _open(args)
+    policy, tasks = Policy.load(args.policy)
+    if args.task not in tasks:
+        print(f"unknown task {args.task!r}; known: {', '.join(tasks)}", file=sys.stderr)
+        store.close()
+        return 2
+    rep = recommend(store, tasks[args.task], policy)
+    store.close()
+    if args.json:
+        print(json.dumps(rep, indent=2))
+        return 0
+    print(f"task {rep['task']}  ({rep['strategy']} · {rep['diversity']})")
+    print("\nprimary")
+    for a in rep["primary"]:
+        print(f"  {a['deploy_id'][:56]:58s} {' · '.join(a['why'])}")
+    print("\nbackups")
+    for a in rep["backups"]:
+        tag = "UNTESTED " if a["untested"] else ""
+        print(f"  {tag}{a['deploy_id'][:55]:58s} {' · '.join(a['why'])}")
+    if rep.get("last_resort"):
+        print(f"\nlast resort  {rep['last_resort']}")
+    return 0
+
+
 def cmd_metrics(args) -> int:
     """Enrich deployments with provider performance metrics (throughput / TTFT)."""
     store = _open(args)
@@ -1529,6 +1864,15 @@ def cmd_metrics(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _load_env()
+    # Search snippets and model names carry non-ASCII characters, and the default
+    # Windows console code page (cp1252) cannot encode them, which made `mi search`
+    # crash *after* it had already printed the results. Reconfigure to UTF-8 with
+    # replacement so a stray glyph can never abort a report. Guarded because a
+    # captured stream (pytest) does not always expose `reconfigure`.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     p = argparse.ArgumentParser(prog="mi", description="MinInfer model router")
     p.add_argument("--version", action="version",
                    version=f"mininfer {__version__}",
@@ -1635,6 +1979,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sources", help="provider roadmap + availability").set_defaults(fn=cmd_sources)
 
     r = sub.add_parser("resolve", help="entity resolution pass")
+    r.add_argument("--split-variants", action="store_true",
+                   help="undo merges that hid a variant (e.g. whisper-v3 vs v3-turbo)")
     r.add_argument("--no-auto", action="store_true")
     r.add_argument("--adjudicate", action="store_true",
                    help="LLM-review the near-match proposals")
@@ -1777,12 +2123,64 @@ def main(argv: list[str] | None = None) -> int:
     se = sub.add_parser("search", help="web search (free tiers first, Tavily as fallback)")
     se.add_argument("query")
     se.add_argument("--provider", default="auto",
-                    choices=["auto", "wikipedia", "duckduckgo", "tavily"])
+                    choices=["auto", "wikipedia", "duckduckgo", "tinyfish", "tavily"])
     se.add_argument("--limit", type=int, default=5)
     se.add_argument("--force", action="store_true", help="ignore the raw cache")
     se.add_argument("--json", action="store_true")
     se.add_argument("--session", help="charge this search to a session ledger")
     se.set_defaults(fn=cmd_search)
+
+    sc = sub.add_parser("scout",
+                        help="agentic form guide: write a dossier for every free model")
+    sc.add_argument("--limit", type=int, default=0, help="cap arms this pass (0 = all)")
+    sc.add_argument("--agent-model", default=None,
+                    help="deploy_id of the LLM that writes dossiers")
+    sc.add_argument("--no-search", action="store_true",
+                    help="skip web search; registry facts only")
+    sc.add_argument("--force", action="store_true",
+                    help="rewrite fresh dossiers too")
+    sc.add_argument("--max-age", type=float, default=24.0,
+                    help="hours before a dossier is stale")
+    sc.add_argument("--dry-run", action="store_true",
+                    help="synthesise and print, write nothing")
+    sc.add_argument("--only-new", action="store_true",
+                    help="scout only free arms that have no dossier yet (the"
+                         " new-model event queue)")
+    sc.add_argument("--tone", choices=["epic", "plain", "deadpool"], default=None,
+                    help="voice for the dossier's warrior/story (default epic)")
+    sc.add_argument("--interval", type=float, default=0.0,
+                    help="loop every N seconds (0 = one pass)")
+    sc.set_defaults(fn=cmd_scout)
+
+    dg = sub.add_parser("dossiers", help="print the model form guide")
+    dg.add_argument("substr", nargs="?", default="")
+    dg.add_argument("--limit", type=int, default=0)
+    dg.add_argument("--json", action="store_true")
+    dg.set_defaults(fn=cmd_dossiers)
+
+    dr = sub.add_parser("dossier-report",
+                        help="calibrate the dossier routing prior from outcomes")
+    dr.add_argument("--limit", type=int, default=200,
+                    help="how many recent dossier decisions to read")
+    dr.add_argument("--json", action="store_true")
+    dr.set_defaults(fn=cmd_dossier_report)
+
+    doc = sub.add_parser("doctor",
+                         help="check the mandatory setup and print fixes")
+    doc.set_defaults(fn=cmd_doctor)
+
+    rp = sub.add_parser("reputation",
+                        help="provider/model outcomes and health verdicts")
+    rp.add_argument("--task", default="")
+    rp.add_argument("--days", type=int, default=0, help="window; 0 = all history")
+    rp.add_argument("--json", action="store_true")
+    rp.set_defaults(fn=cmd_reputation)
+
+    rc = sub.add_parser("recommend",
+                        help="2-3 primary arms for a task plus 2 backups")
+    rc.add_argument("task")
+    rc.add_argument("--json", action="store_true")
+    rc.set_defaults(fn=cmd_recommend)
 
     mt = sub.add_parser("metrics",
                         help="enrich deployments with perf metrics (throughput/TTFT)")

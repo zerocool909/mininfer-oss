@@ -49,6 +49,7 @@ from .fetch import utcnow, _verify as _tls_verify
 from .quota import classify_429, describe as quota_describe, record_from_headers
 from . import quota as quota_mod
 from . import search as search_mod
+from . import chatsearch as chatsearch_mod
 from .router import DEFAULT_TASK, Policy, rank_for_compare, route
 from .store import Store
 from .web.legacy import render_dashboard
@@ -182,7 +183,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-MI-Deploy", "X-MI-Task", "X-MI-Policy", "X-MI-Candidates", "X-MI-Needs-Approval", "X-MI-Decision-Id", "X-MI-Intent"],
+    expose_headers=["X-MI-Deploy", "X-MI-Task", "X-MI-Policy", "X-MI-Candidates", "X-MI-Needs-Approval", "X-MI-Decision-Id", "X-MI-Intent", "X-MI-Search", "X-MI-Search-Sources"],
 )
 
 
@@ -357,6 +358,110 @@ def _turn(messages: list | None, answer: str | None) -> list[dict]:
     if answer:
         turn.append({"role": "assistant", "content": answer})
     return turn
+
+
+def _search_daily_limit() -> int:
+    """Free searches one tenant gets per UTC day. 0 means uncapped (default).
+
+    The "birthright": search stays free and always-on, bounded by a day bucket
+    rather than switched off. Enforced against the tenant so it survives a new
+    session, which is the whole point — a session-scoped cap is a cap you reset
+    by opening a tab.
+    """
+    raw = os.environ.get("MI_SEARCH_DAILY_LIMIT", "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _chat_search_mode(payload: dict) -> str:
+    """`off` | `auto` | `on` for a chat turn.
+
+    A request-level `search` boolean wins over the deployment default, so the UI
+    can offer a per-message toggle without changing server config. Default is
+    `off`: a search spends quota and latency the caller did not ask for.
+    """
+    requested = payload.get("search")
+    if requested is True:
+        return "on"
+    if requested is False:
+        return "off"
+    mode = os.environ.get("MI_CHAT_SEARCH", "off").strip().lower()
+    return mode if mode in ("off", "auto", "on") else "off"
+
+
+def _maybe_chat_search(payload: dict, request: Request, store: Store,
+                       caller_tenant: str | None,
+                       session_id: str | None) -> dict | None:
+    """Ground a chat turn with a live web search, or return why it did not.
+
+    Never fatal: no results, an exhausted daily quota or a provider failure all
+    fall back to an ungrounded answer, with the reason recorded on the decision
+    so a surprising reply is explainable. Returns the `search` block for the
+    decision reason, or None when search was simply off.
+    """
+    mode = _chat_search_mode(payload)
+    # Non-standard key; drop it so it is never forwarded to a provider.
+    payload.pop("search", None)
+    if mode == "off":
+        return None
+
+    prompt = intent_mod.last_user_text(payload.get("messages") or [])
+    if not prompt.strip():
+        return {"used": False, "reason": "no_prompt", "mode": mode}
+    if mode == "auto":
+        need, why = chatsearch_mod.needs_search(prompt)
+        if not need:
+            return {"used": False, "reason": "no_cue", "mode": mode}
+    else:
+        why = "forced"
+
+    tenant = caller_tenant or "local"
+    day = utcnow()[:10]
+    limit = _search_daily_limit()
+    if limit:
+        used = store.daily_search_usage(tenant, day)
+        if used["searches"] >= limit:
+            return {"used": False, "reason": "daily_quota_exceeded", "mode": mode,
+                    "why": why, "daily_limit": limit, "remaining_today": 0}
+
+    # TinyFish first, for the same reason the scout is TinyFish-only: `auto`
+    # stops at the first non-empty answer, and Wikipedia answers a news query
+    # with tangential *encyclopedia* pages ("weather in India" → Mumbai, Gujarat,
+    # …) — a confident, irrelevant grounding that never reaches the good source.
+    # Fall back to the keyless tiers only when there is no TinyFish key.
+    provider = (os.environ.get("MI_CHAT_SEARCH_PROVIDER") or "tinyfish").strip().lower()
+    if provider == "tinyfish" and not os.environ.get("TINYFISH_API_KEY", "").strip():
+        provider = "auto"
+    rep = search_mod.search(prompt, provider=provider, limit=5, store=store)
+    store.add_daily_search_usage(tenant, day, searches=1, cost_usd=rep.cost_usd)
+    if session_id:
+        store.add_session_usage(session_id, calls=0, searches=1,
+                                search_cost_usd=rep.cost_usd,
+                                cost_usd=rep.cost_usd, tenant_id=caller_tenant)
+    remaining = None
+    if limit:
+        remaining = max(0, limit - store.daily_search_usage(tenant, day)["searches"])
+
+    if not rep.ok:
+        return {"used": False, "reason": rep.error or "no_results", "mode": mode,
+                "why": why, "provider": rep.provider, "cost_usd": rep.cost_usd,
+                "daily_limit": limit, "remaining_today": remaining}
+
+    msgs = payload.get("messages") or []
+    idx = max((i for i, m in enumerate(msgs) if m.get("role") == "user"),
+              default=len(msgs))
+    msgs.insert(idx, chatsearch_mod.context_message(prompt, rep.results))
+    return {
+        "used": True, "mode": mode, "why": why, "provider": rep.provider,
+        "cost_usd": rep.cost_usd,
+        "sources": [{"title": r.get("title"), "url": r.get("url")}
+                    for r in rep.results[:5]],
+        "daily_limit": limit, "remaining_today": remaining,
+    }
 
 
 def _session_limit(policy) -> int:
@@ -718,6 +823,7 @@ def _chat_response(
         "X-MI-Candidates": ", ".join(alternatives),
         "X-MI-Needs-Approval": "true" if reason.get("needs_approval") else "false",
         "X-MI-Decision-Id": str(decision_id or ""),
+        **_search_headers(reason),
     }
     return JSONResponse(content={
         "id": f"chatcmpl-{uuid.uuid4().hex}",
@@ -970,6 +1076,21 @@ PROVIDER_METADATA: dict[str, dict[str, Any]] = {
         "docs_url": "https://github.com/marketplace/models",
         "setup_guide": "Generate a GitHub Personal Access Token (PAT) with model access.",
     },
+    # Search providers. Not model providers — they have no models here — but
+    # surfaced through the same Settings -> "To server" flow so a search key can
+    # be set from the UI instead of hand-editing `.env`.
+    "tinyfish": {
+        "name": "TinyFish Search",
+        "description": "Structured web-search API for agents: JSON with URLs, titles and snippets. Free up to 12,000 requests/day.",
+        "docs_url": "https://agent.tinyfish.ai/api-keys",
+        "setup_guide": "Create an API key at agent.tinyfish.ai. Powers the free-model summaries and chat web search.",
+    },
+    "tavily": {
+        "name": "Tavily Search",
+        "description": "Paid web search with extracted page content. Used only when the free tiers return nothing.",
+        "docs_url": "https://app.tavily.com/home",
+        "setup_guide": "Create a key at app.tavily.com. Billed per search (~$0.008).",
+    },
 }
 
 
@@ -1033,6 +1154,25 @@ def providers() -> dict:
             "setup_guide": meta.get("setup_guide", ""),
             "models_count": len(models_list),
             "models": models_list,
+        })
+
+    # Search providers: no models, but a key the UI can set. `kind: "search"`
+    # lets the client label them rather than list them as empty model providers.
+    for pid, env_var in search_mod.PROVIDER_ENV.items():
+        meta = PROVIDER_METADATA.get(pid, {})
+        out.append({
+            "id": pid,
+            "name": meta.get("name", pid.capitalize()),
+            "description": meta.get("description", ""),
+            "base_url": "",
+            "key_env": env_var,
+            "has_project_key": bool(os.environ.get(env_var)),
+            "is_local": False,
+            "docs_url": meta.get("docs_url", ""),
+            "setup_guide": meta.get("setup_guide", ""),
+            "models_count": 0,
+            "models": [],
+            "kind": "search",
         })
 
     return {"providers": out}
@@ -1155,17 +1295,25 @@ def list_provider_keys() -> dict:
     started with, plus any key `POST /v1/keys` has since written.
     """
     local = {"ollama", "llamacpp"}
-    return {
-        "providers": [
-            {
-                "id": pid,
-                "env_var": key_env,
-                "configured": bool(key_env and os.environ.get(key_env)),
-                "is_local": pid in local,
-            }
-            for pid, (_, key_env, _) in ENDPOINTS.items()
-        ]
-    }
+    out = [
+        {
+            "id": pid,
+            "env_var": key_env,
+            "configured": bool(key_env and os.environ.get(key_env)),
+            "is_local": pid in local,
+        }
+        for pid, (_, key_env, _) in ENDPOINTS.items()
+    ]
+    # Search providers are keyed the same way and listed here too, so a client
+    # can see whether `mi scout` / chat search will be able to reach the web.
+    out.extend({
+        "id": pid,
+        "env_var": env_var,
+        "configured": bool(os.environ.get(env_var)),
+        "is_local": False,
+        "kind": "search",
+    } for pid, env_var in search_mod.PROVIDER_ENV.items())
+    return {"providers": out}
 
 
 @app.post("/v1/keys", openapi_extra=_api_schema.SET_KEY, tags=["operator"])
@@ -1189,6 +1337,24 @@ async def set_provider_key(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="provider is required")
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
+    # Search providers (TinyFish, Tavily) go through the same verified-persist
+    # flow, but are validated with a real search rather than a model probe.
+    if provider in search_mod.PROVIDER_ENV:
+        env_var = search_mod.PROVIDER_ENV[provider]
+        ok, detail = search_mod.verify_key(provider, api_key)
+        if not ok:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "stored": False, "provider": provider,
+                "env_var": env_var,
+                "error": {"message": detail, "type": "provider_unverified",
+                          "code": 400},
+            })
+        outcome = env_mod.set_env_var(ENV_PATH, env_var, api_key, template=ENV_TEMPLATE)
+        if outcome != "already_set":
+            os.environ[env_var] = api_key
+        return {"ok": True, "stored": outcome != "already_set", "status": outcome,
+                "provider": provider, "env_var": env_var, "reply": detail}
+
     if provider not in ENDPOINTS or not key_env_for(f"{provider}:x"):
         raise HTTPException(status_code=400,
                             detail=f"{provider} is unknown or takes no API key")
@@ -1321,6 +1487,32 @@ async def test_provider_connectivity(request: Request) -> dict:
 
     if not provider_id:
         raise HTTPException(status_code=400, detail="Missing 'provider' in request payload")
+
+    # Search providers have no model to route a completion to, so the model-probe
+    # path below can only ever 404 (`No deployments found for provider 'tinyfish'`,
+    # shown in the UI as `Model: unknown / HTTP 404`). Test what the provider
+    # actually is: a search key, verified with one minimal query.
+    if provider_id in search_mod.PROVIDER_ENV:
+        env_var = search_mod.PROVIDER_ENV[provider_id]
+        server_key = (os.environ.get(env_var) or "").strip()
+        key = custom_key or server_key
+        source = "custom" if custom_key else ("env" if server_key else "none")
+        free = provider_id == "tinyfish"   # free up to the daily allowance
+        if not key:
+            return {"ok": False, "provider": provider_id, "model": "web search",
+                    "is_free": free, "latency_ms": None, "reply": None,
+                    "error_class": "no_api_key",
+                    "error_detail": f"{env_var} is not set — use 'To server' below",
+                    "key_source": "none"}
+        started = time.perf_counter()
+        ok, detail = search_mod.verify_key(provider_id, key)
+        latency = (time.perf_counter() - started) * 1000.0
+        return {"ok": ok, "provider": provider_id, "model": "web search",
+                "is_free": free, "latency_ms": round(latency, 1),
+                "reply": detail if ok else None,
+                "error_class": None if ok else "request_failed",
+                "error_detail": None if ok else detail,
+                "key_source": source}
 
     # Which credential the call will actually use. "Connectivity failed" that does
     # not say *which* key was tried sends the operator hunting; a missing
@@ -1617,9 +1809,22 @@ async def search_endpoint(request: Request) -> dict:
         return _error(400, "no_session",
                       "search is billed: pass an X-MI-Session (or X-MI-Session) header")
 
+    # The per-tenant day bucket. A tenant with no key (local dev) still gets a
+    # bucket, named `local`, so the meter exists on a single-user install too.
+    tenant = _caller_tenant(request) or "local"
+    day = utcnow()[:10]
+    daily_limit = _search_daily_limit()
+
     policy, _tasks = Policy.load(_policy_path())
     store = _store()
     try:
+        if daily_limit:
+            used = store.daily_search_usage(tenant, day)
+            if used["searches"] >= daily_limit:
+                return _error(
+                    429, "search_daily_quota_exceeded",
+                    f"tenant {tenant!r} has used its {daily_limit} search(es) for"
+                    f" {day} UTC; the allowance resets at 00:00 UTC")
         blocked = _session_block(policy, store, session_id,
                                  reserve_usd=search_mod.search_cost(provider))
         if blocked is not None:
@@ -1630,11 +1835,125 @@ async def search_endpoint(request: Request) -> dict:
                                 search_cost_usd=rep.cost_usd,
                                 cost_usd=rep.cost_usd,
                                 tenant_id=_caller_tenant(request))
+        store.add_daily_search_usage(tenant, day, searches=1,
+                                     cost_usd=rep.cost_usd)
         session = _session_payload(policy, store, session_id)
+        used_after = store.daily_search_usage(tenant, day)
         store.commit()
     finally:
         store.close()
-    return {**rep.as_dict(), "session": session}
+    quota: dict = {"daily_limit": daily_limit, "used_today": used_after["searches"]}
+    if daily_limit:
+        quota["remaining_today"] = max(0, daily_limit - used_after["searches"])
+    return {**rep.as_dict(), "session": session, "search_quota": quota}
+
+
+@app.get("/v1/free-models", tags=["catalog"])
+def free_models_endpoint(q: str | None = None, limit: int | None = None) -> dict:
+    """The free tier, each arm with its agent-written summary when scouted.
+
+    Tenant-scoped (under `/v1/`) and read-only: the user-facing answer to "what
+    can I use for free, and what is each one good at?" — listing every free arm,
+    scouted or not, so the answer is complete rather than a highlight reel.
+    """
+    store = _store()
+    try:
+        rows = store.free_model_summaries(substr=q, limit=limit)
+    finally:
+        store.close()
+    return {"count": len(rows), "models": rows}
+
+
+@app.get("/v1/reputation", tags=["operator"])
+def reputation_endpoint(task: str | None = None, days: int | None = None) -> dict:
+    """Per-(provider, model, task) outcomes with a health verdict.
+
+    Read-only and derived from the observation log: which arms 429, time out or
+    fail for another reason, and whether that is enough evidence (a minimum
+    sample) to say so. Admin: this is provider telemetry, not a catalogue.
+    """
+    store = _store()
+    try:
+        rows = store.reputation(days=days, task=task)
+    finally:
+        store.close()
+    verdicts: dict[str, int] = {}
+    for r in rows:
+        verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    return {"count": len(rows), "verdicts": verdicts, "models": rows}
+
+
+@app.get("/v1/recommend", tags=["catalog"])
+def recommend_endpoint(task: str, request: Request = None) -> dict:
+    """2–3 primary arms for a task plus 2 backups, at least one untested.
+
+    Read-only: it never executes. `route()` still serves the request; this is the
+    human/agent-facing shortlist with the reasons.
+    """
+    from .router import recommend
+
+    store = _store()
+    policy, tasks = Policy.load(_policy_path())
+    if task not in tasks:
+        store.close()
+        return _error(404, "unknown_task",
+                      f"unknown task {task!r}; known: {', '.join(tasks)}")
+    user_keys: dict[str, str] = {}
+    if request:
+        raw = request.headers.get("x-user-api-keys")
+        if raw:
+            try:
+                user_keys = json.loads(raw)
+            except Exception:
+                user_keys = {}
+    try:
+        return recommend(store, tasks[task], policy, user_keys=user_keys)
+    finally:
+        store.close()
+
+
+@app.get("/v1/dossiers", tags=["operator"])
+def dossiers_endpoint(q: str | None = None, limit: int | None = None) -> dict:
+    """The model form guide: an agent-written dossier per free arm.
+
+    Read-only. The "which horse for which race" helper: core competency,
+    strengths, weaknesses and `when_to_use` for every free deployment the scout
+    has written a dossier for. Tenant-scoped (it is under `/v1/`); writing one
+    is `/v1/dossiers/refresh`, which is admin-only.
+    """
+    store = _store()
+    try:
+        rows = store.dossiers(substr=q, limit=limit)
+    finally:
+        store.close()
+    return {"count": len(rows), "dossiers": rows}
+
+
+@app.post("/v1/dossiers/refresh", openapi_extra=_api_schema.SCOUT_REFRESH, tags=["operator"])
+async def dossiers_refresh(request: Request) -> dict:
+    """Run one scout pass now. Admin-only: it spends agent calls + web searches."""
+    from . import scout as scout_mod
+
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    policy, tasks = Policy.load(_policy_path())
+    store = _store()
+    try:
+        rep = scout_mod.scout(
+            store,
+            limit=int(body.get("limit") or 0),
+            search_enabled=bool(body.get("search", True)),
+            force=bool(body.get("force", False)),
+            task_names=list(tasks),
+            dry_run=False,
+        )
+        store.commit()
+    finally:
+        store.close()
+    return rep
 
 
 @app.get("/v1/session", tags=["sessions"])
@@ -1902,12 +2221,20 @@ def dashboard(task: str | None = None) -> str:
 
 
 @app.get("/", response_class=HTMLResponse, tags=["dashboard"])
-def root(task: str | None = None) -> str:
-    """The React dashboard when built, else the server-rendered page."""
+def root(task: str | None = None) -> HTMLResponse:
+    """The React dashboard when built, else the server-rendered page.
+
+    `no-store` on the shell: `index.html` names the hashed bundle, so a cached
+    copy pins the browser to a stale build after every rebuild — the "still
+    seeing old stuff" that a plain reload cannot fix. The hashed assets under
+    `/assets` stay cacheable; only the pointer is revalidated.
+    """
     index = WEB_DIST / "index.html"
     if index.exists():
-        return index.read_text(encoding="utf-8")
-    return dashboard(task)
+        return HTMLResponse(index.read_text(encoding="utf-8"),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+    return HTMLResponse(dashboard(task),
+                        headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/legacy", response_class=HTMLResponse, tags=["dashboard"])
@@ -2356,19 +2683,55 @@ def _extra(payload: dict) -> dict:
                          "complexity", "x-mi-task")}
 
 
+def _search_headers(reason: dict) -> dict:
+    """`X-MI-Search*` headers for a decision that ran (or considered) a search.
+
+    A streamed reply carries its routing facts in headers rather than a JSON
+    envelope, so the playground's Details panel can show *whether the answer was
+    grounded* — and where the sources are — without fetching the decision log.
+    Compact `k=v; k=v` for the summary; sources ride separately as short JSON.
+    """
+    s = (reason or {}).get("search")
+    if not s:
+        return {}
+    parts = [f"used={'1' if s.get('used') else '0'}"]
+    for key, label in (("mode", "mode"), ("provider", "provider"), ("why", "why")):
+        if s.get(key):
+            parts.append(f"{label}={s[key]}")
+    if not s.get("used") and s.get("reason"):
+        parts.append(f"reason={s['reason']}")
+    if s.get("remaining_today") is not None:
+        parts.append(f"remaining={s['remaining_today']}")
+    out = {"X-MI-Search": "; ".join(parts)}
+    sources = s.get("sources") or []
+    if sources:
+        out["X-MI-Search-Sources"] = json.dumps(sources[:3], separators=(",", ":"))
+    return out
+
+
 def _selected_meta(chosen) -> list[dict]:
     """The `selected` block of a decision reason, one entry per ranked candidate.
 
     Shared so the pre-execution reason and the post-escalation rewrite cannot
     drift apart in shape.
     """
-    return [
-        {"deploy_id": c.deploy_id, "p_lb": round(c.p_lb, 4),
-         "cost_per_success": c.cost_per_success, "free_kind": c.free_kind,
-         "availability": round(c.availability, 4),
-         "leaderboards": c.prior_tags}
-        for c in chosen
-    ]
+    out = []
+    for c in chosen:
+        entry: dict = {"deploy_id": c.deploy_id, "p_lb": round(c.p_lb, 4),
+                       "cost_per_success": c.cost_per_success, "free_kind": c.free_kind,
+                       "availability": round(c.availability, 4),
+                       "leaderboards": c.prior_tags}
+        if c.dossier_reason:
+            # How the form guide moved this arm, and the evidence-only posterior
+            # it was moved from — so a dossier-driven pick is never silent.
+            entry["dossier"] = {"reason": c.dossier_reason,
+                                "fit": round(c.dossier_fit, 4),
+                                "confidence": round(c.dossier_confidence, 3),
+                                "age_days": c.dossier_age_days,
+                                "p_lb_evidence": (round(c.p_lb_evidence, 4)
+                                                  if c.p_lb_evidence is not None else None)}
+        out.append(entry)
+    return out
 
 
 async def _handle(payload: dict, *, force_route: bool,
@@ -2445,6 +2808,12 @@ async def _handle(payload: dict, *, force_route: bool,
                         "origin": origin_info})
         store.close()
         return blocked
+
+    # Optional grounding: decide whether this turn needs the live web, fetch it,
+    # and inject the results as a system message before routing. Nothing here is
+    # fatal — a failed search leaves the answer ungrounded and says so.
+    search_meta = _maybe_chat_search(payload, request, store, caller_tenant,
+                                     session_id)
 
     TASK_ALIASES = {
         "coding": "code_edit",
@@ -2530,6 +2899,13 @@ async def _handle(payload: dict, *, force_route: bool,
         ranked = [c.deploy_id for c in dec.chosen]
         deploy_ids = [d for d in ranked if _keys_available(d, user_keys, local_endpoints)]
         skipped = [d for d in ranked if d not in deploy_ids]
+        # The reserved arm, tried only after the ranked chain. It never displaces a
+        # cheaper arm — it exists so the chain can run out of free arms but not out
+        # of an answer. Appended here, after `skipped` is computed, so it is not
+        # reported as a skipped candidate.
+        if (getattr(dec, "last_resort", None) and dec.last_resort not in deploy_ids
+                and _keys_available(dec.last_resort, user_keys, local_endpoints)):
+            deploy_ids.append(dec.last_resort)
         reason = {
             "funnel": dec.funnel,
             "why": dec.why,
@@ -2538,6 +2914,13 @@ async def _handle(payload: dict, *, force_route: bool,
             "skipped_no_key": skipped,
             "origin": origin_info,
         }
+        if getattr(dec, "last_resort", None) and dec.last_resort in deploy_ids:
+            reason["last_resort"] = dec.last_resort
+        if search_meta:
+            reason["search"] = search_meta
+        if getattr(dec, "shadow_chosen", None):
+            # Dossier shadow mode: the counterfactual pick, recorded not executed.
+            reason["shadow_chosen"] = dec.shadow_chosen
         if intent is not None:
             meta = intent.as_dict()
             if explicit is not None:
@@ -3641,6 +4024,7 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             "X-MI-Candidates": ", ".join(d for d in deploy_ids if d != did),
             "X-MI-Needs-Approval": "true" if reason.get("needs_approval") else "false",
             "X-MI-Decision-Id": str(decision_id or ""),
+            **_search_headers(reason),
             "Cache-Control": "no-cache",
         }
         if intent is not None:

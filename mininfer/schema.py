@@ -217,6 +217,11 @@ class TaskProfile:
     # the top pick for every one of those tasks unchanged. So the capability being
     # gated decides the answer, not a house style.
     on_unverified_capability: str | None = None
+    #: Model *roles* this task will accept. Empty (the default) means
+    #: "general-purpose text generators only": a safety classifier, an embedding
+    #: model, a TTS/ASR or an image/music generator is excluded. A task that
+    #: genuinely wants one names it (`allow_roles: [safety]`).
+    allow_roles: tuple[str, ...] = ()
 
     def estimated_calls(self, p_success: float) -> float:
         """Expected calls to get one success, capped at 4 to avoid absurd values."""
@@ -287,3 +292,14 @@ class Candidate:
     #: task-level posterior, it does not stack the two.
     effort_n: int = 0
     effort_wins: int = 0
+    #: The evidence-only posterior (benchmark prior + observations), before any
+    #: model-dossier adjustment. `p_lb` is what ranks; this is what the quality
+    #: floor is judged on, so a dossier can reorder eligible arms but can never
+    #: lift one over the floor. `None` means "same as p_lb" (no dossier applied).
+    p_lb_evidence: float | None = None
+    #: The task-fit adjustment `mi scout`'s dossier contributed to the ranking,
+    #: and the inputs behind it, so a decision can explain itself.
+    dossier_fit: float = 0.0
+    dossier_reason: str = ""  # best_for | when_to_use | when_not_to_use | ""
+    dossier_confidence: float = 0.0
+    dossier_age_days: float | None = None

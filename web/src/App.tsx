@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { LayoutDashboard, Terminal, Settings, Boxes, Command, MessageSquarePlus, Scale, SunMoon, Keyboard, Bell } from 'lucide-react'
+import { LayoutDashboard, Terminal, Settings, Boxes, Command, MessageSquarePlus, Scale, SunMoon, Keyboard, Bell, Trophy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Overview } from '@/components/Overview'
 import { ModelsTab } from '@/components/ModelsTab'
+import { FormGuide } from '@/components/FormGuide'
 import { Playground } from '@/components/Playground'
 import type { TestTarget } from '@/components/Playground'
 import { SettingsTab } from '@/components/SettingsTab'
@@ -18,6 +19,7 @@ import { Button } from '@/components/ui/button'
 const NAV = [
   { id: 'playground', label: 'Playground', icon: Terminal },
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'formguide', label: 'Free models', icon: Trophy },
   { id: 'models', label: 'Models', icon: Boxes },
   { id: 'settings', label: 'Providers', icon: Settings },
 ] as const
@@ -273,6 +275,8 @@ export function App() {
               go('playground')
             }}
           />
+        ) : tab === 'formguide' ? (
+          <FormGuide />
         ) : tab === 'models' ? (
           <ModelsTab />
         ) : tab === 'settings' ? (

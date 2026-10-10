@@ -204,3 +204,110 @@ def test_set_env_var_refuses_a_non_empty_directory(tmp_path):
     with pytest.raises(IsADirectoryError):
         env.set_env_var(target, "GROQ_API_KEY", "gsk_new")
     assert (target / "keep").exists()
+
+
+# ----------------------------------------- search providers are keys too
+# TinyFish (and Tavily) are not model providers, but they take a key and the UI
+# should be able to configure them exactly like one — same verified-persist flow.
+
+
+def test_search_providers_are_listed_with_a_kind(tmp_path, monkeypatch):
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
+    body = _client(tmp_path, monkeypatch).get("/v1/keys").json()
+    by_id = {p["id"]: p for p in body["providers"]}
+    assert by_id["tinyfish"]["env_var"] == "TINYFISH_API_KEY"
+    assert by_id["tinyfish"]["kind"] == "search"
+    assert by_id["tinyfish"]["configured"] is False
+
+
+def test_search_providers_appear_in_the_provider_list(tmp_path, monkeypatch):
+    body = _client(tmp_path, monkeypatch).get("/v1/providers").json()
+    by_id = {p["id"]: p for p in body["providers"]}
+    assert by_id["tinyfish"]["kind"] == "search"
+    assert by_id["tinyfish"]["models"] == []
+    assert by_id["tinyfish"]["key_env"] == "TINYFISH_API_KEY"
+
+
+def test_a_verified_search_key_is_written(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYFISH_API_KEY", "placeholder")  # teardown restores it
+    monkeypatch.setattr(proxy, "ENV_PATH", tmp_path / ".env")
+
+    def accepted(provider, key, **kw):
+        return True, "TinyFish key accepted"
+    monkeypatch.setattr(proxy.search_mod, "verify_key", accepted)
+
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/keys", json={"provider": "tinyfish", "api_key": "tf-abc"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stored"] is True and body["env_var"] == "TINYFISH_API_KEY"
+    assert "tf-abc" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "tf-abc" not in r.text
+    assert os.environ["TINYFISH_API_KEY"] == "tf-abc"   # live without a restart
+
+
+def test_an_unverified_search_key_is_never_written(tmp_path, monkeypatch):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(proxy, "ENV_PATH", target)
+
+    def rejected(provider, key, **kw):
+        return False, "TinyFish rejected the key (401)"
+    monkeypatch.setattr(proxy.search_mod, "verify_key", rejected)
+
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/keys", json={"provider": "tinyfish", "api_key": "bad"})
+    assert r.status_code == 400
+    assert r.json()["stored"] is False
+    assert r.json()["error"]["message"] == "TinyFish rejected the key (401)"
+    assert not target.exists()
+
+
+def test_search_verify_key_refuses_an_unknown_provider_without_network():
+    from mininfer import search as search_mod
+    ok, detail = search_mod.verify_key("nope", "x")
+    assert ok is False and "not a search provider" in detail
+
+
+# ------------------------------------------- testing a search provider's key
+
+
+def test_testing_a_search_provider_verifies_the_search_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYFISH_API_KEY", "tf-x")
+
+    def accepted(provider, key, **kw):
+        assert provider == "tinyfish" and key == "tf-x"
+        return True, "TinyFish key accepted"
+    monkeypatch.setattr(proxy.search_mod, "verify_key", accepted)
+
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/providers/test", json={"provider": "tinyfish"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["key_source"] == "env"
+    assert body["model"] == "web search"
+    assert body["is_free"] is True
+
+
+def test_testing_a_search_provider_without_a_key_says_so(tmp_path, monkeypatch):
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/providers/test", json={"provider": "tinyfish"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error_class"] == "no_api_key"
+    assert body["key_source"] == "none"
+    assert "TINYFISH_API_KEY" in body["error_detail"]
+
+
+def test_testing_a_search_provider_reports_a_rejected_key(tmp_path, monkeypatch):
+    def rejected(provider, key, **kw):
+        return False, "TinyFish rejected the key (401)"
+    monkeypatch.setattr(proxy.search_mod, "verify_key", rejected)
+    r = _client(tmp_path, monkeypatch).post(
+        "/v1/providers/test", json={"provider": "tinyfish", "api_key": "bad"})
+    body = r.json()
+    assert body["ok"] is False and body["key_source"] == "custom"
+    assert body["error_class"] == "request_failed"
+    assert "rejected" in body["error_detail"]

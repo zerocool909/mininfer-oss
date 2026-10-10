@@ -747,6 +747,54 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT NOT NULL,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- The model "form guide": an agent-written dossier per free deployment — core
+-- competency, strengths, weaknesses, and when it should be picked. Assembled by
+-- `mi scout` from registry facts plus a web search, and read by the dashboard as
+-- a real-time helper for choosing the right model for a task (the horse for the
+-- race). `facts` is the snapshot the dossier was synthesised from, so a claim can
+-- be re-checked against what was known when it was written. One row per arm on
+-- purpose: the same weights served by two hosts are two different horses.
+CREATE TABLE IF NOT EXISTS model_dossiers (
+  deploy_id       TEXT PRIMARY KEY,
+  weights_id      TEXT,
+  display_name    TEXT,
+  provider        TEXT,
+  price_out       REAL,
+  core_competency TEXT,
+  summary         TEXT,
+  -- The storied half: a warrior archetype and a short analogy tying the model's
+  -- competency to the tasks it wins. Kept beside the factual fields, never in
+  -- place of them, so the router and the summary stay honest while the form guide
+  -- reads like a legend.
+  warrior         TEXT,
+  story           TEXT,
+  strengths       TEXT DEFAULT '[]',
+  weaknesses      TEXT DEFAULT '[]',
+  when_to_use     TEXT DEFAULT '[]',
+  when_not_to_use TEXT DEFAULT '[]',
+  best_for        TEXT DEFAULT '[]',
+  search_sources  TEXT DEFAULT '[]',
+  facts           TEXT DEFAULT '{}',
+  confidence      REAL,
+  generated_at    TEXT,
+  FOREIGN KEY (deploy_id) REFERENCES deployments(deploy_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dossiers_generated ON model_dossiers(generated_at);
+
+-- Per-tenant daily search count, the "birthright" quota. A day bucket rather
+-- than a window because the free providers reset on a calendar day (UTC for the
+-- structured tier), and an operator reasons in those units. `tenant_id` is
+-- `local` when access control is off, so a single-user install still gets a
+-- meter. The primary key is (tenant, day): one row per bucket, upserted.
+CREATE TABLE IF NOT EXISTS search_usage_daily (
+  tenant_id  TEXT NOT NULL,
+  day        TEXT NOT NULL,
+  searches   INTEGER NOT NULL DEFAULT 0,
+  cost_usd   REAL NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (tenant_id, day)
+);
 """
 
 
@@ -916,6 +964,8 @@ class Store:
         # charging, awaiting a human) and when, so the review has context.
         "deployments": {"status_reason": "TEXT", "status_changed_at": "TEXT",
                         "pricing_state": "TEXT", "status_source": "TEXT DEFAULT 'source'"},
+        # The storied half of a model dossier, added after the table shipped.
+        "model_dossiers": {"warrior": "TEXT", "story": "TEXT"},
     }
 
     def _migrate(self) -> None:
@@ -2270,6 +2320,111 @@ class Store:
             args = (task,)
         return {r["deploy_id"]: dict(r) for r in self.conn.execute(q, args)}
 
+    def provider_outcome_stats(self, *, days: int | None = None,
+                               task: str | None = None) -> dict[str, dict[str, int]]:
+        """Outcomes rolled up to the *provider*, for attribution.
+
+        A 429 or a 5xx is usually the gateway/upstream, not the model — an outage
+        hits every arm behind it. The router uses this to demote a failing
+        provider once, instead of rediscovering it arm by arm.
+        """
+        where: list[str] = []
+        args: list[Any] = []
+        if days:
+            where.append("o.ts >= ?")
+            args.append(_since(days))
+        if task:
+            where.append("o.task = ?")
+            args.append(task)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        # Infra errors and the two quota signals are not "other" failures.
+        not_other = ", ".join(f"'{e}'" for e in
+                              sorted(NON_MODEL_ERRORS | {"429", "timeout"}))
+        rows = self.conn.execute(
+            f"""SELECT d.provider AS provider, COUNT(*) AS n_all,
+                       SUM(CASE WHEN o.ok = 1 THEN 1 ELSE 0 END) AS wins,
+                       SUM(CASE WHEN o.error_class = '429' THEN 1 ELSE 0 END) AS n_429,
+                       SUM(CASE WHEN o.error_class = 'timeout' THEN 1 ELSE 0 END) AS n_timeout,
+                       SUM(CASE WHEN o.error_class IS NOT NULL
+                                 AND o.error_class NOT IN ({not_other})
+                                THEN 1 ELSE 0 END) AS n_other_err
+                 FROM observations o JOIN deployments d ON d.deploy_id = o.deploy_id
+                {clause}
+               GROUP BY d.provider""",
+            tuple(args),
+        ).fetchall()
+        return {r["provider"]: {k: int(r[k] or 0) for k in
+                                ("n_all", "wins", "n_429", "n_timeout", "n_other_err")}
+                for r in rows}
+
+    def reputation(self, *, days: int | None = None, task: str | None = None,
+                   min_sample: int = 5) -> list[dict[str, Any]]:
+        """Per-(provider, deploy, task) outcome rollup with a health verdict.
+
+        Derived from `observations`, so there is no second table to keep in sync.
+        The verdict is *gated on a minimum sample*: demoting an arm on one 429 is
+        how a router learns the wrong lesson from a transient provider hiccup.
+        """
+        where: list[str] = []
+        args: list[Any] = []
+        if days:
+            where.append("o.ts >= ?")
+            args.append(_since(days))
+        if task:
+            where.append("o.task = ?")
+            args.append(task)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        infra = ", ".join(f"'{e}'" for e in sorted(NON_MODEL_ERRORS))
+        rows = self.conn.execute(
+            f"""SELECT d.provider AS provider, o.deploy_id AS deploy_id, o.task AS task,
+                       COUNT(*) AS n_all,
+                       SUM(CASE WHEN o.ok = 1 THEN 1 ELSE 0 END) AS wins,
+                       SUM(CASE WHEN o.error_class IN ({infra}) THEN 1 ELSE 0 END) AS n_infra,
+                       SUM(CASE WHEN o.error_class = '429' THEN 1 ELSE 0 END) AS n_429,
+                       SUM(CASE WHEN o.error_class = 'timeout' THEN 1 ELSE 0 END) AS n_timeout,
+                       SUM(CASE WHEN o.signal_kind = 'judge_trial'
+                                 AND o.error_class = 'judge_rejected'
+                                THEN 1 ELSE 0 END) AS n_judge_rejected,
+                       AVG(CASE WHEN o.ok = 1 THEN o.latency_ms END) AS mean_latency_ms
+                 FROM observations o JOIN deployments d ON d.deploy_id = o.deploy_id
+                {clause}
+               GROUP BY d.provider, o.deploy_id, o.task""",
+            tuple(args),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            n_all = int(r["n_all"] or 0)
+            n_infra = int(r["n_infra"] or 0)
+            n = n_all - n_infra                 # model-attributable attempts
+            n_429, n_to = int(r["n_429"] or 0), int(r["n_timeout"] or 0)
+            n_err = n - int(r["wins"] or 0) - n_429 - n_to
+            avail = 1.0 - (n_429 + n_to) / n if n else 0.0
+            rel = 1.0 - max(0, n_err) / n if n else 0.0
+            win = int(r["wins"] or 0) / n if n else 0.0
+            if n < min_sample:
+                verdict = "insufficient"
+            elif avail < 0.5 or rel < 0.5 or win < 0.5:
+                verdict = "retire"
+            elif avail < 0.8 or rel < 0.8 or win < 0.7:
+                verdict = "degraded"
+            else:
+                verdict = "healthy"
+            out.append({
+                "provider": r["provider"], "deploy_id": r["deploy_id"],
+                "task": r["task"], "n_all": n_all, "n": n, "wins": int(r["wins"] or 0),
+                "n_429": n_429, "n_timeout": n_to, "n_other_err": max(0, n_err),
+                "n_judge_rejected": int(r["n_judge_rejected"] or 0),
+                "availability": round(avail, 3), "reliability": round(rel, 3),
+                "win_rate": round(win, 3),
+                "mean_latency_ms": (round(r["mean_latency_ms"], 1)
+                                    if r["mean_latency_ms"] is not None else None),
+                "verdict": verdict,
+            })
+        order = {"retire": 0, "degraded": 1, "insufficient": 2, "healthy": 3}
+        out.sort(key=lambda x: (order[x["verdict"]], x["provider"] or "",
+                                x["deploy_id"] or ""))
+        return out
+
     def routing_stats_by_effort(self, task: str | None = None,
                                 effort: str | None = None) -> dict[tuple, dict]:
         """`routing_stats` at the `(deploy_id, task, effort)` grain.
@@ -2472,8 +2627,18 @@ class Store:
             " FROM provider_health").fetchall()
         return {r["provider"]: dict(r) for r in rows}
 
+    #: Probe outcomes that disqualify a provider's *credential*: a revoked key or
+    #: a hard auth refusal. Everything else — `network_error`, `tls_error`, a 5xx —
+    #: is either our own connectivity or a transient upstream fault, and the same
+    #: reason `_counted_expr` refuses to count it against a model applies here:
+    #: excluding on it blackholes **every** arm behind the gateway for the whole
+    #: TTL after one blip. Observed: a single probe lost the network and marked
+    #: both groq and openrouter `network_error`, which left the router with zero
+    #: eligible arms and nothing but the last resort to answer with.
+    _DISQUALIFYING_HEALTH = ("auth_error", "http_401", "http_403")
+
     def unhealthy_providers(self, *, ttl_seconds: float = 900.0) -> set[str]:
-        """Providers whose last probe failed *recently*.
+        """Providers whose last probe showed their *key* is unusable, recently.
 
         Staleness is the whole point: with the probe switched off, an old failure
         must not exclude a provider forever, so anything older than
@@ -2483,9 +2648,10 @@ class Store:
         """
         cutoff = (dt.datetime.now(dt.timezone.utc)
                   - dt.timedelta(seconds=float(ttl_seconds))).isoformat(timespec="seconds")
+        marks = ", ".join(f"'{s}'" for s in self._DISQUALIFYING_HEALTH)
         rows = self.conn.execute(
-            "SELECT provider FROM provider_health"
-            " WHERE status != 'ok' AND checked_at >= ?", (cutoff,)).fetchall()
+            f"SELECT provider FROM provider_health"
+            f" WHERE status IN ({marks}) AND checked_at >= ?", (cutoff,)).fetchall()
         return {r["provider"] for r in rows}
 
     # ------------------------------------------------------------------- reads
@@ -2519,6 +2685,213 @@ class Store:
                ORDER BY d.status_changed_at DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ dossiers
+    # The model form guide (agentic scout). Writes come from `mi scout`; reads
+    # serve the dashboard's "Form guide" tab and `/v1/dossiers`.
+
+    def _free_arms(self, extra_where: str = "") -> list[dict[str, Any]]:
+        """Free deployments joined to weights, for the scout. One column list, so
+        the two public variants (`free_deployments`, `new_dossier_arms`) cannot
+        drift apart.
+        """
+        rows = self.conn.execute(
+            """SELECT d.deploy_id, d.weights_id, d.provider, d.provider_model_id,
+                      d.context_window, d.max_output, d.price_in, d.price_out,
+                      d.zero_price, d.free_variant, d.subscription, d.trial_credits,
+                      d.status, d.status_reason, d.uptime_1d, d.first_token_ms,
+                      d.throughput, d.pricing_state,
+                      w.display_name, w.family, w.params_b, w.arch, w.modalities,
+                      w.benchmark
+               FROM deployments d JOIN weights w ON w.weights_id = d.weights_id
+               WHERE (d.zero_price = 1 OR d.free_variant = 1)
+                 AND d.status != 'deprecated'
+                 {extra}
+               ORDER BY d.deploy_id""".format(extra=extra_where)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def free_deployments(self) -> list[dict[str, Any]]:
+        """Every free arm, joined to its weights for the facts a dossier needs.
+
+        `zero_price` and `free_variant` are the same two markers `router._free_kind`
+        reads, so the scout and the router agree on what "free" means. `deprecated`
+        arms are not applicable and are left out; a `hibernated` arm stays in,
+        because that change is exactly what a dossier should say out loud.
+        """
+        return self._free_arms()
+
+    def new_dossier_arms(self) -> list[dict[str, Any]]:
+        """Free arms with no dossier yet — the "new free model" event queue.
+
+        This is what makes the scout event-driven instead of only scheduled:
+        after `mi ingest` admits a new free arm (or flips a paid arm to free),
+        scouting just these writes the form guide for the newcomer without
+        re-walking the whole registry.
+        """
+        return self._free_arms(
+            "AND NOT EXISTS (SELECT 1 FROM model_dossiers m"
+            " WHERE m.deploy_id = d.deploy_id)")
+
+    def outcome_stats(self, deploy_id: str) -> dict[str, Any] | None:
+        """Aggregate call outcomes for one arm, for the dossier facts blob.
+
+        Counts *all* observations (not the `routing_stats` view's
+        infra-excluded `n`): a dossier should know the arm was dialled and got a
+        429, even if that 429 is not evidence about its quality.
+        """
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS n, COALESCE(SUM(ok), 0) AS wins,
+                      AVG(CASE WHEN ok = 1 THEN latency_ms END) AS mean_latency_ms,
+                      COALESCE(SUM(CASE WHEN error_class = '429' THEN 1 ELSE 0 END), 0)
+                        AS n_429
+               FROM observations WHERE deploy_id = ?""",
+            (deploy_id,),
+        ).fetchone()
+        if row is None or not row["n"]:
+            return None
+        return dict(row)
+
+    def upsert_dossier(self, deploy_id: str, *, weights_id: str, display_name: str,
+                       provider: str, price_out: float | None,
+                       core_competency: str, summary: str,
+                       warrior: str = "", story: str = "",
+                       strengths: list[str], weaknesses: list[str],
+                       when_to_use: list[str], when_not_to_use: list[str],
+                       best_for: list[str], search_sources: list[dict],
+                       facts: dict, confidence: float, generated_at: str) -> None:
+        """Write one dossier row, replacing an older one for the same arm."""
+        self.conn.execute(
+            """INSERT INTO model_dossiers (deploy_id, weights_id, display_name, provider,
+                    price_out, core_competency, summary, warrior, story, strengths,
+                    weaknesses, when_to_use, when_not_to_use, best_for, search_sources,
+                    facts, confidence, generated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(deploy_id) DO UPDATE SET
+                    weights_id=excluded.weights_id, display_name=excluded.display_name,
+                    provider=excluded.provider, price_out=excluded.price_out,
+                    core_competency=excluded.core_competency, summary=excluded.summary,
+                    warrior=excluded.warrior, story=excluded.story,
+                    strengths=excluded.strengths, weaknesses=excluded.weaknesses,
+                    when_to_use=excluded.when_to_use,
+                    when_not_to_use=excluded.when_not_to_use,
+                    best_for=excluded.best_for, search_sources=excluded.search_sources,
+                    facts=excluded.facts, confidence=excluded.confidence,
+                    generated_at=excluded.generated_at""",
+            (deploy_id, weights_id, display_name, provider, price_out,
+             core_competency, summary, warrior, story,
+             json.dumps(strengths), json.dumps(weaknesses),
+             json.dumps(when_to_use), json.dumps(when_not_to_use), json.dumps(best_for),
+             json.dumps(search_sources), json.dumps(facts), confidence, generated_at),
+        )
+
+    def dossiers(self, substr: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        """The form guide table, newest/strongest first."""
+        q = "SELECT * FROM model_dossiers"
+        args: list[Any] = []
+        if substr:
+            like = f"%{substr}%"
+            q += (" WHERE deploy_id LIKE ? OR display_name LIKE ? OR provider LIKE ?"
+                  " OR core_competency LIKE ?")
+            args += [like, like, like, like]
+        q += " ORDER BY COALESCE(confidence, 0) DESC, display_name"
+        if limit:
+            q += " LIMIT ?"
+            args.append(int(limit))
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def dossier(self, deploy_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM model_dossiers WHERE deploy_id = ?", (deploy_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    # -------------------------------------------------------- search quota
+    # The per-tenant daily search counter that backs the "birthright" quota.
+
+    def daily_search_usage(self, tenant_id: str, day: str) -> dict[str, Any]:
+        """This tenant's search usage for one UTC day; zeros when never used."""
+        row = self.conn.execute(
+            "SELECT tenant_id, day, searches, cost_usd FROM search_usage_daily"
+            " WHERE tenant_id = ? AND day = ?", (tenant_id, day)
+        ).fetchone()
+        if row is None:
+            return {"tenant_id": tenant_id, "day": day, "searches": 0,
+                    "cost_usd": 0.0}
+        return dict(row)
+
+    def add_daily_search_usage(self, tenant_id: str, day: str, *,
+                               searches: int = 1, cost_usd: float = 0.0) -> None:
+        """Add one search to a tenant's day bucket."""
+        self.conn.execute(
+            """INSERT INTO search_usage_daily (tenant_id, day, searches, cost_usd,
+                    updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(tenant_id, day) DO UPDATE SET
+                 searches = search_usage_daily.searches + excluded.searches,
+                 cost_usd = search_usage_daily.cost_usd + excluded.cost_usd,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (tenant_id, day, int(searches), float(cost_usd)),
+        )
+
+    def free_model_summaries(self, substr: str | None = None,
+                             limit: int | None = None) -> list[dict[str, Any]]:
+        """Every free arm, with its agent-written summary attached when scouted.
+
+        A LEFT join on purpose: the point is to list the whole *free tier* — so a
+        user can read what is available — including arms the scout has not
+        reached yet (those carry `core_competency is None`), rather than only the
+        ones with a dossier. Ordered by model family so the list reads like a
+        catalogue.
+        """
+        q = """
+            SELECT d.deploy_id, d.provider, d.provider_model_id, d.price_in,
+                   d.price_out, d.context_window, d.status, d.pricing_state,
+                   d.zero_price, d.free_variant,
+                   w.display_name, w.family, w.params_b, w.benchmark,
+                   m.core_competency, m.summary, m.warrior, m.story,
+                   m.strengths, m.weaknesses,
+                   m.when_to_use, m.when_not_to_use, m.best_for, m.search_sources,
+                   m.confidence, m.generated_at
+              FROM deployments d
+              JOIN weights w ON w.weights_id = d.weights_id
+              LEFT JOIN model_dossiers m ON m.deploy_id = d.deploy_id
+             WHERE (d.zero_price = 1 OR d.free_variant = 1)
+               AND d.status != 'deprecated'
+        """
+        args: list[Any] = []
+        if substr:
+            like = f"%{substr}%"
+            q += (" AND (d.deploy_id LIKE ? OR w.display_name LIKE ?"
+                  " OR d.provider LIKE ? OR m.summary LIKE ? OR m.core_competency LIKE ?)")
+            args += [like] * 5
+        q += " ORDER BY COALESCE(w.display_name, d.deploy_id), d.deploy_id"
+        if limit:
+            q += " LIMIT ?"
+            args.append(int(limit))
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def routing_dossiers(self) -> dict[str, dict[str, Any]]:
+        """The dossier fields the router ranks on, projected and pre-parsed.
+
+        Deliberately not `SELECT *`: `facts` is a large provenance blob the hot
+        path never reads, and pulling it here would turn a cache-miss into a scan
+        of megabytes. JSON columns are parsed once here, not per candidate.
+        """
+        rows = self.conn.execute(
+            "SELECT deploy_id, best_for, when_to_use, when_not_to_use, confidence,"
+            " generated_at FROM model_dossiers"
+        ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            d = dict(r)
+            for col in ("best_for", "when_to_use", "when_not_to_use"):
+                try:
+                    d[col] = json.loads(d.get(col) or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    d[col] = []
+            out[d["deploy_id"]] = d
+        return out
 
     def pricing_state_counts(self) -> dict[str, int]:
         """How many deployments are in each derived pricing state (P7).
@@ -2913,6 +3286,18 @@ class Store:
             "SELECT id, ts, task, chosen, reason FROM decisions WHERE reason LIKE '%\"complexity\"%'"
             " ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def decisions_with_dossier(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Decisions a dossier influenced — or, in shadow mode, would have.
+
+        A dossier block appears in `reason.selected[]` whenever a candidate's
+        task fit was computed, which is exactly the set the calibration report
+        needs; `shadow_chosen` rides along in the same blob.
+        """
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, ts, task, chosen, reason FROM decisions"
+            " WHERE reason LIKE '%\"dossier\"%' ORDER BY id DESC LIMIT ?",
+            (limit,))]
+
     def quota_rows(self, limit: int = 40) -> list[dict[str, Any]]:
         """Bucket state, tightest first, with both limit sources.
 
@@ -3018,6 +3403,105 @@ class Store:
             "SELECT 1 FROM weight_aliases WHERE alias_id=?", (alias_id,)
         ).fetchone()
         return row is not None
+
+    def variant_split_candidates(self) -> list[dict[str, Any]]:
+        """Merged clusters that hid a variant under a stripped token.
+
+        A merge joins two names that normalise the same, and `normalize` strips
+        *variant* tokens like `turbo` — so `whisper-large-v3` and
+        `whisper-large-v3-turbo` (a smaller model) became one weights row. This
+        finds the damage after the fact: for every canonical that something was
+        merged into, compare each deployment's own model identity with the
+        canonical's. A mismatch means a different model was absorbed.
+
+        Recovery only, and conservative: it reports what it *would* split, and
+        `unmerge_variant` does it under `dry_run`.
+        """
+        from .normalize import normalize, normalize_identity
+        rows = self.conn.execute(
+            """SELECT d.deploy_id, d.provider_model_id, d.weights_id,
+                      w.hf_repo, w.display_name, w.params_b
+                 FROM deployments d JOIN weights w ON w.weights_id = d.weights_id
+                WHERE EXISTS (SELECT 1 FROM weight_aliases a
+                               WHERE a.canonical_id = d.weights_id)"""
+        ).fetchall()
+        out: dict[tuple, dict] = {}
+        for r in rows:
+            canon = r["weights_id"]
+            canon_name = (r["hf_repo"] or r["display_name"] or canon).split("/")[-1]
+            # `provider_model_id` is the model id; `deploy_id` would need parsing
+            # around a `:free`-style suffix that is part of the id, not a
+            # separator. The last path segment is the name `normalize` expects.
+            pm = (r["provider_model_id"] or "").strip()
+            if not pm:
+                continue
+            pm_name = pm.split("/")[-1]
+            # Precisely the hidden-variant case: identical after the full
+            # normalise, but different once variant tokens are kept. A `:batch`
+            # or `-fp8` id, a vendor prefix, or a short alias all differ in
+            # `normalize` too and are *not* this bug.
+            if normalize(pm_name) != normalize(canon_name):
+                continue
+            aid = normalize_identity(pm_name)
+            cid = normalize_identity(canon_name)
+            if aid == cid:
+                continue
+            key = (canon, aid)
+            out.setdefault(key, {"canonical_id": canon, "identity": aid,
+                                 "deploy_ids": []})
+            out[key]["deploy_ids"].append(r["deploy_id"])
+        return list(out.values())
+
+    def unmerge_variant(self, canonical_id: str, *, dry_run: bool = False) -> dict[str, Any]:
+        """Split deployments a merge wrongly absorbed back onto their own model.
+
+        Recreates a weights row for the absorbed variant, moves its deployments
+        back, and repoints any alias that names it. Prefers an `hf:`-keyed alias
+        as the real row (HF carries the strongest identity). Refuses silently-
+        destructive work: if no deployment can be attributed to the variant, it
+        reports that rather than guessing.
+        """
+        from .normalize import normalize_identity
+        splits = [s for s in self.variant_split_candidates()
+                  if s["canonical_id"] == canonical_id]
+        if not splits:
+            return {"ok": False, "reason": "no variant split needed", "splits": []}
+        aliases = [dict(r) for r in self.conn.execute(
+            "SELECT alias_id FROM weight_aliases WHERE canonical_id=?", (canonical_id,))]
+        report: dict[str, Any] = {"ok": True, "canonical_id": canonical_id, "splits": []}
+        for s in splits:
+            ident = s["identity"]
+            matching = [a["alias_id"] for a in aliases
+                        if normalize_identity(a["alias_id"].split(":", 1)[-1].split("/")[-1])
+                        == ident]
+            # Prefer an hf: alias as the canonical row for the variant.
+            target = next((m for m in matching if m.startswith("hf:")),
+                          matching[0] if matching else f"slug:{ident}")
+            row = self.conn.execute(
+                "SELECT provider_model_id FROM deployments WHERE deploy_id=?",
+                (s["deploy_ids"][0],)).fetchone()
+            display = row["provider_model_id"] if row else ident
+            hf_repo = target.split(":", 1)[-1] if target.startswith("hf:") else None
+            report["splits"].append({"identity": ident, "target": target,
+                                     "display_name": display,
+                                     "deployments": list(s["deploy_ids"])})
+            if dry_run:
+                continue
+            self.conn.execute(
+                """INSERT INTO weights (weights_id, display_name, hf_repo)
+                   VALUES (?,?,?) ON CONFLICT(weights_id) DO NOTHING""",
+                (target, display, hf_repo))
+            for did in s["deploy_ids"]:
+                self.conn.execute(
+                    "UPDATE deployments SET weights_id=? WHERE deploy_id=?", (target, did))
+            # `target` is a real model now, not an alias of the canonical.
+            self.conn.execute("DELETE FROM weight_aliases WHERE alias_id=?", (target,))
+            for other in matching:
+                if other != target:
+                    self.conn.execute(
+                        "UPDATE weight_aliases SET canonical_id=? WHERE alias_id=?",
+                        (target, other))
+        return report
 
     def add_quarantine(self, source: str, entity_id: str, field: str,
                        value: Any, reason: str) -> None:

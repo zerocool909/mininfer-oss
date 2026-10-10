@@ -135,16 +135,15 @@ def extract_node(state: IngestState) -> dict:
 
 
 def _agent_llm(deploy_id: str | None):
-    from langchain_openai import ChatOpenAI
+    """A langchain-shaped LLM (`llm.invoke(prompt)`) with a fallback chain.
 
-    deploy_id = deploy_id or os.environ.get("MI_AGENT_MODEL", "groq:qwen/qwen3.8-27b")
-    ep = resolve_endpoint(deploy_id)
-    if ep.error or not ep.api_key:
-        raise RuntimeError(f"agent model {deploy_id!r} not callable: "
-                           f"{ep.error or 'no_api_key'}")
+    `deploy_id` (or `MI_AGENT_MODEL`) leads; free-first defaults follow, so one
+    arm returning 429/timeout does not fail the whole graph — it moves to the next
+    arm of the same capability. See `mininfer.agent_llm`.
+    """
+    from .agent_llm import AgentLLM, agent_models
 
-    return ChatOpenAI(model=ep.model, base_url=ep.base_url, api_key=ep.api_key,
-                      temperature=0.0, timeout=120.0)
+    return AgentLLM(agent_models(deploy_id))
 
 
 def _parse_json(s: str) -> dict | list | None:

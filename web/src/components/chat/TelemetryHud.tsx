@@ -5,6 +5,7 @@ import {
   Award,
   Zap,
   Clock,
+  Globe,
   Layers,
   ShieldCheck,
   CheckCircle2,
@@ -186,6 +187,53 @@ export function TelemetryHud({
                 <span className="ml-1.5 font-mono text-[10.5px]">
                   {cleanFallbacks.slice(0, 3).join(' · ')}
                 </span>
+              </div>
+            </div>
+          )}
+
+          {meta?.search && (
+            <div className="flex items-start gap-2 text-[11.5px] text-muted-foreground">
+              <Globe
+                className={cn(
+                  'mt-0.5 h-3.5 w-3.5 shrink-0',
+                  meta.search.used ? 'text-brand' : 'opacity-50',
+                )}
+              />
+              <div className="min-w-0">
+                {meta.search.used ? (
+                  <>
+                    <span className="font-medium text-foreground/80">Web search</span>
+                    <span className="ml-1.5">
+                      grounded via {meta.search.provider ?? 'the live web'}
+                      {meta.search.why ? ` · ${meta.search.why}` : ''}
+                      {typeof meta.search.remaining === 'number' &&
+                        ` · ${meta.search.remaining} left today`}
+                    </span>
+                    {meta.search.sources && meta.search.sources.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {meta.search.sources.slice(0, 3).map((s, i) => (
+                          <li key={i} className="truncate font-mono text-[10.5px]">
+                            <a
+                              href={s.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand underline-offset-2 hover:underline"
+                            >
+                              {s.title || s.url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium text-foreground/70">Web search</span>
+                    <span className="ml-1.5">
+                      not used{meta.search.reason ? ` (${meta.search.reason})` : ''}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           )}

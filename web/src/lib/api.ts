@@ -545,6 +545,28 @@ export const api = {
     }),
   runProbe: () =>
     req<ProbeRunResult>('/v1/probe/run', { method: 'POST' }),
+  /** The model form guide: an agent-written dossier per free arm. */
+  dossiers: (q?: string, limit?: number) => {
+    const params = new URLSearchParams()
+    if (q) params.set('q', q)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return req<{ count: number; dossiers: Dossier[] }>(`/v1/dossiers${qs ? `?${qs}` : ''}`)
+  },
+  /** The free tier, each arm with its agent-written summary when scouted. */
+  freeModels: (q?: string, limit?: number) => {
+    const params = new URLSearchParams()
+    if (q) params.set('q', q)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return req<{ count: number; models: FreeModel[] }>(`/v1/free-models${qs ? `?${qs}` : ''}`)
+  },
+  /** Run one scout pass now (admin). `search` toggles the web search per arm. */
+  dossiersRefresh: (body: { search?: boolean; force?: boolean; limit?: number } = {}) =>
+    req<ScoutSummary>('/v1/dossiers/refresh', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 }
 
 export interface ProbeHealth {
@@ -572,5 +594,66 @@ export interface ProbeRunResult {
   checked: number
   results: ProbeHealth[]
   last_run: string | null
+}
+
+/**
+ * A free model plus its agent-written summary (`GET /v1/free-models`). The
+ * dossier fields are null until the scout has reached the arm.
+ */
+export interface FreeModel {
+  deploy_id: string
+  provider: string
+  provider_model_id: string
+  price_in: number | null
+  price_out: number | null
+  context_window: number | null
+  status: string
+  pricing_state: string | null
+  display_name: string | null
+  family: string | null
+  params_b: number | null
+  benchmark: string | null
+  core_competency: string | null
+  summary: string | null
+  warrior: string | null
+  story: string | null
+  strengths: string | null
+  weaknesses: string | null
+  when_to_use: string | null
+  when_not_to_use: string | null
+  best_for: string | null
+  search_sources: string | null
+  confidence: number | null
+  generated_at: string | null
+}
+
+/** The result of one `mi scout` pass (`POST /v1/dossiers/refresh`). */
+export interface ScoutSummary {
+  scanned: number
+  written: number
+  skipped_fresh: number
+  errors: number
+}
+
+/** One row of the model form guide (`/v1/dossiers`). */
+export interface Dossier {
+  deploy_id: string
+  weights_id: string | null
+  display_name: string | null
+  provider: string | null
+  price_out: number | null
+  core_competency: string | null
+  summary: string | null
+  warrior: string | null
+  story: string | null
+  strengths: string | null // JSON array
+  weaknesses: string | null // JSON array
+  when_to_use: string | null // JSON array
+  when_not_to_use: string | null // JSON array
+  best_for: string | null // JSON array
+  search_sources: string | null // JSON array
+  facts: string | null // JSON object
+  confidence: number | null
+  generated_at: string | null
 }
 

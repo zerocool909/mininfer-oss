@@ -8,12 +8,22 @@ from __future__ import annotations
 
 import re
 
-# Noise that describes how a model is served or marketed, not what it is.
+# Noise that describes how a model is served, not what it is: quantization,
+# hosting and routing markers. Always safe to strip.
+_SERVE_TOKENS = ("fp8", "fp4", "bf16", "fp16", "int8", "int4", "awq", "gptq",
+                 "gguf", "nvfp4", "tee", "free", "nitro")
+# Tokens that *look* like serving noise but may be a different model: `turbo` is
+# a smaller Whisper, `thinking` a different fine-tune, `-online`/`-beta` a
+# different behaviour. Stripping one is fine for a display name, but a merge that
+# relies on stripping it needs confirmation — see `normalize_identity`.
+_VARIANT_TOKENS = ("turbo", "extended", "online", "beta", "thinking")
+
 # Applied repeatedly: `gemma-4-31B-turbo-TEE` carries two such suffixes.
 _SERVE_SUFFIX = re.compile(
-    r"(?:[:|-])(?:fp8|fp4|bf16|fp16|int8|int4|awq|gptq|gguf|nvfp4|tee|turbo|free|"
-    r"nitro|extended|online|beta|thinking)$"
-)
+    r"(?:[:|-])(?:" + "|".join(_SERVE_TOKENS + _VARIANT_TOKENS) + r")$")
+# The conservative strip: serving markers only, variant tokens survive.
+_SERVE_SUFFIX_SAFE = re.compile(
+    r"(?:[:|-])(?:" + "|".join(_SERVE_TOKENS) + r")$")
 _PROVIDER_PREFIX = re.compile(r"^(?:[a-z0-9_.-]+)/(?=[^/]+$)")
 
 _ALIASES = {
@@ -29,20 +39,36 @@ _ALIASES = {
 }
 
 
-def normalize(name: str) -> str:
-    """Lowercase, drop provider prefix, collapse punctuation, strip serving noise."""
+def _normalize_with(name: str, suffix: re.Pattern) -> str:
     s = name.strip().lower()
     if "#" in s:  # HF style "repo#revision"
         s = s.split("#", 1)[0]
     s = _PROVIDER_PREFIX.sub("", s)
     while True:
-        stripped = _SERVE_SUFFIX.sub("", s)
+        stripped = suffix.sub("", s)
         if stripped == s:
             break
         s = stripped
     s = re.sub(r"[\s_.]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-: ")
     return _ALIASES.get(s, s)
+
+
+def normalize(name: str) -> str:
+    """Lowercase, drop provider prefix, collapse punctuation, strip serving noise."""
+    return _normalize_with(name, _SERVE_SUFFIX)
+
+
+def normalize_identity(name: str) -> str:
+    """Like `normalize`, but keep tokens that may name a different model.
+
+    Two names that share a `normalize()` key but differ here are only identical
+    because `turbo`/`thinking`/`-online`/`-beta`/`-extended` was stripped — the
+    Whisper case, where `whisper-large-v3-turbo` is a smaller model than
+    `whisper-large-v3`. Entity resolution uses this to send such a merge to review
+    instead of auto-merging on name alone.
+    """
+    return _normalize_with(name, _SERVE_SUFFIX_SAFE)
 
 
 def normalize_hf_repo(repo: str | None) -> str | None:

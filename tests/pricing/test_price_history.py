@@ -23,6 +23,15 @@ from mininfer.pricing.providers import read_prices
 from mininfer.schema import Deployment, Weights
 from mininfer.store import Store
 
+import datetime as dt
+
+# Relative, not hardcoded: a fixed date silently ages past the 30-day freshness
+# window (`store.PRICE_FRESHNESS_DAYS`) and the beliefs start reading `expired`.
+_NOW = dt.datetime.now(dt.timezone.utc)
+_D0 = (_NOW - dt.timedelta(days=3)).isoformat()
+_D1 = (_NOW - dt.timedelta(days=2)).isoformat()
+_D2 = (_NOW - dt.timedelta(days=1)).isoformat()
+
 
 def _add(s: Store, deploy_id: str, *, price: float, source: str, observed_at: str,
          weights: str = "w") -> None:
@@ -57,7 +66,7 @@ def _beliefs(s: Store, deploy_id: str = "novita:m", kind: str = "input") -> list
 
 def test_the_first_belief_is_recorded(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
 
     rows = _beliefs(s)
     assert len(rows) == 1
@@ -70,9 +79,9 @@ def test_the_first_belief_is_recorded(tmp_path):
 def test_a_reconfirmed_price_writes_nothing(tmp_path):
     """Change-only, or the table becomes a second copy of the evidence log."""
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
-    _market(s, 0.075, "2026-09-20T00:00:00+00:00")   # newer evidence, same belief
-    _market(s, 0.075, "2026-09-25T00:00:00+00:00")
+    _market(s, 0.075, _D0)
+    _market(s, 0.075, _D1)   # newer evidence, same belief
+    _market(s, 0.075, _D2)
 
     assert len(_beliefs(s)) == 1
     s.close()
@@ -80,8 +89,8 @@ def test_a_reconfirmed_price_writes_nothing(tmp_path):
 
 def test_a_price_change_is_a_new_belief(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
-    _market(s, 0.09, "2026-09-20T00:00:00+00:00")
+    _market(s, 0.075, _D0)
+    _market(s, 0.09, _D1)
 
     rows = _beliefs(s)
     assert [r["usd_per_mtok"] for r in rows] == [pytest.approx(0.075), pytest.approx(0.09)]
@@ -93,14 +102,14 @@ def test_a_trust_change_at_the_same_price_is_a_new_belief(tmp_path):
     """The belief is the price *and* whether we trust it. The same value becoming
     `quarantined` is news even though no digit changed."""
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
 
     # The other two sources drop 10x while novita re-confirms 0.075, so novita is
     # now the outlier: quarantined, falling back to its own previous value — which
     # is 0.075 again. The price did not move; the trust did.
-    _add(s, "novita:m", price=0.075, source="novita", observed_at="2026-09-20T00:00:00+00:00")
-    _add(s, "openrouter:m", price=0.0075, source="openrouter", observed_at="2026-09-20T00:00:00+00:00")
-    _add(s, "deepinfra:m", price=0.0075, source="deepinfra", observed_at="2026-09-20T00:00:00+00:00")
+    _add(s, "novita:m", price=0.075, source="novita", observed_at=_D1)
+    _add(s, "openrouter:m", price=0.0075, source="openrouter", observed_at=_D1)
+    _add(s, "deepinfra:m", price=0.0075, source="deepinfra", observed_at=_D1)
     s.commit()
     s.reconcile_prices()
     s.commit()
@@ -120,7 +129,7 @@ def test_an_unknown_price_is_a_belief_too(tmp_path):
                         prices=read_prices("novita", {"input_token_price_per_m": 7500,
                                                       "output_token_price_per_m": 7500},
                                            source="novita",
-                                           observed_at="2026-09-10T00:00:00+00:00"))
+                                           observed_at=_D0))
     s.commit()
     s.reconcile_prices()
     s.commit()
@@ -128,8 +137,8 @@ def test_an_unknown_price_is_a_belief_too(tmp_path):
 
     # A second deployment joins so the first becomes the 10x outlier, and the
     # market needs three sources to have an opinion at all.
-    _add(s, "openrouter:m", price=0.075, source="openrouter", observed_at="2026-09-20T00:00:00+00:00")
-    _add(s, "deepinfra:m", price=0.075, source="deepinfra", observed_at="2026-09-20T00:00:00+00:00")
+    _add(s, "openrouter:m", price=0.075, source="openrouter", observed_at=_D1)
+    _add(s, "deepinfra:m", price=0.075, source="deepinfra", observed_at=_D1)
     s.commit()
     s.reconcile_prices()
     s.commit()
@@ -145,9 +154,9 @@ def test_an_unknown_price_is_a_belief_too(tmp_path):
 
 def test_as_of_returns_the_belief_in_effect_then(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
     early = _beliefs(s)[0]["effective_from"]
-    _market(s, 0.09, "2026-09-20T00:00:00+00:00")
+    _market(s, 0.09, _D1)
     late = _beliefs(s)[1]["effective_from"]
 
     assert s.price_history("novita:m", as_of=early)[0]["usd_per_mtok"] == pytest.approx(0.075)
@@ -159,7 +168,7 @@ def test_as_of_returns_the_belief_in_effect_then(tmp_path):
 
 def test_as_of_before_any_belief_is_empty(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
     assert s.price_history("novita:m", as_of="2020-01-01T00:00:00+00:00") == []
     s.close()
 
@@ -188,8 +197,8 @@ def test_as_of_returns_the_belief_not_the_nearest_observation(tmp_path):
 
 def test_the_timeline_is_newest_first(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
-    _market(s, 0.09, "2026-09-20T00:00:00+00:00")
+    _market(s, 0.075, _D0)
+    _market(s, 0.09, _D1)
 
     rows = s.price_history("novita:m")
     assert [r["usd_per_mtok"] for r in rows if r["kind"] == "input"] == [
@@ -204,7 +213,7 @@ def test_history_is_per_kind(tmp_path):
                         prices=read_prices("novita", {"input_token_price_per_m": 750,
                                                       "output_token_price_per_m": 2200},
                                            source="novita",
-                                           observed_at="2026-09-10T00:00:00+00:00"))
+                                           observed_at=_D0))
     s.commit()
     s.reconcile_prices()
     s.commit()
@@ -217,8 +226,8 @@ def test_the_view_derives_effective_to(tmp_path):
     """`effective_to` is not stored — it is the next row's `effective_from`, which is
     what keeps the table append-only instead of updated in place."""
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
-    _market(s, 0.09, "2026-09-20T00:00:00+00:00")
+    _market(s, 0.075, _D0)
+    _market(s, 0.09, _D1)
 
     rows = [dict(r) for r in s.conn.execute(
         "SELECT kind, usd_per_mtok, effective_from, effective_to FROM price_history_dated"
@@ -230,7 +239,7 @@ def test_the_view_derives_effective_to(tmp_path):
 
 def test_a_narrowed_reconcile_still_records_history(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
     before = len(s.price_history("novita:m", limit=99))
     s.reconcile_prices(deploy_ids=["novita:m"])
     s.commit()
@@ -243,7 +252,7 @@ def test_a_narrowed_reconcile_still_records_history(tmp_path):
 
 def test_reconcile_reports_the_history_count(tmp_path):
     s = Store(tmp_path / "t.db")
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
     rep = s.reconcile_prices()
     s.commit()
     assert rep["history"] == 0          # already recorded by `_market`
@@ -253,7 +262,7 @@ def test_reconcile_reports_the_history_count(tmp_path):
 def test_the_endpoint_serves_the_belief_timeline(tmp_path, monkeypatch):
     db = tmp_path / "p.db"
     s = Store(db)
-    _market(s, 0.075, "2026-09-10T00:00:00+00:00")
+    _market(s, 0.075, _D0)
     s.close()
 
     monkeypatch.setenv("MI_DB", str(db))

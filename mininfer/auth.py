@@ -72,6 +72,13 @@ ADMIN_PATHS = frozenset({
     # Hibernation review is an operator decision, not a tenant one: approving a
     # paid model changes what every tenant is charged for.
     "/v1/reviews", "/v1/reviews/decide",
+    # Building the form guide spends agent calls and web searches, and writes to
+    # the registry — an operator job, not a tenant surface. Reading it
+    # (`/v1/dossiers`) is tenant-scoped on purpose.
+    "/v1/dossiers/refresh",
+    # Provider/model outcome telemetry (429s, timeouts, verdicts) is an operator
+    # view, not a catalogue. Recommendations (`/v1/recommend`) stay tenant-scoped.
+    "/v1/reputation",
     # FastAPI's built-ins. They publish the whole schema and an interactive
     # client, which is an operator surface, not a public one.
     "/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect",

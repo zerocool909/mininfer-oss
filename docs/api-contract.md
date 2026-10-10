@@ -107,6 +107,11 @@ GET    /docs                                       internal
 GET    /docs/oauth2-redirect                       internal
 GET    /openapi.json                               internal
 GET    /redoc                                      internal
+GET    /v1/free-models                             experimental
+GET    /v1/recommend                              experimental
+GET    /v1/reputation                              experimental
+GET    /v1/dossiers                                experimental
+POST   /v1/dossiers/refresh                        experimental
 ```
 
 `/assets/*` is a static mount for the dashboard bundle, not an API.

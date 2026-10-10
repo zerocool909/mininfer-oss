@@ -379,3 +379,43 @@ from (
            )) as counted
     from observations
 ) as obs group by deploy_id, task;
+
+-- The model "form guide": an agent-written dossier per free deployment (core
+-- competency, strengths, weaknesses, when to use). Written by `mi scout`, read by
+-- the dashboard and `/v1/dossiers`. `facts` is the snapshot the dossier was
+-- synthesised from. One row per arm: the same weights served by two hosts are
+-- two different horses.
+create table if not exists model_dossiers (
+  deploy_id       text primary key,
+  weights_id      text,
+  display_name    text,
+  provider        text,
+  price_out       double precision,
+  core_competency text,
+  summary         text,
+  warrior         text,
+  story           text,
+  strengths       text default '[]',
+  weaknesses      text default '[]',
+  when_to_use     text default '[]',
+  when_not_to_use text default '[]',
+  best_for        text default '[]',
+  search_sources  text default '[]',
+  facts           text default '{}',
+  confidence      double precision,
+  generated_at    text,
+  foreign key (deploy_id) references deployments(deploy_id)
+);
+create index if not exists idx_dossiers_generated on model_dossiers(generated_at);
+
+-- Per-tenant daily search count, the "birthright" quota. A calendar-day bucket
+-- because the free providers reset on a day (UTC for the structured tier).
+-- `tenant_id` is 'local' when access control is off. Primary key (tenant, day).
+create table if not exists search_usage_daily (
+  tenant_id  text not null,
+  day        text not null,
+  searches   integer not null default 0,
+  cost_usd   double precision not null default 0,
+  updated_at text default CURRENT_TIMESTAMP,
+  primary key (tenant_id, day)
+);

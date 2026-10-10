@@ -17,6 +17,7 @@ import {
   IconScale,
   IconThumbDown,
   IconThumbUp,
+  IconWorld,
   IconX,
 } from '@tabler/icons-react'
 import type React from 'react'
@@ -205,6 +206,10 @@ export default function Chat02({
   const [tasks, setTasks] = useState<string[]>([])
   const [task, setTask] = useState('auto')
   const [compare, setCompare] = useState(false)
+  // Per-message web search: sends `search: true`, grounding this turn in live
+  // results before routing. Off by default so a request never spends quota the
+  // author did not ask for.
+  const [webSearch, setWebSearch] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [ms, setMs] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
@@ -315,7 +320,8 @@ export default function Chat02({
         'X-MI-Client': 'playground',
         ...userKeysHeader,
       },
-      body: JSON.stringify({ model: pinned ?? task, messages, stream: true, max_tokens: 2048 }),
+      body: JSON.stringify({ model: pinned ?? task, messages, stream: true, max_tokens: 2048,
+                             ...(webSearch ? { search: true } : {}) }),
       signal,
     })
 
@@ -326,8 +332,8 @@ export default function Chat02({
       // `no_api_key`, …) and is more useful in the log than the HTTP status.
       throw requestError(e?.type ?? `http_${res.status}`, e?.message ?? `HTTP ${res.status}`)
     }
-    const { deploy, task: resolvedTask, policy, needsApproval, alternatives: initialAlts } =
-      streamHeaders(res.headers)
+    const { deploy, task: resolvedTask, policy, needsApproval, alternatives: initialAlts,
+      search } = streamHeaders(res.headers)
     let currentAlternatives = initialAlts
     let currentTask = resolvedTask
     const decHeader = res.headers.get('X-MI-Decision-Id') ?? res.headers.get('X-MI-Decision-Id')
@@ -342,6 +348,7 @@ export default function Chat02({
       decisionId,
       meta: { model: currentDeploy, cost: null, tags: [], alternatives: currentAlternatives, needsApproval,
               task: currentTask || task, policy: policy || undefined,
+              search,
               complexity: currentComplexity, complexityEscalated: currentEscalated },
     })
 
@@ -477,7 +484,8 @@ export default function Chat02({
         'X-MI-Client': 'playground',
         ...userKeysHeader,
       },
-      body: JSON.stringify({ model: task, messages, stream: true, mi_options: 2 }),
+      body: JSON.stringify({ model: task, messages, stream: true, mi_options: 2,
+                             ...(webSearch ? { search: true } : {}) }),
       signal,
     })
     if (!res.ok || !res.body) {
@@ -1487,6 +1495,29 @@ export default function Chat02({
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Ground this turn in the live web when you want it. */}
+            <Button
+              aria-label="Web search"
+              aria-pressed={webSearch}
+              title={
+                webSearch
+                  ? 'Web search on — this turn is grounded in live results'
+                  : 'Ground this turn with a live web search'
+              }
+              className={cn(
+                'h-8 gap-1.5 rounded-full border px-2.5 text-[12px] font-medium',
+                webSearch
+                  ? 'border-brand/40 bg-brand/10 text-brand'
+                  : 'border-border bg-card text-muted-foreground hover:text-foreground',
+              )}
+              onClick={() => setWebSearch((v) => !v)}
+              size="sm"
+              variant="ghost"
+            >
+              <IconWorld size={14} stroke={1.9} />
+              <span className="hidden sm:inline">Web</span>
+            </Button>
 
             {/* Compare changes what the request *does*, so it stays visible. */}
             <Button

@@ -18,10 +18,12 @@ good one; hard thresholds plus a cost-per-success objective does not.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import os
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,6 +55,34 @@ def _norms_cache() -> cache_mod.TTLCache:
         _NORMS_CACHE = cache_mod.make_cache(url)
         _NORMS_CACHE_URL = url
     return _NORMS_CACHE
+
+
+# The dossier cache: same shape as the norms cache. `route()` runs per request and
+# the form guide changes at most daily, so a per-request full read would be a
+# repeated scan of a table nothing has touched.
+_DOSSIERS_CACHE: cache_mod.TTLCache = cache_mod.InProcessCache()
+_DOSSIERS_CACHE_URL: str | None = None
+_DOSSIERS_TTL = 120.0
+
+
+def _dossiers_cache() -> cache_mod.TTLCache:
+    global _DOSSIERS_CACHE, _DOSSIERS_CACHE_URL
+    url = os.environ.get("MI_REDIS_URL") or ""
+    if url != _DOSSIERS_CACHE_URL:
+        _DOSSIERS_CACHE = cache_mod.make_cache(url)
+        _DOSSIERS_CACHE_URL = url
+    return _DOSSIERS_CACHE
+
+
+def _routing_dossiers(store: Store) -> dict[str, dict]:
+    """Dossier task-fit fields, `{deploy_id: {...}}`, cached for 120 s."""
+    key = f"dossiers:{getattr(store, 'target', '')}"
+    cached = _dossiers_cache().get(key)
+    if cached is not None:
+        return cached
+    dossiers = store.routing_dossiers()
+    _dossiers_cache().set(key, dossiers, _DOSSIERS_TTL)
+    return dossiers
 
 
 def wilson_lb(wins: float, n: float, z: float = 1.96) -> float:
@@ -203,6 +233,14 @@ class Policy:
     # many observations it is held to the quality floor like any other arm, so an
     # arm that keeps failing stops winning on price alone.
     free_trial_obs: int = 3
+    # Attempts a provider needs before its own failure rate is trusted. Below
+    # this, a burst of 429s on one arm stays attributed to that arm, not to every
+    # model behind the gateway.
+    min_provider_obs: int = 5
+    # A reserved arm tried only after the ranked chain is exhausted, so a request
+    # can run out of free arms but never out of an answer. Empty = opt out.
+    # Overridable with MI_LAST_RESORT.
+    last_resort: str = ""
     # How many untried arms one shadow request trials *and judges together*. The
     # provider calls cannot be batched (different providers), but the judging is a
     # single model call for the whole batch — so trialling three arms costs three
@@ -248,6 +286,28 @@ class Policy:
     # Complexity estimation and reasoning-floor configuration
     complexity: dict = field(default_factory=dict)
 
+    # --- model dossiers (the `mi scout` form guide) -------------------------
+    # A dossier is a task-fit *prior* written by an agent from web + registry
+    # evidence. When enabled it nudges the ranking of the arms it covers, but
+    # never their admissibility: the quality floor is judged on the evidence
+    # posterior (`p_lb_evidence`), so a dossier can reorder eligible arms and
+    # cannot smuggle one over the floor. `dossier_weight=0.0` (the default) leaves
+    # the ranking byte-for-byte unchanged.
+    dossier_weight: float = 0.0
+    # The penalty for a task the dossier explicitly warns against. Separate from
+    # the boost because a wrong horse is worse than a missing one.
+    dossier_penalty_weight: float = 0.0
+    # Observations that halve the dossier's influence, so real outcomes win.
+    dossier_shrink_k: float = 20.0
+    # Freshness: `half_life` decays the influence; `max_age` drops it entirely.
+    dossier_half_life_days: float = 30.0
+    dossier_max_age_days: float = 90.0
+    # Below this confidence the dossier gets no vote.
+    dossier_min_confidence: float = 0.6
+    # Shadow mode: compute and record the adjustment but do NOT apply it, so its
+    # effect can be measured against real outcomes before it is trusted.
+    dossier_shadow: bool = False
+
     @classmethod
     def load(cls, path: str | pathlib.Path) -> tuple["Policy", dict[str, TaskProfile]]:
         import copy
@@ -278,6 +338,7 @@ class Policy:
                 cues=tuple(t.get("cues") or ()),
                 description=t.get("description", ""),
                 on_unverified_capability=t.get("on_unverified_capability"),
+                allow_roles=tuple(t.get("allow_roles") or ()),
             )
         _POLICY_CACHE[resolved_str] = (mtime, copy.deepcopy(pol), copy.deepcopy(tasks))
         return pol, tasks
@@ -353,6 +414,43 @@ def vendor_of(provider_model_id: str | None, upstream: str) -> str:
     return upstream
 
 
+#: Model roles that are not general-purpose text generators. A task requiring no
+#: capability (`general_chat`) admits any arm, and an *untested* free arm then wins
+#: on exploration — which is how a music model (Lyria), a TTS model (Orpheus) and a
+#: content-safety classifier got served for prose. Matched on the model id/display
+#: name; a task opts in to a role with `allow_roles`.
+_SPECIAL_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("safety", ("content-safety", "nemoguard", "safeguard", "guard", "moderation",
+                "prompt-guard", "safety")),
+    ("embedding", ("embed", "embedding", "bge", "gte")),
+    ("rerank", ("rerank", "reranker")),
+    ("asr", ("whisper", "asr", "transcribe", "speech-to-text")),
+    ("tts", ("tts", "text-to-speech", "orpheus", "voice")),
+    ("image-gen", ("stable-diffusion", "flux", "dall-e", "imagen", "diffusion")),
+    ("music", ("lyria", "musicgen", "music")),
+)
+
+
+def special_role(d: dict) -> str | None:
+    """The non-generative role a deployment plays, or None if it generates text.
+
+    Evidence-light on purpose: the registry has no "outputs" field, but a model's
+    id is a strong, stable signal (`whisper-…`, `…-content-safety`, `lyria`). The
+    cost of a false positive is one arm excluded that a task can re-admit with
+    `allow_roles`; the cost of a false negative is serving a music model to a
+    prose request.
+    """
+    text = re.sub(r"[^a-z0-9]+", "-", " ".join(
+        str(d.get(k) or "") for k in
+        ("provider_model_id", "display_name", "deploy_id", "weights_id"))).lower()
+    segs = set(text.split("-"))
+    for role, tokens in _SPECIAL_ROLES:
+        for t in tokens:
+            if ("-" in t and t in text) or ("-" not in t and t in segs):
+                return role
+    return None
+
+
 def _free_kind(d: dict, policy: Policy) -> str | None:
     """Why this arm's marginal cost is zero *right now*, if it is.
 
@@ -374,11 +472,84 @@ def _free_kind(d: dict, policy: Policy) -> str | None:
     return None
 
 
+def _mentions(values: Any, task_name: str) -> bool:
+    """Whether a dossier list references a task.
+
+    `best_for` holds exact policy task names (the scout is given them), so the
+    exact match is the intended path. `when_to_use` / `when_not_to_use` are prose,
+    so a substring check covers "general_chat" appearing in a sentence.
+    """
+    t = (task_name or "").strip().lower()
+    if not t:
+        return False
+    for v in values or ():
+        s = str(v).strip().lower()
+        if s and (s == t or t in s or s in t):
+            return True
+    return False
+
+
+def _dossier_age_days(iso: str | None, now: dt.datetime | None = None) -> float | None:
+    if not iso:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(str(iso))
+    except (ValueError, TypeError):
+        return None
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, (now - stamp).total_seconds() / 86400.0)
+
+
+def dossier_fit(task_name: str, dossier: dict | None, policy: Policy, *,
+                n_obs: int = 0, now: dt.datetime | None = None,
+                ) -> tuple[float, str, dict]:
+    """The bounded task-fit adjustment a dossier contributes to an arm's ranking.
+
+    Pure and conservative: 0.0 unless the dossier names the task, clears the
+    confidence bar and is fresh, and the arm has few enough observations that a
+    prior still matters (`maturity`). Returns `(delta, reason, meta)` so the
+    decision can record *why* the arm moved — or did not.
+    """
+    if not dossier:
+        return 0.0, "", {}
+    conf = float(dossier.get("confidence") or 0.0)
+    age = _dossier_age_days(dossier.get("generated_at"), now)
+    meta: dict = {"confidence": round(conf, 3),
+                  "age_days": round(age, 1) if age is not None else None}
+    if conf < policy.dossier_min_confidence:
+        return 0.0, "low_confidence", meta
+    if age is not None and age > policy.dossier_max_age_days:
+        return 0.0, "stale", meta
+
+    if _mentions(dossier.get("when_not_to_use"), task_name):
+        raw, reason, scale = -1.0, "when_not_to_use", policy.dossier_penalty_weight
+    elif _mentions(dossier.get("best_for"), task_name):
+        raw, reason, scale = 1.0, "best_for", policy.dossier_weight
+    elif _mentions(dossier.get("when_to_use"), task_name):
+        raw, reason, scale = 0.5, "when_to_use", policy.dossier_weight
+    else:
+        return 0.0, "", meta
+
+    k = max(0.0, float(policy.dossier_shrink_k))
+    maturity = k / (k + max(0, n_obs)) if k else 1.0
+    half_life = float(policy.dossier_half_life_days)
+    freshness = 0.5 ** (age / half_life) if (age is not None and half_life > 0) else 1.0
+    delta = raw * float(scale) * conf * maturity * freshness
+    meta.update({"raw_fit": raw, "maturity": round(maturity, 3),
+                 "freshness": round(freshness, 3)})
+    return delta, reason, meta
+
+
 def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
                      user_keys: dict[str, str] | None = None,
                      pushed_models: list[str] | None = None,
                      effort: str | None = None) -> list[Candidate]:
     stats = store.stats(task.name)
+    # Provider-level outcomes, so an outage behind a gateway demotes the gateway
+    # once rather than being rediscovered arm by arm.
+    provider_stats = store.provider_outcome_stats(task=task.name)
     # Difficulty-scoped evidence, when the caller routed on a difficulty. Empty when
     # it did not, which leaves every posterior below exactly as it was before.
     effort_stats = store.routing_stats_by_effort(task.name, effort) if effort else {}
@@ -393,6 +564,12 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
     if pushed_models is None:
         pushed_models = store.get_pushed_models(task.name, ttl_hours=policy.pin_ttl_hours)
     pushed_set = set(pushed_models or [])
+    # The form guide is only read when it can actually matter. With the default
+    # `dossier_weight=0` this is an empty dict and the loop below is a no-op.
+    dossiers: dict[str, dict] = {}
+    if (policy.dossier_weight > 0 or policy.dossier_penalty_weight > 0
+            or policy.dossier_shadow):
+        dossiers = _routing_dossiers(store)
     out: list[Candidate] = []
 
     total_task_obs = sum(int(s.get("n", 0) or 0) for s in stats.values())
@@ -437,6 +614,20 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
             # this change safe to land without re-tuning every existing registry.
             p_lb = wilson_lb(p_prior * policy.prior_strength + wins, task_n, policy.z)
 
+        # The dossier task-fit prior (`mi scout`). Applied to the *ranking*
+        # posterior only: `p_lb_evidence` keeps the pre-adjustment value so
+        # `_reject`'s quality floor is judged on evidence, and a dossier can
+        # reorder eligible arms but never lift one over the floor.
+        p_lb_evidence = p_lb
+        dossier_fit_value = 0.0
+        dossier_reason = ""
+        dossier_meta: dict = {}
+        if dossiers:
+            dossier_fit_value, dossier_reason, dossier_meta = dossier_fit(
+                task.name, dossiers.get(d["deploy_id"]), policy, n_obs=n_obs)
+            if dossier_fit_value and not policy.dossier_shadow:
+                p_lb = max(0.0, min(1.0, p_lb + dossier_fit_value))
+
         # Human routing decision RLHF: Beta(2, 2) conjugate prior
         rf = rf_stats.get(d["deploy_id"], {})
         approvals = int(rf.get("approvals", 0) or 0)
@@ -450,13 +641,24 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
         n_timeout = int(s.get("n_timeout", 0) or 0)
         rate_429 = (n_429 / n_obs) if n_obs else 0.0
         rate_timeout = (n_timeout / n_obs) if n_obs else 0.0
+        # The provider's own failure rate, gated on a minimum sample so one 429 on
+        # a brand-new gateway does not condemn every arm behind it.
+        pstat = provider_stats.get(d["provider"]) or {}
+        p_n = int(pstat.get("n_all", 0) or 0)
+        if p_n >= policy.min_provider_obs:
+            p_429 = int(pstat.get("n_429", 0) or 0) / p_n
+            p_timeout = int(pstat.get("n_timeout", 0) or 0) / p_n
+        else:
+            p_429 = p_timeout = 0.0
         # Every observation that was not a win. `n - wins` needs no new
         # column, so this works on both engines and on historical rows.
         error_rate = ((n_obs - wins) / n_obs) if n_obs else 0.0
         availability = 1.0
         if d.get("uptime_1d") is not None:
             availability = max(0.0, min(1.0, float(d["uptime_1d"]) / 100.0))
-        availability *= max(0.0, 1.0 - rate_429 - rate_timeout)
+        # Take the worse of arm and provider: a 429 the arm owns and an outage the
+        # provider owns are different facts, and neither should hide the other.
+        availability *= max(0.0, 1.0 - max(rate_429, p_429) - max(rate_timeout, p_timeout))
         if free_kind and headroom is None:
             availability *= policy.unknown_headroom_factor
         p_eff = p_lb * availability * sentiment_multiplier
@@ -493,6 +695,11 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
             effort_n=eff_n,
             effort_wins=eff_wins,
             p_lb=p_lb,
+            p_lb_evidence=p_lb_evidence,
+            dossier_fit=round(dossier_fit_value, 4),
+            dossier_reason=dossier_reason,
+            dossier_confidence=float(dossier_meta.get("confidence") or 0.0),
+            dossier_age_days=dossier_meta.get("age_days"),
             availability=availability,
             headroom=headroom,
             headroom_src=hsrc,
@@ -586,6 +793,12 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
     # now charging. It is out of the ranking until an operator says otherwise.
     if d.get("status") in ("deprecated", "gated", "hibernated"):
         return f"status={d['status']}"
+    # Right model, right job. A safety classifier, an embedding model, a TTS/ASR or
+    # an image/music generator is not a general-purpose answerer, whatever its
+    # price. A task that wants one names it in `allow_roles`.
+    role = special_role(d)
+    if role and role not in (getattr(task, "allow_roles", ()) or ()):
+        return f"unsupported: {role} model — not a general-purpose text generator"
     for cap, needed in {**policy.require, **task.require}.items():
         if not needed:
             continue
@@ -614,7 +827,10 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
     if policy.max_cost_out is not None and c.price_out is not None and c.price_out > policy.max_cost_out:
         return f"price_out {c.price_out} > ceiling {policy.max_cost_out}"
     floor = max(policy.min_success_lb, task.min_success_lb)
-    if c.p_lb < floor:
+    # Judged on the *evidence* posterior: a dossier may reorder the eligible arms
+    # but must never lift one over the floor it does not actually clear.
+    p_evidence = c.p_lb_evidence if c.p_lb_evidence is not None else c.p_lb
+    if p_evidence < floor:
         # Bounded trial: exempt while we have little evidence, then held to the
         # floor. Observations feed p_lb, so an arm that keeps failing walks out
         # of the exemption on its own — no separate "demote" step needed.
@@ -625,8 +841,8 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
             # No benchmark source covers this model at all. Different fix from a
             # model that was measured and found wanting: add a source, don't
             # lower the bar.
-            return f"no benchmark evidence (p_lb {c.p_lb:.2f} < {floor:.2f})"
-        return f"p(success) {c.p_lb:.2f} < {floor:.2f}"
+            return f"no benchmark evidence (p_lb {p_evidence:.2f} < {floor:.2f})"
+        return f"p(success) {p_evidence:.2f} < {floor:.2f}"
     return None
 
 
@@ -768,6 +984,16 @@ class Decision:
     # CLI and the dashboard all read the same explanation instead of each
     # inventing one from the funnel.
     why: list[dict] = field(default_factory=list)
+    #: In dossier shadow mode, the arm the ranking *would* have picked with the
+    #: dossier applied. Recorded (never executed) so `mi dossier-report` can
+    #: compare the counterfactual against real outcomes before the weight is
+    #: trusted. None when shadow mode is off or there are no eligible arms.
+    shadow_chosen: str | None = None
+    #: An arm tried *only* after the ranked chain is exhausted (policy
+    #: `last_resort` / `MI_LAST_RESORT`). Never ranked, so it cannot displace a
+    #: cheaper arm — it exists so a request can run out of free arms but never
+    #: out of an answer.
+    last_resort: str | None = None
 
 
 def _why(chosen: list[Candidate], eligible: list[Candidate], policy: Policy,
@@ -836,6 +1062,17 @@ def _why(chosen: list[Candidate], eligible: list[Candidate], policy: Policy,
             out[-1]["also"] = others
     elif top.prior_key == "none":
         tag("unbenchmarked", "no benchmark evidence")
+
+    if top.dossier_reason and (policy.dossier_weight > 0
+                               or policy.dossier_penalty_weight > 0
+                               or policy.dossier_shadow):
+        label = {"best_for": "dossier: best fit",
+                 "when_to_use": "dossier: recommended",
+                 "when_not_to_use": "dossier: not recommended"}.get(
+                     top.dossier_reason, f"dossier: {top.dossier_reason}")
+        mode = " (shadow)" if policy.dossier_shadow else ""
+        tag("dossier", f"{label}{mode}",
+            f"fit {top.dossier_fit:+.2f} · conf {top.dossier_confidence:.2f}")
 
     if len(eligible) > 1:
         tag("objective", f"ranked by {policy.objective}")
@@ -999,5 +1236,102 @@ def route(store: Store, task: TaskProfile, policy: Policy, *, mode: str = "auto"
         chosen = chosen[:policy.top_k]
 
     rejected = [c for c in cands if c.rejected][:5]
+
+    # Shadow mode: compute — but never execute — the deterministic pick under the
+    # dossier-adjusted posterior, so its effect can be scored against outcomes.
+    shadow_chosen = None
+    if policy.dossier_shadow and ok:
+        def _shadow_key(c: Candidate):
+            p = c.p_lb_evidence if c.p_lb_evidence is not None else c.p_lb
+            p = max(0.0, min(1.0, p + c.dossier_fit))
+            return (0 if c.deploy_id in pushed_set else 1,
+                    c.cost_per_success, -p, c.latency_ms or 9e9, c.deploy_id)
+        shadow_chosen = min(ok, key=_shadow_key).deploy_id
+
+    last_resort = (os.environ.get("MI_LAST_RESORT") or policy.last_resort or "").strip() or None
     return Decision(task.name, policy.name, mode, ok, chosen, funnel, rejected,
-                    diversity, strategy, ordered, _why(chosen, ok, policy, strategy))
+                    diversity, strategy, ordered,
+                    _why(chosen, ok, policy, strategy), shadow_chosen=shadow_chosen,
+                    last_resort=last_resort)
+
+
+def _arm_view(c: Candidate, *, role: str, policy: Policy) -> dict:
+    """One recommended arm, with the reasons a human would ask for."""
+    why: list[str] = []
+    if c.free_kind:
+        why.append(f"free ({c.free_kind})")
+    why.append(f"p(success) {c.p_lb:.2f}")
+    if c.availability < 0.99:
+        why.append(f"availability {c.availability:.2f}")
+    if c.n_obs < policy.free_trial_obs:
+        why.append(f"untested ({c.n_obs} obs)")
+    if c.headroom_exhausted:
+        why.append("quota exhausted")
+    return {
+        "deploy_id": c.deploy_id, "role": role, "provider": c.provider,
+        "p_lb": round(c.p_lb, 4), "availability": round(c.availability, 4),
+        "cost_per_success": c.cost_per_success, "free_kind": c.free_kind,
+        "n_obs": c.n_obs, "untested": c.n_obs < policy.free_trial_obs,
+        "headroom": c.headroom, "latency_ms": c.latency_ms,
+        "leaderboards": c.prior_tags, "why": why,
+    }
+
+
+def recommend(store: Store, task: TaskProfile, policy: Policy, *, primary: int = 3,
+              backups: int = 2, ensure_untested: bool = True,
+              user_keys: dict[str, str] | None = None,
+              pushed_models: list[str] | None = None,
+              effort: str | None = None) -> dict:
+    """2–3 primary arms for a task plus 2 backups, at least one untested.
+
+    The primaries are the router's own diversified shortlist. The backups are the
+    next best arms that do **not** share a gateway/upstream with a primary or each
+    other, and one slot is reserved for an untested arm so the router keeps
+    learning instead of re-using the same winner until its quota dies.
+
+    A recommendation, not a decision: it never executes, and `route()` remains the
+    thing that serves a request.
+    """
+    dec = route(store, task, policy, mode="auto", user_keys=user_keys,
+                pushed_models=pushed_models, effort=effort)
+    ok = dec.eligible
+    prim = dec.chosen[:primary]
+    prim_ids = {c.deploy_id for c in prim}
+    seen_providers = {(c.provider_family, c.upstream) for c in prim}
+
+    rest = [c for c in dec.ranked if c.deploy_id not in prim_ids]
+    chosen_backups: list[Candidate] = []
+
+    def take(pred) -> bool:
+        for c in rest:
+            if c in chosen_backups or c.deploy_id in prim_ids:
+                continue
+            if not pred(c):
+                continue
+            chosen_backups.append(c)
+            seen_providers.add((c.provider_family, c.upstream))
+            return True
+        return False
+
+    # Reserve one backup slot for an untested arm — a different provider, so the
+    # trial is not a second copy of a primary.
+    if ensure_untested:
+        take(lambda c: c.n_obs < policy.free_trial_obs
+             and (c.provider_family, c.upstream) not in seen_providers)
+
+    while len(chosen_backups) < backups:
+        if not take(lambda c: (c.provider_family, c.upstream) not in seen_providers):
+            if not take(lambda c: True):   # relax distinctness rather than return short
+                break
+
+    return {
+        "task": task.name,
+        "strategy": dec.strategy,
+        "diversity": dec.diversity,
+        "funnel": dec.funnel,
+        "primary": [_arm_view(c, role="primary", policy=policy) for c in prim],
+        "backups": [_arm_view(c, role="backup", policy=policy)
+                    for c in chosen_backups[:backups]],
+        "last_resort": dec.last_resort,
+        "why": dec.why,
+    }

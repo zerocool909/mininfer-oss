@@ -7,6 +7,7 @@
  * turn list, which is the only way to reason about it.
  */
 import type { LeaderboardTag, TranscriptMessage } from '@/lib/api'
+import type { SearchState } from '@/lib/sse'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -23,6 +24,8 @@ export interface Meta {
   needsApproval?: boolean
   task?: string
   policy?: string
+  /** What this turn did with the live web (grounding), if search was considered. */
+  search?: SearchState | null
   /** Prompt complexity the arm was chosen under, straight from the route frame. */
   complexity?: ComplexityMeta | null
   /** The low-complexity arm failed validation and the router retried a tier up. */

@@ -77,7 +77,6 @@ services:
       - HF_TOKEN=${HF_TOKEN:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY:-}
-    volumes:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
       interval: 30s

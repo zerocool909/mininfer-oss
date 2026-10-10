@@ -282,3 +282,15 @@ LOCAL_REGISTER = _body(
     required=["engine"],
     example={"engine": "ollama", "models": ["llama3.2"]},
 )
+
+SCOUT_REFRESH = _body(
+    {
+        "limit": {"type": "integer", "default": 0,
+                  "description": "Cap the number of free arms scouted this pass (0 = all)."},
+        "search": {"type": "boolean", "default": True,
+                   "description": "Run the free-first web search for current context."},
+        "force": {"type": "boolean", "default": False,
+                  "description": "Rewrite dossiers that are still fresh."},
+    },
+    example={"limit": 10},
+)

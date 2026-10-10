@@ -23,6 +23,24 @@ import httpx
 RAW_ROOT = pathlib.Path(os.environ.get("MI_RAW", "raw"))
 _UA = "MinInfer/0.1 (+model-intelligence-registry)"
 
+# Wikimedia's User-Agent policy asks for a product name and a contact, and it
+# enforces it by refusing a generic agent (403, or a silent zero-hit search).
+# The generic UA above is exactly the kind it rejects, so `mi add-url` on a
+# Wikipedia page 403'd while the search tier (which carries its own compliant UA)
+# worked. Pick the agent per host.
+WIKI_UA = (os.environ.get("MI_USER_AGENT")
+           or "mininfer/0.1 (model-intelligence-registry; +https://github.com/mininfer-ai)")
+_WIKI_HOSTS = ("wikipedia.org", "wikimedia.org", "wikidata.org")
+
+
+def _ua_for(url: str) -> str:
+    """A User-Agent the target host will actually answer."""
+    host = ""
+    if "//" in (url or ""):
+        host = url.split("//", 1)[1].split("/", 1)[0]
+    host = host.split("@")[-1].split(":")[0].lower()
+    return WIKI_UA if any(host.endswith(h) for h in _WIKI_HOSTS) else _UA
+
 
 #: Environment variables that point at a CA bundle, most specific first; the
 #: first whose path exists wins. `SSL_CERT_FILE` is honoured by OpenSSL/httpx
@@ -160,7 +178,7 @@ def fetch(
     force: bool = False,
 ) -> Snapshot:
     """Fetch JSON, persisting an immutable raw snapshot keyed by content hash."""
-    hdrs = {"User-Agent": _UA, "Accept": "application/json"}
+    hdrs = {"User-Agent": _ua_for(url), "Accept": "application/json"}
     if headers:
         hdrs.update(headers)
     body, from_cache = _get_body(source, url, hdrs, timeout=timeout,
@@ -194,7 +212,8 @@ def fetch_raw(
     to write nothing; the alternative — recording the snapshot row too — is
     reasonable, but a preview should be pure (#review).
     """
-    hdrs = {"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"}
+    hdrs = {"User-Agent": _ua_for(url),
+            "Accept": "text/html,application/xhtml+xml,text/plain,*/*"}
     if headers:
         hdrs.update(headers)
     body, from_cache = _get_body(source, url, hdrs, timeout=timeout,
