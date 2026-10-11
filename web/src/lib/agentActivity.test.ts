@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { loadAgentSeenAt, markAgentsSeen, unreadAgentRuns } from './agentActivity'
+import {
+  groupRuns,
+  loadAgentSeenAt,
+  markAgentsSeen,
+  unreadAgentCount,
+  unreadAgentRuns,
+} from './agentActivity'
 import type { AgentRun } from './api'
 
 function run(overrides: Partial<AgentRun> = {}): AgentRun {
@@ -45,6 +51,59 @@ describe('unreadAgentRuns', () => {
     expect(unreadAgentRuns(runs, '2026-10-10T00:00:09+00:00').map((r) => r.run_id)).toEqual([
       'live',
     ])
+  })
+})
+
+describe('groupRuns', () => {
+  it('collapses adjacent runs with the identical result', () => {
+    const runs = [
+      run({ run_id: 'c', detail: '0 written, 44 fresh, 0 errors' }),
+      run({ run_id: 'b', detail: '0 written, 44 fresh, 0 errors' }),
+      run({ run_id: 'a', detail: '0 written, 44 fresh, 0 errors' }),
+    ]
+    const groups = groupRuns(runs)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].count).toBe(3)
+    expect(groups[0].run.run_id).toBe('c')  // the newest is the representative
+  })
+
+  it('keeps a run that produced a different result as its own row', () => {
+    const runs = [
+      run({ run_id: 'c', detail: '2 written, 42 fresh, 0 errors' }),
+      run({ run_id: 'b', detail: '0 written, 44 fresh, 0 errors' }),
+      run({ run_id: 'a', detail: '0 written, 44 fresh, 0 errors' }),
+    ]
+    const groups = groupRuns(runs)
+    expect(groups.map((g) => g.count)).toEqual([1, 2])
+    expect(groups[1].run.run_id).toBe('b')
+  })
+
+  it('does not merge across a different kind', () => {
+    const runs = [
+      run({ run_id: 'b', kind: 'ingest', detail: 'same' }),
+      run({ run_id: 'a', kind: 'scout', detail: 'same' }),
+    ]
+    expect(groupRuns(runs)).toHaveLength(2)
+  })
+})
+
+describe('unreadAgentCount', () => {
+  it('counts distinct results, not one per repeated click', () => {
+    const runs = [
+      run({ run_id: 'c', detail: '0 written, 44 fresh, 0 errors' }),
+      run({ run_id: 'b', detail: '0 written, 44 fresh, 0 errors' }),
+      run({ run_id: 'a', detail: '0 written, 44 fresh, 0 errors' }),
+    ]
+    expect(unreadAgentRuns(runs, null)).toHaveLength(3)  // three runs
+    expect(unreadAgentCount(runs, null)).toBe(1)         // one result
+  })
+
+  it('still counts a live run that is unlike anything finished', () => {
+    const runs = [
+      run({ run_id: 'live', status: 'running', finished_at: null, detail: '2/44' }),
+      run({ run_id: 'b', detail: '0 written, 44 fresh, 0 errors' }),
+    ]
+    expect(unreadAgentCount(runs, null)).toBe(2)
   })
 })
 

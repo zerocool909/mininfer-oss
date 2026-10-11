@@ -13,7 +13,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ConnectModal } from '@/components/ConnectModal'
 import { CommandPalette, type PaletteCommand } from '@/components/CommandPalette'
 import { emitCommand } from '@/lib/bus'
-import { loadAgentSeenAt, unreadAgentRuns } from '@/lib/agentActivity'
+import { loadAgentSeenAt, unreadAgentCount } from '@/lib/agentActivity'
 import { api, type Stats } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
@@ -73,7 +73,7 @@ export function App() {
       api
         .agentActivity()
         .then((act) => {
-          if (alive) setAgentUnread(unreadAgentRuns(act.runs, loadAgentSeenAt()).length)
+          if (alive) setAgentUnread(unreadAgentCount(act.runs, loadAgentSeenAt()))
         })
         .catch(() => undefined)
     }

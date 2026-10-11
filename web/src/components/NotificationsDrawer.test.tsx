@@ -134,6 +134,31 @@ describe('NotificationsDrawer', () => {
     expect(screen.getByText(/1 running/)).toBeTruthy()
   })
 
+  it('collapses identical repeated runs into one row with a count', async () => {
+    const finished: AgentRun = {
+      run_id: 'scout-1', kind: 'scout', title: 'Scout pass', status: 'ok',
+      detail: '0 written, 44 fresh, 0 errors', done: 44, total: 44,
+      started_at: '2026-10-11T09:00:00+00:00',
+      updated_at: '2026-10-11T09:00:01+00:00',
+      finished_at: '2026-10-11T09:00:01+00:00', meta: {},
+    }
+    // Three no-op passes, newest first — the noise the drawer used to list whole.
+    vi.mocked(api.agentActivity).mockResolvedValue({
+      count: 3, running: 0,
+      runs: [
+        { ...finished, run_id: 'scout-3' },
+        { ...finished, run_id: 'scout-2' },
+        { ...finished, run_id: 'scout-1' },
+      ],
+    })
+
+    render(<NotificationsDrawer open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Scout pass')).toBeTruthy())
+
+    expect(screen.getAllByText('Scout pass')).toHaveLength(1)
+    expect(screen.getByText('×3')).toBeTruthy()
+  })
+
   it('offers a retry when loading fails', async () => {
     vi.mocked(api.providers).mockRejectedValue(new Error('back offline'))
     render(<NotificationsDrawer open onClose={() => {}} />)

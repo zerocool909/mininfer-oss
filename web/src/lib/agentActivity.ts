@@ -40,6 +40,32 @@ export function unreadAgentRuns(runs: AgentRun[], seenAt: string | null): AgentR
   })
 }
 
+/**
+ * Collapse adjacent runs that produced the identical result into one entry.
+ *
+ * Every click is a real run — a scout pass that finds all dossiers fresh is a
+ * legitimate "checked, nothing to do" — so the registry keeps them. But eight
+ * identical no-op rows (and a badge of "8") is noise, not history: the drawer
+ * shows one row with a count, and the bell counts distinct results rather than
+ * clicks. The newest run's `run_id` is kept as the key.
+ */
+export function groupRuns(runs: AgentRun[]): { run: AgentRun; count: number }[] {
+  const out: { run: AgentRun; count: number }[] = []
+  for (const run of runs) {
+    const last = out[out.length - 1]
+    const same = last && last.run.kind === run.kind && last.run.status === run.status
+      && last.run.title === run.title && last.run.detail === run.detail
+    if (same) last.count += 1
+    else out.push({ run, count: 1 })
+  }
+  return out
+}
+
+/** Distinct results the bell should announce — grouped, not one per click. */
+export function unreadAgentCount(runs: AgentRun[], seenAt: string | null): number {
+  return groupRuns(unreadAgentRuns(runs, seenAt)).length
+}
+
 /** Acknowledge every finished run in `runs`; live runs are left uncounted. */
 export function markAgentsSeen(runs: AgentRun[]): void {
   const newest = runs.reduce<string | null>(

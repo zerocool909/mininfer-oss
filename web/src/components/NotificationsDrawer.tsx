@@ -4,7 +4,7 @@ import { Drawer } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/Skeleton'
 import { api, type AgentRun, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
-import { markAgentsSeen } from '@/lib/agentActivity'
+import { groupRuns, markAgentsSeen } from '@/lib/agentActivity'
 import { getUserKeys } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 
@@ -136,8 +136,8 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
           </p>
         ) : (
           <ul className="mt-2 space-y-2">
-            {runs.slice(0, 8).map((run) => (
-              <AgentRunRow key={run.run_id} run={run} />
+            {groupRuns(runs).slice(0, 8).map(({ run, count }) => (
+              <AgentRunRow key={run.run_id} run={run} count={count} />
             ))}
           </ul>
         )}
@@ -267,7 +267,7 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
 }
 
 /** One agent run in the drawer. Live runs show a progress bar; settled ones a verdict. */
-function AgentRunRow({ run }: { run: AgentRun }) {
+function AgentRunRow({ run, count = 1 }: { run: AgentRun; count?: number }) {
   const running = run.status === 'running'
   const failed = run.status === 'error'
   const pct = run.total > 0 ? Math.min(100, Math.round((run.done / run.total) * 100)) : null
@@ -285,6 +285,14 @@ function AgentRunRow({ run }: { run: AgentRun }) {
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
           {run.title}
         </span>
+        {count > 1 && (
+          <span
+            className="shrink-0 rounded-full border border-border px-1.5 text-[10px] font-medium text-muted-foreground"
+            title={`${count} identical runs collapsed`}
+          >
+            ×{count}
+          </span>
+        )}
         {run.total > 0 && (
           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
             {run.done}/{run.total}
