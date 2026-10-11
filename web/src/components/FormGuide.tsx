@@ -42,6 +42,10 @@ export function FormGuide() {
   const [searchWeb, setSearchWeb] = useState(true)
   const [scouting, setScouting] = useState(false)
   const [scoutDetail, setScoutDetail] = useState<string | null>(null)
+  // The verdict of the last finished pass. Without it, a pass that rewrote
+  // nothing because every dossier is still fresh looks identical to a button that
+  // did not fire — which is exactly the confusion this banner removes.
+  const [scoutResult, setScoutResult] = useState<string | null>(null)
 
   // A scout pass outlives this component: the server keeps running it if you
   // navigate away. The ref only stops the poll loop from setting state on an
@@ -94,6 +98,7 @@ export function FormGuide() {
   async function scoutNow() {
     setScouting(true)
     setErr(null)
+    setScoutResult(null)
     setScoutDetail('starting…')
     try {
       const started = await api.dossiersRefresh({ search: searchWeb })
@@ -106,7 +111,15 @@ export function FormGuide() {
         const run = act.runs.find((r) => r.run_id === started.run_id)
         if (!run) break
         if (run.status !== 'running') {
-          if (run.status === 'error') setErr(run.detail || 'the scout pass failed')
+          const detail = run.detail || 'scout pass finished'
+          if (run.status === 'error') setErr(detail)
+          // A pass that writes nothing because every arm is still fresh is the
+          // common case (max_age is 24h), so say so rather than reloading
+          // silently and leaving the button looking dead.
+          else if (/^0 written/.test(detail))
+            setScoutResult(`Scout finished — ${detail}. Every dossier is still ` +
+                           `fresh, so there was nothing stale to rewrite.`)
+          else setScoutResult(`Scout finished — ${detail}.`)
           break
         }
         setScoutDetail(
@@ -212,6 +225,19 @@ export function FormGuide() {
           {scouting && (
             <p className="border-b border-border/70 px-5 py-2 font-mono text-[11.5px] text-muted-foreground">
               scouting… {scoutDetail}
+            </p>
+          )}
+
+          {scoutResult && (
+            <p className="flex items-center gap-2 border-b border-border/70 px-5 py-2 text-[12px] text-muted-foreground">
+              <span className="min-w-0 flex-1">{scoutResult}</span>
+              <button
+                type="button"
+                onClick={() => setScoutResult(null)}
+                className="shrink-0 underline underline-offset-2 hover:no-underline"
+              >
+                dismiss
+              </button>
             </p>
           )}
 

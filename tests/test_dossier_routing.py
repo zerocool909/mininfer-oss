@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from mininfer.router import Policy, build_candidates, dossier_fit
 from mininfer.schema import Deployment, TaskProfile, Weights
 from mininfer.store import Store
 
-NOW = dt.datetime.now(dt.timezone.utc).isoformat()
+NOW_DT = dt.datetime.now(dt.timezone.utc)
+NOW = NOW_DT.isoformat()
 
 
 def _dossier(**kw) -> dict:
@@ -47,9 +50,14 @@ def test_when_not_to_use_is_a_negative_fit():
 
 def test_when_to_use_is_half_a_best_for():
     p = Policy(dossier_weight=0.5)
-    best, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p)
-    half, _, _ = dossier_fit("t", _dossier(when_to_use=["t"]), p)
-    assert half == best / 2
+    # A frozen `now` on both calls: `dossier_fit` reads the clock itself, and
+    # `freshness` fades with age, so two live calls seconds apart see a slightly
+    # different factor. That is what made this test wall-clock flaky.
+    best, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p, now=NOW_DT)
+    half, _, _ = dossier_fit("t", _dossier(when_to_use=["t"]), p, now=NOW_DT)
+    # Still `approx`: `delta` is a product of float weights, so compare to a
+    # tolerance rather than relying on bit-identical rounding.
+    assert half == pytest.approx(best / 2)
 
 
 def test_low_confidence_gets_no_vote():
@@ -68,9 +76,9 @@ def test_a_stale_dossier_gets_no_vote():
 
 def test_maturity_shrinks_the_prior_as_observations_arrive():
     p = Policy(dossier_weight=1.0, dossier_shrink_k=20.0)
-    fresh, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p, n_obs=0)
-    seen, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p, n_obs=20)
-    assert seen == fresh / 2  # k / (k + n) == 0.5 at n == k
+    fresh, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p, n_obs=0, now=NOW_DT)
+    seen, _, _ = dossier_fit("t", _dossier(best_for=["t"]), p, n_obs=20, now=NOW_DT)
+    assert seen == pytest.approx(fresh / 2)  # k / (k + n) == 0.5 at n == k
 
 
 def test_weight_zero_is_a_no_op_even_for_a_perfect_dossier():
