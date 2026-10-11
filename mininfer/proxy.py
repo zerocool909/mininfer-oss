@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import auth as auth_mod
 from . import db as db_mod
+from . import agent_activity as agents_mod
 from . import intent as intent_mod
 from . import complexity as comp_mod
 from . import probe as probe_mod
@@ -50,7 +51,7 @@ from .quota import classify_429, describe as quota_describe, record_from_headers
 from . import quota as quota_mod
 from . import search as search_mod
 from . import chatsearch as chatsearch_mod
-from .router import DEFAULT_TASK, Policy, rank_for_compare, route
+from .router import DEFAULT_TASK, Policy, rank_for_compare, route, special_role
 from .store import Store
 from .web.legacy import render_dashboard
 from . import api_schema as _api_schema
@@ -1929,31 +1930,139 @@ def dossiers_endpoint(q: str | None = None, limit: int | None = None) -> dict:
     return {"count": len(rows), "dossiers": rows}
 
 
-@app.post("/v1/dossiers/refresh", openapi_extra=_api_schema.SCOUT_REFRESH, tags=["operator"])
-async def dossiers_refresh(request: Request) -> dict:
-    """Run one scout pass now. Admin-only: it spends agent calls + web searches."""
+@app.get("/v1/agents/activity", tags=["operator"])
+def agents_activity(limit: int = agents_mod.MAX_RUNS) -> dict:
+    """Live agent runs: what is running, what it has reached, what finished.
+
+    Read-only and process-local (see `mininfer.agent_activity`). The dashboard
+    polls this so a scout pass started in one tab is visible from every other tab
+    — which is also why the run no longer executes on the request thread.
+    """
+    return agents_mod.ACTIVITY.snapshot(limit=limit)
+
+
+#: Strong references to detached background runs. See `_launch_scout_run`.
+_BACKGROUND_TASKS: "set[asyncio.Task[None]]" = set()
+
+
+def _scout_worker(run_id: str, body: dict, task_names: list[str]) -> None:
+    """The blocking half of a scout pass: runs on a worker thread.
+
+    Progress is written to the activity registry as each arm is reached, so the
+    POST that started the run can return immediately and the UI still sees it
+    move. A crash is reported as a failed run rather than left `running` forever.
+    """
     from . import scout as scout_mod
 
-    body = {}
-    try:
-        body = await request.json() or {}
-    except Exception:
-        body = {}
-    policy, tasks = Policy.load(_policy_path())
+    activity = agents_mod.ACTIVITY
     store = _store()
+    done = 0
+
+    def bump(detail: str) -> None:
+        nonlocal done
+        done += 1
+        activity.update(run_id, done=done, detail=detail)
+
     try:
+        only_new = bool(body.get("only_new"))
+        arms = store.new_dossier_arms() if only_new else store.free_deployments()
+        activity.update(run_id, total=len(arms),
+                        detail=f"{len(arms)} free arm{'' if len(arms) == 1 else 's'} to consider")
+
+        def on_arm(dossier: dict) -> None:
+            if dossier.get("error"):
+                bump(f"{dossier.get('deploy_id')}: {dossier['error']}")
+            else:
+                bump(f"wrote {dossier.get('display_name') or dossier.get('deploy_id')}")
+
+        def on_skip(arm: dict) -> None:
+            bump(f"{arm.get('deploy_id')}: still fresh")
+
         rep = scout_mod.scout(
             store,
             limit=int(body.get("limit") or 0),
             search_enabled=bool(body.get("search", True)),
             force=bool(body.get("force", False)),
-            task_names=list(tasks),
+            only_new=only_new,
+            task_names=task_names,
             dry_run=False,
+            on_arm=on_arm,
+            on_skip=on_skip,
         )
         store.commit()
+    except Exception as exc:  # noqa: BLE001 — a failed run is data, not a 500
+        activity.finish(run_id, status="error", detail=str(exc))
+        return
     finally:
         store.close()
-    return rep
+
+    detail = (f"{rep['written']} written, {rep['skipped_fresh']} fresh, "
+              f"{rep['errors']} error{'' if rep['errors'] == 1 else 's'}")
+    # A pass that wrote nothing but hit errors is a failure; one that wrote some
+    # dossiers and hit some errors is a success with a caveat, and the detail says
+    # so. Calling a partial success "failed" would hide the rows it did write.
+    status = "error" if rep["errors"] and not rep["written"] else "ok"
+    activity.finish(run_id, status=status, detail=detail)
+
+
+def _launch_scout_run(run_id: str, body: dict, task_names: list[str]) -> None:
+    """Run a scout pass off the request thread, detached from the response.
+
+    `scout()` is blocking (a search and an LLM call per arm), so running it on the
+    event loop stalled every other request behind it — the bug where one tab's
+    "Scout now" froze the rest. `asyncio.to_thread` moves it off the loop, and the
+    task is created rather than awaited so the POST answers at once; progress is
+    read back from `/v1/agents/activity`.
+
+    The task is held in a module-level set: asyncio keeps only a weak reference
+    to a running task, and a background job with no local holder can be garbage
+    collected mid-run. The done-callback drops the reference.
+    """
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(_scout_worker, run_id, body, task_names)
+        except Exception as exc:  # pragma: no cover — to_thread only raises on crash
+            agents_mod.ACTIVITY.finish(run_id, status="error", detail=str(exc))
+
+    try:
+        task = asyncio.get_running_loop().create_task(_run())
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+    except RuntimeError:
+        threading.Thread(target=lambda: asyncio.run(_run()), daemon=True).start()
+
+
+@app.post("/v1/dossiers/refresh", openapi_extra=_api_schema.SCOUT_REFRESH, tags=["operator"])
+async def dossiers_refresh(request: Request) -> dict:
+    """Start one scout pass now. Admin-only: it spends agent calls + web searches.
+
+    Returns as soon as the run is registered (`{started, run_id}`) instead of
+    blocking until every arm is written. A second start while one is running
+    returns that run rather than stacking a duplicate pass, so a double-click
+    does not pay for two scouts. Follow the run on `/v1/agents/activity`.
+    """
+    body = {}
+    try:
+        body = await request.json() or {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    activity = agents_mod.ACTIVITY
+    already = activity.running_kind("scout")
+    if already is not None:
+        return {"started": False, "already_running": True, "run_id": already["run_id"]}
+
+    _policy, tasks = Policy.load(_policy_path())
+    run_id = activity.start(
+        "scout", "Scout pass", detail="starting\u2026",
+        meta={"search": bool(body.get("search", True)),
+              "force": bool(body.get("force", False)),
+              "limit": int(body.get("limit") or 0)},
+    )
+    _launch_scout_run(run_id, body, list(tasks))
+    return {"started": True, "already_running": False, "run_id": run_id}
 
 
 @app.get("/v1/session", tags=["sessions"])
@@ -2354,6 +2463,31 @@ async def route_verdict(request: Request) -> dict:
     return {"ok": True, "deploy_id": deploy_id, "task": task, "approved": approved}
 
 
+def _eligible_for_trial(d: dict, stats: dict, task, policy, user_keys, local_endpoints) -> bool:
+    """Whether a free arm may be probed by the background shadow trial.
+
+    The trial dials an arm directly, so it bypasses `router._reject` — which means
+    it has to apply the same gate itself. Without the `special_role` check it
+    dialled ASR/TTS/music/safety arms that can never answer a chat message: 36% of
+    its attempts were non-chat and 91 were hard 400/402 failures (see
+    `reports/selection-eval/`). A task that genuinely wants a special role names it
+    in `allow_roles`, exactly as the primary path allows.
+    """
+    deploy_id = d.get("deploy_id")
+    if not deploy_id:
+        return False
+    if d.get("status") in ("deprecated", "gated", "hibernated"):
+        return False
+    if not (d.get("zero_price") or d.get("free_variant") or d.get("trial_credits")):
+        return False
+    role = special_role(d)
+    if role and role not in (getattr(task, "allow_roles", ()) or ()):
+        return False
+    if not _keys_available(deploy_id, user_keys, local_endpoints):
+        return False
+    return int(stats.get(deploy_id, {}).get("n", 0) or 0) < policy.free_trial_obs
+
+
 async def _run_shadow_trial(
     messages: list[dict],
     prompt: str,
@@ -2373,7 +2507,8 @@ async def _run_shadow_trial(
     """
     store = _store()
     try:
-        policy, _ = Policy.load(_policy_path())
+        policy, tasks = Policy.load(_policy_path())
+        task = tasks.get(task_name)
         stats = store.stats(task_name)
         deps = store.deployments()
         untried: list[dict] = []
@@ -2381,16 +2516,11 @@ async def _run_shadow_trial(
             did = d["deploy_id"]
             if did == primary_deploy_id:
                 continue
-            if d.get("status") in ("deprecated", "gated", "hibernated"):
+            if not _eligible_for_trial(d, stats, task, policy, user_keys, local_endpoints):
                 continue
-            is_free = bool(d.get("zero_price") or d.get("free_variant") or d.get("trial_credits"))
-            if not is_free:
-                continue
-            if not _keys_available(did, user_keys, local_endpoints):
-                continue
-            n_obs = int(stats.get(did, {}).get("n", 0) or 0)
-            if n_obs < policy.free_trial_obs:
-                untried.append({"deploy_id": did, "n_obs": n_obs, "p_prior": float(d.get("price_in") or 0)})
+            untried.append({"deploy_id": did,
+                            "n_obs": int(stats.get(did, {}).get("n", 0) or 0),
+                            "p_prior": float(d.get("price_in") or 0)})
 
         if not untried:
             return

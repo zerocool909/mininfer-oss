@@ -14,6 +14,10 @@
 *.bak
 raw/
 
+# UI-agent performance reports: generated per run from a live server, useful for
+# review but re-derivable, so they are kept on disk and out of history.
+reports/
+
 # Local TLS trust bundle. Machine-specific and must never be committed.
 .certs/
 
@@ -40,3 +44,20 @@ graphify-out/
 # Local design scratch: a side-by-side logo comparison, not part of the docs
 # site. Kept on disk for review, never published.
 docs/logo-options.html
+
+# ---------------------------------------------------------------------------
+# Non-performance evaluation artifacts.
+#
+# These are local QA/eval tooling and datasets: useful on this machine, but not
+# part of a shipped change. The *performance* work is the shadow-trial role gate
+# in mininfer/proxy.py, guarded by tests/test_shadow_trial_gate.py and measured by
+# scripts/selection_eval.py — those stay tracked. Everything below is re-derivable
+# and is ignored so it cannot ride along in a performance push.
+# ---------------------------------------------------------------------------
+scripts/ui_agent_test.py
+scripts/ui_queries.json
+scripts/decompose_bench.py
+tests/data/
+tests/test_decomposition_gold.py
+docs/ui-test-plan.md
+docs/decomposition-libraries.md

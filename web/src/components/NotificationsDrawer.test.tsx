@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { NotificationsDrawer } from './NotificationsDrawer'
-import { api, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
+import { api, type AgentRun, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
 
 // `restoreMocks: true` resets every mock before each test, so the implementations
 // are (re)armed in `beforeEach` rather than in the factory. The factory therefore
 // references nothing from module scope, which also keeps `vi.mock` hoisting safe.
 vi.mock('@/lib/api', () => ({
-  api: { providers: vi.fn(), anomalies: vi.fn(), decideAnomaly: vi.fn() },
+  api: {
+    providers: vi.fn(),
+    anomalies: vi.fn(),
+    decideAnomaly: vi.fn(),
+    agentActivity: vi.fn(),
+  },
 }))
 
 const ANOMALY_ID = 'openrouter:x:free|input|2026-10-04T10:00:00+00:00'
@@ -43,6 +48,7 @@ beforeEach(() => {
   vi.mocked(api.decideAnomaly).mockResolvedValue({
     ok: true, anomaly_id: ANOMALY_ID, status: 'acknowledged',
   })
+  vi.mocked(api.agentActivity).mockResolvedValue({ count: 0, running: 0, runs: [] })
 })
 
 afterEach(cleanup)
@@ -111,6 +117,23 @@ describe('NotificationsDrawer', () => {
     expect(screen.getByText('OpenRouter')).toBeTruthy()
   })
 
+  it('shows a running agent and its progress', async () => {
+    const run: AgentRun = {
+      run_id: 'scout-1', kind: 'scout', title: 'Scout pass', status: 'running',
+      detail: 'wrote openrouter:x:free', done: 3, total: 10,
+      started_at: '2026-10-10T00:00:00+00:00',
+      updated_at: '2026-10-10T00:00:05+00:00', finished_at: null, meta: {},
+    }
+    vi.mocked(api.agentActivity).mockResolvedValue({ count: 1, running: 1, runs: [run] })
+
+    render(<NotificationsDrawer open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Scout pass')).toBeTruthy())
+
+    expect(screen.getByText('3/10')).toBeTruthy()
+    expect(screen.getByText('wrote openrouter:x:free')).toBeTruthy()
+    expect(screen.getByText(/1 running/)).toBeTruthy()
+  })
+
   it('offers a retry when loading fails', async () => {
     vi.mocked(api.providers).mockRejectedValue(new Error('back offline'))
     render(<NotificationsDrawer open onClose={() => {}} />)
@@ -125,5 +148,6 @@ describe('NotificationsDrawer', () => {
     render(<NotificationsDrawer open={false} onClose={() => {}} />)
     expect(vi.mocked(api.anomalies)).not.toHaveBeenCalled()
     expect(vi.mocked(api.providers)).not.toHaveBeenCalled()
+    expect(vi.mocked(api.agentActivity)).not.toHaveBeenCalled()
   })
 })

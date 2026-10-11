@@ -263,6 +263,33 @@ export interface LocalProbeResult {
   error?: string | null
 }
 
+/**
+ * One agent run from `GET /v1/agents/activity`.
+ *
+ * Process-local and live: `running` while a scout (or another agent) works,
+ * `ok`/`error` once it settles. `done`/`total` drive the progress bar; `detail`
+ * is the one-line "what it just reached".
+ */
+export interface AgentRun {
+  run_id: string
+  kind: 'scout' | 'ingest' | 'resolve' | string
+  title: string
+  status: 'running' | 'ok' | 'error' | string
+  detail: string
+  done: number
+  total: number
+  started_at: string
+  updated_at: string
+  finished_at: string | null
+  meta: Record<string, unknown>
+}
+
+export interface AgentActivity {
+  count: number
+  running: number
+  runs: AgentRun[]
+}
+
 /** One registry row, as the model explorer sees it (`GET /v1/models/explore`). */
 export interface ExploreModel {
   deploy_id: string
@@ -448,6 +475,9 @@ export const api = {
   anomalies: (status = 'open') =>
     req<{ status: string; count: number; anomalies: PricingAnomaly[] }>(
       `/v1/economics/anomalies?status=${encodeURIComponent(status)}`),
+  /** Live agent runs, for the bell and the drawer's Agents section. */
+  agentActivity: (limit?: number) =>
+    req<AgentActivity>(`/v1/agents/activity${limit ? `?limit=${limit}` : ''}`),
   decideAnomaly: (anomaly_id: string, status: 'acknowledged' | 'resolved', note = '') =>
     req<{ ok: boolean; anomaly_id: string; status: string }>('/v1/anomalies/decide', {
       method: 'POST',
@@ -561,9 +591,9 @@ export const api = {
     const qs = params.toString()
     return req<{ count: number; models: FreeModel[] }>(`/v1/free-models${qs ? `?${qs}` : ''}`)
   },
-  /** Run one scout pass now (admin). `search` toggles the web search per arm. */
+  /** Start one scout pass now (admin). Returns as soon as the run is registered. */
   dossiersRefresh: (body: { search?: boolean; force?: boolean; limit?: number } = {}) =>
-    req<ScoutSummary>('/v1/dossiers/refresh', {
+    req<ScoutStart>('/v1/dossiers/refresh', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -627,12 +657,15 @@ export interface FreeModel {
   generated_at: string | null
 }
 
-/** The result of one `mi scout` pass (`POST /v1/dossiers/refresh`). */
-export interface ScoutSummary {
-  scanned: number
-  written: number
-  skipped_fresh: number
-  errors: number
+/** The result of starting one scout pass (`POST /v1/dossiers/refresh`).
+ *
+ * The POST no longer waits for the pass: it returns the run id to follow on
+ * `/v1/agents/activity`, or the already-running run when one is in flight.
+ */
+export interface ScoutStart {
+  started: boolean
+  already_running: boolean
+  run_id: string
 }
 
 /** One row of the model form guide (`/v1/dossiers`). */

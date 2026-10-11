@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Search, Sparkles, X } from 'lucide-react'
 import { api, type FreeModel } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -41,6 +41,20 @@ export function FormGuide() {
   const [pinned, setPinned] = useState<FreeModel[]>([])
   const [searchWeb, setSearchWeb] = useState(true)
   const [scouting, setScouting] = useState(false)
+  const [scoutDetail, setScoutDetail] = useState<string | null>(null)
+
+  // A scout pass outlives this component: the server keeps running it if you
+  // navigate away. The ref only stops the poll loop from setting state on an
+  // unmounted tree — the pass itself is never cancelled. The effect re-arms the
+  // ref on setup because StrictMode runs setup → cleanup → setup, and a cleanup
+  // that only ever sets `false` would leave it stuck there.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -79,13 +93,35 @@ export function FormGuide() {
 
   async function scoutNow() {
     setScouting(true)
+    setErr(null)
+    setScoutDetail('starting…')
     try {
-      await api.dossiersRefresh({ search: searchWeb })
-      load()
+      const started = await api.dossiersRefresh({ search: searchWeb })
+      // Follow the run until it settles, then reload the table. A returned
+      // `already_running` run is followed the same way, so a second click does
+      // not pay for a duplicate pass.
+      for (;;) {
+        const act = await api.agentActivity()
+        if (!mounted.current) return
+        const run = act.runs.find((r) => r.run_id === started.run_id)
+        if (!run) break
+        if (run.status !== 'running') {
+          if (run.status === 'error') setErr(run.detail || 'the scout pass failed')
+          break
+        }
+        setScoutDetail(
+          run.total > 0 ? `${run.done}/${run.total} — ${run.detail}` : run.detail,
+        )
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+      }
+      if (mounted.current) load()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'the scout pass failed')
+      if (mounted.current) setErr(e instanceof Error ? e.message : 'the scout pass failed')
     } finally {
-      setScouting(false)
+      if (mounted.current) {
+        setScouting(false)
+        setScoutDetail(null)
+      }
     }
   }
 
@@ -170,6 +206,12 @@ export function FormGuide() {
           {err && (
             <p className="m-4 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[12.5px] text-destructive">
               {err}
+            </p>
+          )}
+
+          {scouting && (
+            <p className="border-b border-border/70 px-5 py-2 font-mono text-[11.5px] text-muted-foreground">
+              scouting… {scoutDetail}
             </p>
           )}
 

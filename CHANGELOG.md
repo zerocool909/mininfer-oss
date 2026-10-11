@@ -12,6 +12,13 @@ API is not yet. See `docs/api-contract.md` for what that means per endpoint.
 
 ## [Unreleased]
 
+### Added
+
+- **Agent activity in the notifications drawer.** Every agent run the server
+  starts — currently a scout pass — is tracked with a status, progress counter
+  and rolling detail line, exposed at `GET /v1/agents/activity` and shown in the
+  bell. Each new run is announced as it works, and finished ones stay until read.
+
 ### Accessibility
 
 - The navigation carried no accessible name below `md`, because its label is
@@ -26,6 +33,18 @@ API is not yet. See `docs/api-contract.md` for what that means per endpoint.
 
 ### Fixed
 
+- **The background shadow trial dialled non-chat models.** `_run_shadow_trial`
+  picks untried free arms straight from `store.deployments()` and calls each one
+  directly, so it bypassed `router._reject`'s role gate: 36% of its attempts were
+  ASR/TTS/music/safety arms that can never answer a chat message, and 91 of them
+  were hard 400/402 failures (`scripts/selection_eval.py`). It now applies the
+  same `special_role`/`allow_roles` rule as the primary path, so only associated
+  models are trialled.
+- **"Scout now" froze every other tab.** The handler was `async` but ran the
+  blocking scout pass on the event loop (a search plus an LLM call per arm), so
+  every other request queued behind it until the pass finished. The run now
+  happens on a worker thread, the POST returns as soon as it is registered, and a
+  second click follows the running pass instead of starting a duplicate.
 - A render error unmounted the whole app, leaving a blank page. A boundary now
   shows the error with a reset, and a second one scoped to the active tab keeps
   the navigation alive.

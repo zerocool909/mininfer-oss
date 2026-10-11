@@ -391,7 +391,8 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
           search_enabled: bool = True, force: bool = False,
           max_age_hours: float = 24.0, dry_run: bool = False,
           only_new: bool = False, task_names: list[str] | None = None,
-          on_arm: Callable[[dict], None] | None = None) -> dict:
+          on_arm: Callable[[dict], None] | None = None,
+          on_skip: Callable[[dict], None] | None = None) -> dict:
     """The pass: refresh every stale free arm's dossier, newest facts first.
 
     Skips arms whose dossier is still fresh *and* whose registry facts have not
@@ -400,6 +401,11 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
 
     `only_new` limits the pass to free arms with no dossier at all, the
     "new free model" event queue fed by ingest.
+
+    `on_arm` fires once per arm that is processed; `on_skip` fires once per arm
+    left alone. Both are progress hooks: `on_arm` alone cannot report a total,
+    because an arm that is skipped never reaches it, so a caller showing
+    "n of m" would watch the bar stop short on a healthy pass.
     """
     summary: dict[str, Any] = {"scanned": 0, "written": 0, "skipped_fresh": 0,
                                "errors": 0, "dossiers": []}
@@ -424,6 +430,8 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
         if (existing is not None and not dirty
                 and _age_hours(existing.get("generated_at")) < max_age_hours):
             summary["skipped_fresh"] += 1
+            if on_skip:
+                on_skip({"deploy_id": deploy["deploy_id"], "reason": "fresh"})
             continue
 
         dossier = scout_one(store, deploy, agent_model=agent_model,

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2 } from 'lucide-react'
+import { AlertCircle, Bot, CheckCircle2, Loader2 } from 'lucide-react'
 import { Drawer } from '@/components/ui/drawer'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/Skeleton'
-import { api, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
+import { api, type AgentRun, type PricingAnomaly, type ProviderInfo } from '@/lib/api'
+import { markAgentsSeen } from '@/lib/agentActivity'
 import { getUserKeys } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +27,7 @@ const SEVERITY_TONE: Record<string, string> = {
 export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [anomalies, setAnomalies] = useState<PricingAnomaly[]>([])
+  const [runs, setRuns] = useState<AgentRun[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -34,9 +36,17 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
     setLoading(true)
     setError(null)
     try {
-      const [p, a] = await Promise.all([api.providers(), api.anomalies('open')])
+      const [p, a, act] = await Promise.all([
+        api.providers(),
+        api.anomalies('open'),
+        api.agentActivity(),
+      ])
       setProviders(p.providers)
       setAnomalies(a.anomalies)
+      setRuns(act.runs)
+      // Opening the drawer is reading it: acknowledge the finished runs so the
+      // bell clears, but leave live ones counting until they settle.
+      markAgentsSeen(act.runs)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load notifications')
     } finally {
@@ -47,6 +57,27 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
   useEffect(() => {
     if (open) void load()
   }, [open, load])
+
+  // While the drawer is open, keep the agent section live. Agents are the one
+  // thing here that actually changes second to second; the anomaly queue does
+  // not need a poll.
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    const id = window.setInterval(() => {
+      api.agentActivity()
+        .then((act) => {
+          if (!alive) return
+          setRuns(act.runs)
+          markAgentsSeen(act.runs)
+        })
+        .catch(() => undefined)
+    }, 3000)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+    }
+  }, [open])
 
   async function decide(anomalyId: string, status: 'acknowledged' | 'resolved') {
     setBusy(anomalyId)
@@ -62,6 +93,7 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
   }
 
   const portalKeys = getUserKeys()
+  const runningCount = runs.filter((r) => r.status === 'running').length
 
   return (
     <Drawer open={open} onClose={onClose} title="Notifications">
@@ -82,7 +114,36 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
         </div>
       )}
 
-      <section aria-labelledby="notif-anomalies">
+      <section aria-labelledby="notif-agents">
+        <h3
+          id="notif-agents"
+          className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+        >
+          Agents
+          {!loading && runningCount > 0 && (
+            <span className="font-normal normal-case tracking-normal text-brand">
+              · {runningCount} running
+            </span>
+          )}
+        </h3>
+        {loading ? (
+          <div className="mt-2 space-y-2" aria-hidden="true">
+            <Skeleton className="h-[58px] w-full" />
+          </div>
+        ) : runs.length === 0 ? (
+          <p className="mt-2 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+            <Bot className="h-3.5 w-3.5" /> No agent activity yet
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {runs.slice(0, 8).map((run) => (
+              <AgentRunRow key={run.run_id} run={run} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="notif-anomalies" className="mt-6">
         <h3
           id="notif-anomalies"
           className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
@@ -202,5 +263,55 @@ export function NotificationsDrawer({ open, onClose }: { open: boolean; onClose:
         )}
       </section>
     </Drawer>
+  )
+}
+
+/** One agent run in the drawer. Live runs show a progress bar; settled ones a verdict. */
+function AgentRunRow({ run }: { run: AgentRun }) {
+  const running = run.status === 'running'
+  const failed = run.status === 'error'
+  const pct = run.total > 0 ? Math.min(100, Math.round((run.done / run.total) * 100)) : null
+
+  return (
+    <li className="rounded-lg border border-border px-3 py-2">
+      <div className="flex items-center gap-2">
+        {running ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-brand" />
+        ) : failed ? (
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+        ) : (
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-free" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+          {run.title}
+        </span>
+        {run.total > 0 && (
+          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+            {run.done}/{run.total}
+          </span>
+        )}
+      </div>
+
+      {running && (
+        <div
+          className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+          aria-label={`${run.title} progress`}
+          aria-valuemin={0}
+          aria-valuemax={run.total || undefined}
+          aria-valuenow={run.total ? run.done : undefined}
+        >
+          <div
+            className={cn('h-full rounded-full bg-brand transition-[width] duration-500',
+              pct === null && 'w-1/3')}
+            style={pct === null ? undefined : { width: `${pct}%` }}
+          />
+        </div>
+      )}
+
+      {run.detail && (
+        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{run.detail}</p>
+      )}
+    </li>
   )
 }

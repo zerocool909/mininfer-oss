@@ -112,6 +112,7 @@ GET    /v1/recommend                              experimental
 GET    /v1/reputation                              experimental
 GET    /v1/dossiers                                experimental
 POST   /v1/dossiers/refresh                        experimental
+GET    /v1/agents/activity                         experimental
 ```
 
 `/assets/*` is a static mount for the dashboard bundle, not an API.
@@ -153,6 +154,12 @@ boundary.
 `/v1/economics/*`, `/v1/local/*`, `/v1/probe*`).** Exposes provider pricing,
 routing decisions and caller IPs. Admin-only when `MI_ADMIN_TOKEN` is set, and it
 belongs behind a network boundary as well.
+
+**Agent surface (`/v1/dossiers/refresh`, `/v1/agents/activity`).** Starting a
+scout pass is asynchronous: `POST /v1/dossiers/refresh` registers the run and
+returns a `run_id` at once, and `GET /v1/agents/activity` reports live progress
+(and recent completions) for every agent run in this process. Admin-only, because
+it is telemetry about this server's background jobs.
 
 **Warm tier (`/v1/probe`, `/v1/probe/config`, `/v1/probe/run`).** The optional
 background provider health probe, toggled from Settings → Providers. Off by

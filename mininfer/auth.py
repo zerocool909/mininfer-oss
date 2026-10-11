@@ -76,6 +76,9 @@ ADMIN_PATHS = frozenset({
     # the registry — an operator job, not a tenant surface. Reading it
     # (`/v1/dossiers`) is tenant-scoped on purpose.
     "/v1/dossiers/refresh",
+    # Live agent-run telemetry (progress, per-arm detail) is about this server's
+    # background jobs, so it is an operator view like the probe, not a catalogue.
+    "/v1/agents/activity",
     # Provider/model outcome telemetry (429s, timeouts, verdicts) is an operator
     # view, not a catalogue. Recommendations (`/v1/recommend`) stay tenant-scoped.
     "/v1/reputation",

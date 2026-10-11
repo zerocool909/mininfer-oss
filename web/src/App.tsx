@@ -13,6 +13,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ConnectModal } from '@/components/ConnectModal'
 import { CommandPalette, type PaletteCommand } from '@/components/CommandPalette'
 import { emitCommand } from '@/lib/bus'
+import { loadAgentSeenAt, unreadAgentRuns } from '@/lib/agentActivity'
 import { api, type Stats } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 
@@ -38,7 +39,12 @@ export function App() {
   // The review queue surface. The count is refetched whenever the drawer opens or
   // closes, so a decision made inside it is reflected on the bell.
   const [notifOpen, setNotifOpen] = useState(false)
-  const [notifCount, setNotifCount] = useState(0)
+  const [anomalyCount, setAnomalyCount] = useState(0)
+  // The bell covers two queues: pricing disagreements to review, and agent runs
+  // the viewer has not seen. The agent half is polled because a scout pass keeps
+  // changing while you are on another tab.
+  const [agentUnread, setAgentUnread] = useState(0)
+  const notifCount = anomalyCount + agentUnread
   const rootRef = useRef<HTMLDivElement>(null)
   /** A model handed over from the Overview's "Test" button, consumed by the chat. */
   const [testTarget, setTestTarget] = useState<TestTarget | null>(null)
@@ -55,8 +61,28 @@ export function App() {
 
   useEffect(() => {
     api.anomalies('open')
-      .then((a) => setNotifCount(a.count))
+      .then((a) => setAnomalyCount(a.count))
       .catch(() => undefined)
+
+    // The agent count is derived from the registry plus the browser's last-seen
+    // mark, so closing the drawer (which marks the finished runs seen) drops it
+    // on the next tick. `notifOpen` is a dependency so open/close re-reads at
+    // once instead of waiting out the interval.
+    let alive = true
+    const tick = () => {
+      api
+        .agentActivity()
+        .then((act) => {
+          if (alive) setAgentUnread(unreadAgentRuns(act.runs, loadAgentSeenAt()).length)
+        })
+        .catch(() => undefined)
+    }
+    tick()
+    const id = window.setInterval(tick, 5000)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+    }
   }, [notifOpen])
 
   // A modal drawer has to take the page behind it out of the tab order and the
