@@ -4,6 +4,12 @@
 
 **Find the cheapest capable model for every task. Prefer free. Pay only when necessary.**
 
+<a href="https://zerocool909.github.io/mininfer-oss/#tour">
+  <img src="docs/assets/reel-poster.webp" alt="The min(Infer) console: a prompt routed to a free model, showing the chosen arm, first-token latency and token count" width="820">
+</a>
+
+▶ **[Watch the 60-second tour](https://zerocool909.github.io/mininfer-oss/#tour)** — captured from the real app by a headless browser, not a mockup. On-screen data is a moment in time.
+
 **[Live docs & routing explainer →](https://zerocool909.github.io/mininfer-oss/)**
 
 [![CI](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/zerocool909/mininfer-oss/actions/workflows/ci.yml)

@@ -371,7 +371,13 @@ select deploy_id, task,
        avg(case when ok=1 then latency_ms end)              as mean_latency_ms,
        sum(case when error_class='429' then 1 else 0 end)   as n_429,
        sum(case when error_class='timeout' then 1 else 0 end) as n_timeout,
-       sum(coalesce(cost_usd,0))                            as total_cost_usd
+       sum(coalesce(cost_usd,0))                            as total_cost_usd,
+       -- Served traffic only: excludes background shadow-trial probes (see
+       -- mininfer/store.py). Appended last on purpose — Postgres `create or
+       -- replace view` may only add columns at the end, and this file is applied
+       -- before `_migrate` runs its own replace.
+       sum(case when counted and coalesce(signal_kind,'') <> 'judge_trial'
+                then 1 else 0 end)                          as n_served
 from (
     select *,
            (error_class is null or not (

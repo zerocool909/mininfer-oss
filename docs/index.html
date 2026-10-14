@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>min(Infer) — minimum sufficient inference</title>
 <meta name="description" content="min(Infer): An open-source model intelligence registry and economic constraint router. Find the cheapest capable model for every task. Prefer free. Pay only when necessary.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="min(Infer) — minimum sufficient inference">
+<meta property="og:description" content="An open-source model intelligence registry and economic constraint router. Routes each request to the cheapest deployment that clears the bar for that task. Prefer free; pay only when necessary.">
+<meta property="og:url" content="https://zerocool909.github.io/mininfer-oss/">
+<meta property="og:image" content="https://zerocool909.github.io/mininfer-oss/assets/reel-og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The min(Infer) console: a prompt routed to a free model, showing the chosen arm, first-token latency and token count.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://zerocool909.github.io/mininfer-oss/assets/reel-og.jpg">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <style>
   :root{
@@ -44,22 +54,46 @@
   .btn:hover{background:var(--teal-ink);border-color:var(--teal-ink)}
   .btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
   .btn.ghost:hover{border-color:var(--ink);background:transparent}
+  /* The hero mark tells the routing story on a 6.4s loop: candidates rank in by
+     cost, the task's capability threshold wipes in, a scan walks the ranked list
+     cheapest-first and stops at the first deployment that clears the bar, and the
+     pick then holds on top of that bar. Every beat shares one cycle so they stay
+     in sync; the scan is what *causes* the pick, not a decoration. */
   .ledger-art{width:100%;height:auto;max-height:360px;display:block}
-  .ledger-art .thresh{stroke-dasharray:6 6;stroke-dashoffset:150;animation:drawThresh 1s cubic-bezier(.3,.7,.2,1) forwards}
-  .ledger-art .bar-grow{transform-box:fill-box;transform-origin:bottom;transform:scaleY(0);animation:growUp .7s cubic-bezier(.16,1,.3,1) forwards}
-  .ledger-art .bar1{animation-delay:.15s}
-  .ledger-art .bar2{animation-delay:.35s}
-  .ledger-art .bar3{animation-delay:.55s}
-  .ledger-art .bar4{animation-delay:.75s}
-  .ledger-art .win-callout{opacity:0;animation:pop .5s .95s forwards}
-  .ledger-art .labels{opacity:0;animation:pop .6s 1.1s forwards}
-  @keyframes drawThresh{to{stroke-dashoffset:0}}
-  @keyframes growUp{to{transform:scaleY(1)}}
-  @keyframes pop{to{opacity:1}}
+  .ledger-art .thresh-clip{transform-box:fill-box;transform-origin:left;transform:scaleX(0);animation:heroWipe 6.4s cubic-bezier(.3,.7,.2,1) infinite}
+  /* One animation per element: growth and the dimming verdict have to live in a
+     single keyframe set per role, because a second `animation` declaration on the
+     same element replaces the first — which left the losing bars at scaleY(0). */
+  .ledger-art .bar-grow{transform-box:fill-box;transform-origin:bottom;transform:scaleY(0);animation:heroRank 6.4s cubic-bezier(.16,1,.3,1) infinite}
+  .ledger-art .bar1{animation-name:heroRankLose;animation-delay:.05s}
+  .ledger-art .bar2{animation-delay:.15s}
+  .ledger-art .bar3{animation-name:heroRankRest;animation-delay:.25s}
+  .ledger-art .bar4{animation-name:heroRankRest;animation-delay:.35s}
+  .ledger-art .win-callout{opacity:0;animation:heroPick 6.4s ease-out infinite}
+  .ledger-art .labels{opacity:0;animation:heroLabels 6.4s ease-out infinite}
+  .ledger-art .halo{animation:heroHalo 6.4s ease-out infinite}
+  .ledger-art .sweep{opacity:0;animation:heroSweep 6.4s cubic-bezier(.4,0,.2,1) infinite}
+  .ledger-art .ripple{transform-box:fill-box;transform-origin:center;opacity:0;animation:heroRipple 6.4s ease-out infinite}
+  /* the selected orb stays on top of its bar and beats twice, in place */
+  .ledger-art .win-dot{transform-box:fill-box;transform-origin:center;animation:heroDot 6.4s ease-in-out infinite}
+
+  @keyframes heroWipe{0%,18%{transform:scaleX(0)}34%,88%{transform:scaleX(1)}96%,100%{transform:scaleX(0)}}
+  @keyframes heroRank{0%{transform:scaleY(0)}16%,84%{transform:scaleY(1)}96%,100%{transform:scaleY(0)}}
+  @keyframes heroRankLose{0%{transform:scaleY(0)}16%,46%{transform:scaleY(1);opacity:1}56%,88%{transform:scaleY(1);opacity:.3}96%,100%{transform:scaleY(0);opacity:1}}
+  @keyframes heroRankRest{0%{transform:scaleY(0)}16%,50%{transform:scaleY(1);opacity:1}62%,88%{transform:scaleY(1);opacity:.45}96%,100%{transform:scaleY(0);opacity:1}}
+  @keyframes heroLabels{0%,24%{opacity:0}36%,84%{opacity:1}94%,100%{opacity:0}}
+  @keyframes heroPick{0%,48%{opacity:0}58%,84%{opacity:1}94%,100%{opacity:0}}
+  @keyframes heroHalo{0%,50%{fill-opacity:.22}58%{fill-opacity:.55}74%,100%{fill-opacity:.22}}
+  @keyframes heroSweep{0%,34%{opacity:0;transform:translateX(0)}38%{opacity:.55}50%{opacity:.85;transform:translateX(52px)}58%{opacity:0;transform:translateX(52px)}100%{opacity:0;transform:translateX(52px)}}
+  @keyframes heroRipple{0%,51%{opacity:0;transform:scale(.5)}56%{opacity:.65}76%{opacity:0;transform:scale(3.1)}100%{opacity:0;transform:scale(3.1)}}
+  @keyframes heroDot{0%,52%{transform:scale(1)}60%{transform:scale(1.4)}70%{transform:scale(1)}79%{transform:scale(1.3)}88%,100%{transform:scale(1)}}
   @media (prefers-reduced-motion:reduce){
-    .ledger-art .thresh{stroke-dashoffset:0;animation:none}
-    .ledger-art .bar-grow{transform:none;animation:none}
-    .ledger-art .win-callout,.ledger-art .labels{opacity:1;animation:none}
+    .ledger-art *{animation:none!important}
+    .ledger-art .thresh-clip{transform:scaleX(1)}
+    .ledger-art .bar-grow{transform:none}
+    .ledger-art .win-callout,.ledger-art .labels{opacity:1}
+    .ledger-art .halo{fill-opacity:.22}
+    .ledger-art .sweep,.ledger-art .ripple{display:none}
   }
 
   /* heartbeat — the warm-tier provider probe */
@@ -120,6 +154,16 @@
   /* trace */
   .trace{background:#0f1214;color:#d7dde4;border-radius:8px;padding:24px 26px;font:13.5px/1.75 var(--mono);overflow-x:auto;margin:26px 0 0}
   .trace .c{color:#6e7885}.trace .g{color:#4fd1a1}.trace .w{color:#e9a36b}.trace .b{color:#8fb7ff}
+
+  /* the end-to-end run, rendered from a real captured trace (HyperFrames → MP4) */
+  .runloop{margin:30px 0 0}
+  .runloop img,.runloop video{display:block;width:100%;height:auto;border:1px solid var(--rule);border-radius:10px;background:#0f1214}
+  .runloop .still{display:none}
+  .runloop figcaption{margin-top:10px;font-size:13px;line-height:1.55;color:var(--mute)}
+  .runloop figcaption code{font:12px var(--mono)}
+  .runloop figcaption b{color:var(--ink);font-weight:600}
+  /* A looping clip cannot honour reduced-motion, so show the still instead. */
+  @media (prefers-reduced-motion:reduce){.runloop .motion{display:none}.runloop .still{display:block}}
   ol.steps{list-style:none;padding:0;margin:30px 0 0;counter-reset:s}
   ol.steps li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:6px;padding:20px 0;border-top:1px solid var(--rule)}
   ol.steps li:first-child{border-top:0}
@@ -167,6 +211,7 @@
       <a href="#trust">Trust</a>
       <a href="#pulse">Heartbeat</a>
       <a href="#route">Routing</a>
+      <a href="#tour">See it run</a>
       <a href="#agents">For agents</a>
       <a href="#run">Run it</a>
       <a class="gh" href="https://github.com/zerocool909/mininfer-oss">GitHub</a>
@@ -180,39 +225,56 @@
       <p class="dek">min(Infer) collects evidence from provider APIs, catalogs, pricing pages and benchmarks, then routes each request to the cheapest deployment that clears the bar for that task. Prefer free. Pay only when necessary.</p>
       <div class="cta">
         <a class="btn" href="#run">Run it locally</a>
+        <a class="btn ghost" href="#tour" aria-label="Watch the sixty second tour of the min(Infer) console">▶ Watch it run · 60 s</a>
         <a class="btn ghost" href="https://github.com/zerocool909/mininfer-oss">Read the source</a>
       </div>
     </div>
 
     <div class="hero-visual">
       <!-- The enhanced Ledger mark: candidate deployments ranked with quality threshold bar and cheapest-capable winner -->
-      <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="The min(Infer) Ledger mark: candidate models sorted by cost with a dashed capability threshold. The first model clearing the threshold is highlighted in vibrant teal as the minimum sufficient inference choice.">
+      <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="The min(Infer) Ledger mark, animating: candidate models ranked by cost, a dashed capability threshold, and a scan that walks the list cheapest-first until one clears the bar — the minimum sufficient inference choice — which the request is then dispatched to.">
+        <defs>
+          <!-- wipes the threshold in from the left, so the bar being *drawn* is what makes the winner winnable -->
+          <clipPath id="hThreshClip"><rect class="thresh-clip" x="10" y="50" width="150" height="24"/></clipPath>
+          <!-- the soft band that walks the ranked candidates, cheapest first -->
+          <linearGradient id="hScan" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="var(--teal)" stop-opacity="0"/>
+            <stop offset=".5" stop-color="var(--teal)" stop-opacity=".5"/>
+            <stop offset="1" stop-color="var(--teal)" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+
         <!-- Capability threshold line -->
-        <line class="thresh" x1="12" y1="62" x2="158" y2="62" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
+        <line class="thresh" clip-path="url(#hThreshClip)" x1="12" y1="62" x2="158" y2="62" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
         
         <!-- Baseline -->
         <line x1="12" y1="112" x2="158" y2="112" stroke="currentColor" stroke-opacity=".3" stroke-width="1.8" stroke-linecap="round"/>
 
-        <!-- Bar 1: Sub-threshold / inadequate deployment (y=84, h=28 -> bottom at 112) -->
-        <rect class="bar-grow bar1" x="20" y="84" width="22" height="28" rx="4" fill="currentColor" fill-opacity=".2"/>
+        <!-- Bar 1: sub-threshold — never reaches the line, so it is dimmed by the scan -->
+        <rect class="bar-grow bar1 loser" x="20" y="84" width="22" height="28" rx="4" fill="currentColor" fill-opacity=".2"/>
 
         <!-- Bar 2: The Winner - Minimum Sufficient Model (y=50, h=62 -> bottom at 112) -->
         <g class="bar-grow bar2">
-          <rect x="52" y="50" width="24" height="62" rx="4" fill="var(--teal)" fill-opacity=".22"/>
+          <rect class="halo" x="52" y="50" width="24" height="62" rx="4" fill="var(--teal)" fill-opacity=".22"/>
           <rect x="53" y="51" width="22" height="61" rx="3.5" fill="var(--teal)"/>
         </g>
         <!-- Winning accent indicator atop winner -->
         <g class="win-callout">
           <circle cx="64" cy="41" r="7" fill="var(--teal)" fill-opacity=".22"/>
-          <circle cx="64" cy="41" r="3.8" fill="var(--teal)"/>
+          <circle class="win-dot" cx="64" cy="41" r="3.8" fill="var(--teal)"/>
           <path d="M64 45.5V49" stroke="var(--teal)" stroke-width="1.8" stroke-linecap="round"/>
         </g>
 
-        <!-- Bar 3: Larger generalist model (y=32, h=80 -> bottom at 112) -->
-        <rect class="bar-grow bar3" x="86" y="32" width="22" height="80" rx="4" fill="currentColor" fill-opacity=".26"/>
+        <!-- Bar 3: larger generalist — capable, but more than this task needs -->
+        <rect class="bar-grow bar3 rest" x="86" y="32" width="22" height="80" rx="4" fill="currentColor" fill-opacity=".26"/>
 
         <!-- Bar 4: Giant frontier flagship model (y=14, h=98 -> bottom at 112) -->
-        <rect class="bar-grow bar4" x="118" y="14" width="22" height="98" rx="4" fill="currentColor" fill-opacity=".18"/>
+        <rect class="bar-grow bar4 rest" x="118" y="14" width="22" height="98" rx="4" fill="currentColor" fill-opacity=".18"/>
+
+        <!-- the scan band walks the ranked list and lands on the winner -->
+        <rect class="sweep" x="12" y="6" width="18" height="112" fill="url(#hScan)"/>
+        <!-- the pick: a ring expands from the selected model, which itself stays put on its bar -->
+        <circle class="ripple" cx="64" cy="41" r="7" fill="none" stroke="var(--teal)" stroke-width="1.1"/>
 
         <!-- Labels and indicators -->
         <g class="labels" font-family="var(--mono)" font-size="5" fill="currentColor" fill-opacity=".65">
@@ -345,8 +407,25 @@
   </div>
 </div></section>
 
+<section id="tour"><div class="col sec">
+  <aside><b>06</b>Watch it run</aside>
+  <div>
+    <h2>Sixty seconds in the real console.</h2>
+    <p class="dek">No mockups. A headless browser drives the app, types a prompt, sends it, and waits for the answer — then the tour explains why that arm won and how to point a client at it.</p>
+
+    <figure class="runloop">
+      <video class="motion" src="assets/reel.webm" poster="assets/reel-poster.webp"
+             width="1024" height="576" autoplay muted loop playsinline preload="metadata"
+             aria-label="A five-act tour of the min(Infer) dashboard: an empty console, a prompt being typed and sent, the streamed answer, then why that arm was chosen, where the models come from, and how to run it — including a scroll down the free-model form guide."></video>
+      <img class="still" src="assets/reel-poster.webp" width="1024" height="576" loading="lazy" decoding="async"
+           alt="Still from the min(Infer) dashboard tour: the routed answer with the chosen arm, first-token time, and tokens." />
+      <figcaption>A guided tour in <b>five acts</b>, captured from the <b>real app</b> with a headless browser: an empty console, a prompt typed and sent, the streamed answer, why that arm was picked, the free-model form guide scrolled top to bottom, and how to point a client at it. Motion composed from the real screenshots (<code>app-reel</code> → HyperFrames → VP9/WebM); on-screen data is a moment in time.</figcaption>
+    </figure>
+  </div>
+</div></section>
+
 <section id="agents"><div class="col sec">
-  <aside><b>06</b>For agents</aside>
+  <aside><b>07</b>For agents</aside>
   <div>
     <h2>Most of an agent’s calls aren’t reasoning calls.</h2>
     <p class="lede">Between the two steps that need judgement sit dozens that don’t: expand a tool result, classify a branch, pull fields out of a page, choose the next action, format arguments, summarise what came back, retry a 429. Multiply them by every run and the bill starts tracking the number of <b>steps</b>, not the difficulty of any one of them.</p>
@@ -368,7 +447,7 @@
 </div></section>
 
 <section id="principles"><div class="col sec">
-  <aside><b>07</b>Principles</aside>
+  <aside><b>08</b>Principles</aside>
   <div>
     <h2>Why it behaves the way it does.</h2>
     <dl class="pr">
@@ -386,7 +465,7 @@
 </div></section>
 
 <section id="run"><div class="col sec">
-  <aside><b>08</b>Run it</aside>
+  <aside><b>09</b>Run it</aside>
   <div>
     <h2>Point any OpenAI-compatible client at it.</h2>
 <pre class="cmd"><span class="c"># clone and install</span>

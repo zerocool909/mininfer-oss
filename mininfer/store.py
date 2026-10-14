@@ -827,17 +827,22 @@ CREATE VIEW routing_stats AS
 SELECT deploy_id, task,
        COUNT(*)                                             AS n_all,
        SUM(CASE WHEN counted THEN 1 ELSE 0 END)             AS n,
-       -- Evidence gathered by the background shadow trial is a real call but not
-       -- served traffic; the router's anti-fixation share must not count it, or a
-       -- busy trial probe inflates the denominator and hides concentration.
-       SUM(CASE WHEN counted AND COALESCE(signal_kind, '') <> 'judge_trial'
-                THEN 1 ELSE 0 END)                          AS n_served,
        SUM(CASE WHEN counted THEN ok ELSE 0 END)            AS wins,
        SUM(CASE WHEN counted THEN 0 ELSE 1 END)             AS n_infra,
        AVG(CASE WHEN ok=1 THEN latency_ms END)              AS mean_latency_ms,
        SUM(CASE WHEN error_class='429' THEN 1 ELSE 0 END)   AS n_429,
        SUM(CASE WHEN error_class='timeout' THEN 1 ELSE 0 END) AS n_timeout,
-       SUM(COALESCE(cost_usd,0))                            AS total_cost_usd
+       SUM(COALESCE(cost_usd,0))                            AS total_cost_usd,
+       -- Evidence gathered by the background shadow trial is a real call but not
+       -- served traffic; the router's anti-fixation share must not count it, or a
+       -- busy trial probe inflates the denominator and hides concentration.
+       --
+       -- Appended LAST on purpose: Postgres `CREATE OR REPLACE VIEW` may only add
+       -- columns at the end. Inserting it between `n` and `wins` made Postgres try
+       -- to rename `wins` (InvalidTableDefinition: cannot change name of view
+       -- column "wins" to "n_served") and failed the whole boot on the PG leg.
+       SUM(CASE WHEN counted AND COALESCE(signal_kind, '') <> 'judge_trial'
+                THEN 1 ELSE 0 END)                          AS n_served
 FROM (
     SELECT *, ({_counted_expr()}) AS counted
     FROM observations
