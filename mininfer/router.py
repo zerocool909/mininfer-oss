@@ -25,6 +25,7 @@ import os
 import pathlib
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from . import cache as cache_mod
@@ -542,6 +543,25 @@ def dossier_fit(task_name: str, dossier: dict | None, policy: Policy, *,
     return delta, reason, meta
 
 
+@lru_cache(maxsize=8192)
+def _json_field(raw: str | None) -> dict:
+    """Parse a JSON text column, memoised.
+
+    Deployment rows repeat the same `caps`/`benchmark` strings across hundreds of
+    arms and across requests, so parsing them once removes ~3,500 `json.loads`
+    per routing call. The returned dict is treated as read-only by every caller
+    (the router only reads `caps`/`benchmark`), which is what makes sharing it
+    safe; the cache is bounded so a registry cannot grow it without limit.
+    """
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
                      user_keys: dict[str, str] | None = None,
                      pushed_models: list[str] | None = None,
@@ -572,14 +592,20 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
         dossiers = _routing_dossiers(store)
     out: list[Candidate] = []
 
-    total_task_obs = sum(int(s.get("n", 0) or 0) for s in stats.values())
+    # One pass over the quota table, not one query per arm (was ~3480 statements
+    # per call). An arm with no bucket is simply absent and falls back to the
+    # same conservative `(None, "unknown")` the per-arm method returned.
+    headroom_map = store.headroom_all()
+
+    # Anti-fixation counts *served* traffic, not evidence-gathering probes: a
+    # shadow trial is a real call but not a user's request, and counting it in the
+    # denominator hid concentration (a 74.8% share read as 36.6%).
+    total_task_obs = sum(int(s.get("n_served", s.get("n", 0)) or 0)
+                         for s in stats.values())
 
     for d in store.deployments():
-        try:
-            benchmark = json.loads(d.get("benchmark") or "{}")
-        except json.JSONDecodeError:
-            benchmark = {}
-        caps = json.loads(d.get("caps") or "{}")
+        benchmark = _json_field(d.get("benchmark"))
+        caps = _json_field(d.get("caps"))
 
         p_prior, prior_key, prior_keys = prior_success(
             benchmark, task.benchmark_keys, norms,
@@ -636,7 +662,7 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
         sentiment_multiplier = 0.5 + routing_sentiment
 
         free_kind = _free_kind(d, policy)
-        headroom, hsrc = store.headroom(d["deploy_id"])
+        headroom, hsrc = headroom_map.get(d["deploy_id"], (None, "unknown"))
         n_429 = int(s.get("n_429", 0) or 0)
         n_timeout = int(s.get("n_timeout", 0) or 0)
         rate_429 = (n_429 / n_obs) if n_obs else 0.0
@@ -672,7 +698,8 @@ def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
                 if free_kind in ("subscription", "zero_price", "free_variant", "trial_credits"):
                     cost_per_call = 0.0
 
-        traffic_share = (n_obs / total_task_obs) if total_task_obs > 0 else 0.0
+        served_obs = int(s.get("n_served", n_obs) or 0)
+        traffic_share = (served_obs / total_task_obs) if total_task_obs > 0 else 0.0
         traffic_capped = bool(total_task_obs >= 5 and traffic_share > policy.max_model_share_pct)
 
         is_pushed = d["deploy_id"] in pushed_set

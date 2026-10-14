@@ -827,6 +827,11 @@ CREATE VIEW routing_stats AS
 SELECT deploy_id, task,
        COUNT(*)                                             AS n_all,
        SUM(CASE WHEN counted THEN 1 ELSE 0 END)             AS n,
+       -- Evidence gathered by the background shadow trial is a real call but not
+       -- served traffic; the router's anti-fixation share must not count it, or a
+       -- busy trial probe inflates the denominator and hides concentration.
+       SUM(CASE WHEN counted AND COALESCE(signal_kind, '') <> 'judge_trial'
+                THEN 1 ELSE 0 END)                          AS n_served,
        SUM(CASE WHEN counted THEN ok ELSE 0 END)            AS wins,
        SUM(CASE WHEN counted THEN 0 ELSE 1 END)             AS n_infra,
        AVG(CASE WHEN ok=1 THEN latency_ms END)              AS mean_latency_ms,
@@ -2111,6 +2116,35 @@ class Store:
                 best, src = frac, part
         return best, src
 
+    def headroom_all(self) -> dict[str, tuple[float | None, str]]:
+        """`headroom()` for every arm in one pass.
+
+        `build_candidates` called the single-arm method once per candidate, so a
+        1740-arm registry issued ~3480 statements per routing call just to read a
+        small table. The answer depends only on `quota_buckets`, so it is computed
+        once here and looked up by the caller. Expired windows are rolled over
+        first, exactly as the per-arm path did.
+
+        An arm with no known bucket is simply absent; the caller falls back to
+        `(None, "unknown")`, the same conservative default `headroom()` returns.
+        """
+        self.reset_expired()
+        rows = self.conn.execute(
+            "SELECT deploy_id, limit_n, used_n, observed_limit_n, observed_remaining_n"
+            " FROM quota_buckets").fetchall()
+        out: dict[str, tuple[float | None, str]] = {}
+        for r in rows:
+            frac, part = effective_headroom(
+                limit_n=r["limit_n"], used_n=r["used_n"],
+                observed_limit_n=r["observed_limit_n"],
+                observed_remaining_n=r["observed_remaining_n"])
+            if frac is None:
+                continue
+            current = out.get(r["deploy_id"])
+            if current is None or frac < current[0]:
+                out[r["deploy_id"]] = (frac, part)
+        return out
+
     # ------------------------------------------------------------ observations
 
     def observe(
@@ -2659,9 +2693,7 @@ class Store:
     def deployments(self, task: str | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT d.*, w.display_name, w.benchmark, w.family, w.params_b, w.arch,
-                      w.resolved_id AS weights_id_resolved,
-                      (SELECT COUNT(*) FROM deployments d2
-                        WHERE d2.weights_id = d.weights_id) AS same_weights_count
+                      w.resolved_id AS weights_id_resolved
                FROM deployments d JOIN weights_resolved w ON w.weights_id = d.weights_id"""
         ).fetchall()
         return [dict(r) for r in rows]

@@ -19,6 +19,20 @@ API is not yet. See `docs/api-contract.md` for what that means per endpoint.
   and rolling detail line, exposed at `GET /v1/agents/activity` and shown in the
   bell. Each new run is announced as it works, and finished ones stay until read.
 
+### Performance
+
+- **The routing path no longer issues ~2 SQL statements per arm.**
+  `build_candidates` called `store.headroom()` once per deployment (2 queries
+  each) and re-parsed the same `caps`/`benchmark` JSON for every row. On the
+  1,740-arm registry that was ~3,500 statements and ~117 ms per chat call; it is
+  now ~10 statements and ~59 ms (`scripts/router_bench.py`). Also drops an unused
+  `same_weights_count` correlated subquery that ran per deployment.
+- **Anti-fixation now measures served traffic, not evidence probes.** The
+  concentration cap divided by every observation, including background
+  shadow-trial calls, so a busy trial hid real load concentration — one arm's
+  `general_chat` share read as 36.6% when it was 74.8% of served calls, and the
+  cap never fired. It now uses a served count (`routing_stats.n_served`).
+
 ### Accessibility
 
 - The navigation carried no accessible name below `md`, because its label is
