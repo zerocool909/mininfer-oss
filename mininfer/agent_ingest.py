@@ -310,11 +310,12 @@ def _normalize_fact(m: dict, source: str, url: str, fetched_at: str) -> dict | N
     if free is True and pin is None and pout is None:
         pin, pout = 0.0, 0.0  # "free" with no stated price -> list price zero
 
-    modalities = m.get("modalities") or []
-    if isinstance(modalities, str):
-        modalities = [modalities]
+    def _mods(key: str) -> list:
+        got = m.get(key) or []
+        return [got] if isinstance(got, str) else list(got)
 
-    weights = weights_for(name, None, modalities=modalities,
+    weights = weights_for(name, None, modalities=_mods("input_modalities"),
+                           output_modalities=_mods("output_modalities"),
                            source=source, url=url, fetched_at=fetched_at,
                            benchmark=benchmarks, benchmark_source=source)
     deploy = make_deploy(
@@ -330,7 +331,8 @@ def _normalize_fact(m: dict, source: str, url: str, fetched_at: str) -> dict | N
         "price_error": price_error,
         "price_in": pin, "price_out": pout, "free": free,
         "benchmarks": benchmarks,
-        "modalities": list(modalities),
+        "modalities": _mods("input_modalities"),
+        "output_modalities": _mods("output_modalities"),
     }
 
 
