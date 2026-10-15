@@ -32,6 +32,7 @@ import re
 
 from . import search as search_mod
 from .fetch import utcnow
+from .dossier_audit import build_pools, sound_best_for
 from .leaderboards import describe
 from .store import Store
 
@@ -295,7 +296,8 @@ def _need_search(facts: dict, existing: dict | None) -> tuple[bool, str]:
 
 def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
               search_enabled: bool = True, task_names: list[str] | None = None,
-              dry_run: bool = False, existing: dict | None = None) -> dict:
+              dry_run: bool = False, existing: dict | None = None,
+              tasks: dict | None = None, pools: dict | None = None) -> dict:
     """Write one arm's dossier. Returns the dossier dict, with `error` on failure."""
     try:
         benchmark = _parse_json_field(deploy.get("benchmark"), {})
@@ -318,6 +320,16 @@ def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
         facts["search"] = search_meta
         dossier = _synthesize(agent_model, _prompt(facts, sources, task_names))
         facts["agent_model"] = dossier.get("_agent_model") or ""
+        # Enforce, do not request. The prompt states the eligibility rule and the
+        # writer does not reliably follow it, so a stored dossier is made sound here
+        # instead. What was dropped is recorded, because silently shortening a list
+        # would hide that the writer overreached.
+        if tasks is not None and pools is not None:
+            kept, dropped = sound_best_for(deploy["deploy_id"],
+                                           dossier.get("best_for"), tasks, pools)
+            dossier["best_for"] = kept
+            if dropped:
+                facts["dropped_best_for"] = dropped
     except Exception as exc:  # no key / bad agent output / search failure
         return {"deploy_id": deploy["deploy_id"], "error": str(exc)}
 
@@ -388,7 +400,9 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
     "n of m" would watch the bar stop short on a healthy pass.
     """
     summary: dict[str, Any] = {"scanned": 0, "written": 0, "skipped_fresh": 0,
-                               "errors": 0, "dossiers": []}
+                               "errors": 0, "dossiers": [], "dropped_best_for": 0}
+    # Built once for the pass: eligibility is a property of the task, not of the arm.
+    _, _tasks, _pools = build_pools(store)
     arms = store.new_dossier_arms() if only_new else store.free_deployments()
     for deploy in arms:
         if limit and summary["scanned"] >= int(limit):
@@ -410,7 +424,7 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
         dossier = scout_one(store, deploy, agent_model=agent_model,
                             search_enabled=search_enabled,
                             task_names=task_names, dry_run=dry_run,
-                            existing=existing)
+                            existing=existing, tasks=_tasks, pools=_pools)
         if dossier.get("error"):
             summary["errors"] += 1
         else:

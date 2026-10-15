@@ -264,3 +264,31 @@ def test_a_dossier_recommending_a_task_its_arm_cannot_serve_is_unsound(tmp_path)
     assert all(f["deploy_id"] != "p:good" for f in rep["findings"]), \
         "an arm that can serve its task must pass"
     s.close()
+
+
+def test_a_stored_dossier_is_made_sound_rather_than_asked_to_be(tmp_path):
+    """The prompt states the eligibility rule; the writer does not reliably follow it.
+
+    After `caps` reached the facts *and* the rule reached the prompt, a rescout still
+    produced 4 unsound recommendations out of 14 — including `shelf_image_audit` for a
+    model whose own row says `structured: false`. So the filter runs in code, and what
+    it drops is recorded rather than silently shortening the list.
+    """
+    from mininfer.dossier_audit import build_pools, sound_best_for
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    s = Store(tmp_path / "sound.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    s.upsert_deployment(Deployment("p:x", "hf:a/m", "p", "x", zero_price=True,
+                                   context_window=32000, caps={"structured": False}))
+    s.commit()
+
+    _, tasks, pools = build_pools(s)
+    kept, dropped = sound_best_for("p:x", ["summarise", "extraction", "telepathy"],
+                                   tasks, pools)
+
+    assert kept == ["summarise"], f"an unservable task survived: {kept}"
+    assert {d["task"] for d in dropped} == {"extraction", "telepathy"}
+    assert all(d["reason"] for d in dropped), "a drop must say why"
+    s.close()

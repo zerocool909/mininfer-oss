@@ -93,3 +93,49 @@ def format_audit(report: dict[str, Any]) -> str:
     for f in report["findings"]:
         lines.append(f"  {f['deploy_id'][:46]:46s} {f['task']:18s} {f['reason']}")
     return "\n".join(lines)
+
+
+def build_pools(store: Store, policy_path: str | Path = "config/policy.yaml",
+                *, require_callable: bool = False):
+    """One candidate pool per task. Built once per scout pass, not per arm.
+
+    Returned alongside the policy so a caller can reuse both without re-reading the
+    file or rebuilding a pool it already has.
+    """
+    policy, tasks = Policy.load(policy_path)
+    policy.require_callable = require_callable
+    pools = {name: {c.deploy_id: c.rejected
+                    for c in build_candidates(store, task, policy)}
+             for name, task in tasks.items()}
+    return policy, tasks, pools
+
+
+def sound_best_for(deploy_id: str, best_for: Any, tasks, pools) -> tuple[list[str], list[dict]]:
+    """Drop every recommendation this arm cannot serve. Returns (kept, dropped).
+
+    Enforced rather than requested. The prompt states the rule and the writer does not
+    reliably follow it: after adding `caps` to the facts and the rule to the prompt,
+    a rescout still produced 4 unsound recommendations out of 14 — including
+    `shelf_image_audit` for a model whose own row says `structured: false`.
+
+    So a *stored* dossier is sound by construction. An ineligible entry is a
+    prediction the router will contradict, and a form guide that recommends tasks its
+    arms cannot serve is worse than a shorter one.
+    """
+    kept: list[str] = []
+    dropped: list[dict] = []
+    for task_name in _as_list(best_for):
+        if task_name not in tasks:
+            dropped.append({"task": task_name, "reason": "not a task in this policy"})
+            continue
+        pool = pools.get(task_name, {})
+        refusal = pool.get(deploy_id)
+        if refusal is None and deploy_id not in pool:
+            dropped.append({"task": task_name,
+                            "reason": "not in this task's candidate pool"})
+            continue
+        if refusal:
+            dropped.append({"task": task_name, "reason": refusal})
+            continue
+        kept.append(task_name)
+    return kept, dropped
