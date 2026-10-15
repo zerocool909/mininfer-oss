@@ -153,6 +153,24 @@ def test_propose_dry_run_reports_but_writes_nothing(tmp_path):
     s.close()
 
 
+def test_brackets_colons_and_provider_prefixes_are_not_name_parts():
+    """The malformed slugs the registry actually held.
+
+    `slug:openai:-gpt-audio` and `slug:google:-nano-banana-pro-(gemini-3-pro-image)`
+    came from `_normalize_with` treating only whitespace and `_` as separators, and
+    `_PROVIDER_PREFIX` accepting only `/`. A clean id and a bracketed one never
+    compare equal, so each one manufactured a duplicate identity.
+    """
+    assert normalize("openai: gpt-audio") == "gpt-audio"
+    assert normalize("flux-2-[klein]-4b") == "flux-2-klein-4b"
+    assert normalize("google: nano-banana-pro (gemini-3-pro-image)") == \
+        "nano-banana-pro-gemini-3-pro-image"
+    # A `/` prefix may be followed by a serving suffix; stripping must still work.
+    assert normalize("qwen/qwen3-30b-a3b:free") == "qwen3-30b-a3b"
+    # And a genuine name is untouched.
+    assert normalize("Qwen3-30B-A3B") == "qwen3-30b-a3b"
+
+
 def test_normalize_stays_but_identity_keeps_the_variant():
     assert normalize("whisper-large-v3-turbo") == "whisper-large-v3"
     assert normalize_identity("whisper-large-v3-turbo") == "whisper-large-v3-turbo"
