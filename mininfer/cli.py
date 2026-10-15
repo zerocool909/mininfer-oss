@@ -1580,6 +1580,13 @@ def cmd_scout(args) -> int:
 def cmd_dossiers(args) -> int:
     """The form guide table: what every free arm is good at and when to use it."""
     store = _open(args)
+    if getattr(args, "audit", False):
+        from .dossier_audit import audit_dossiers, format_audit
+
+        rep = audit_dossiers(store, args.policy)
+        print(json.dumps(rep, indent=2) if args.json else format_audit(rep))
+        store.close()
+        return 1 if rep["unsound"] else 0
     rows = store.dossiers(substr=args.substr or None, limit=args.limit or None)
     store.close()
     if args.json:
@@ -2150,6 +2157,8 @@ def main(argv: list[str] | None = None) -> int:
     dg.add_argument("substr", nargs="?", default="")
     dg.add_argument("--limit", type=int, default=0)
     dg.add_argument("--json", action="store_true")
+    dg.add_argument("--audit", action="store_true",
+                    help="check every best_for against what the router would serve")
     dg.set_defaults(fn=cmd_dossiers)
 
     dr = sub.add_parser("dossier-report",
