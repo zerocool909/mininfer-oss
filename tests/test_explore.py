@@ -36,7 +36,7 @@ def _seed(path) -> Store:
         deploy_id="groq:vision", weights_id="hf:vision",
         provider="groq", provider_model_id="llava",
         context_window=8000, price_in=0.2, price_out=0.6,
-        caps={"vision": True, "structured": True}))
+        caps={"structured": True}))
     s.upsert_deployment(Deployment(
         deploy_id="nvidia:unknown", weights_id="hf:qwen7b",
         provider="nvidia", provider_model_id="qwen7b",
@@ -109,7 +109,9 @@ def test_capability_matches_confirmed_true_only(store):
     # The free arm, the paid arm and the subscription carry tools:true; the
     # unknown-caps deployment does not, and a null is not a yes.
     assert set(tools) == {"openrouter:qwen7b-free", "openrouter:qwen7b", "sub:qwen7b"}
-    assert _ids(store.explore_models(capability="vision", limit=200)) == ["groq:vision"]
+    # `vision` left `CAP_KEYS`: a modality is a content type, not a behaviour, so the
+    # filter reads the weights' modality list instead of a projected cap key.
+    assert _ids(store.explore_models(capability="image", limit=200)) == ["groq:vision"]
 
 
 def test_capability_filter_ignores_an_unknown_key(store):
@@ -175,7 +177,7 @@ def test_benchmarks_travel_with_the_model(store):
 def test_facets_report_confirmed_capabilities(store):
     caps = store._capability_facets()
     assert caps["tools"] == 3
-    assert caps["vision"] == 1
+    assert caps["image"] == 1, "the modality facet replaced the projected vision cap"
     assert caps["structured"] == 2
     assert caps["reasoning"] == 0
 
@@ -198,4 +200,4 @@ def test_endpoint_serves_the_explorer(tmp_path, monkeypatch):
     assert body["models"][0]["deploy_id"] == "openrouter:qwen7b-free"
     assert body["models"][0]["caps"]["tools"] is True
     assert isinstance(body["providers"], list) and "groq" in body["providers"]
-    assert body["capabilities"]["vision"] == 1
+    assert body["capabilities"]["image"] == 1

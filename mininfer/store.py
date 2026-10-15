@@ -3089,6 +3089,7 @@ class Store:
     def deployments(self, task: str | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT d.*, w.display_name, w.benchmark, w.family, w.params_b, w.arch,
+                      w.modalities, w.output_modalities,
                       w.resolved_id AS weights_id_resolved
                FROM deployments d JOIN weights_resolved w ON w.weights_id = d.weights_id"""
         ).fetchall()
@@ -3574,13 +3575,38 @@ class Store:
 
         `true` only: a null capability is *unknown*, not supported, and counting
         it here would offer a filter that promises more than the registry knows.
+
+        Modalities are facets too, counted by the *value* they take (`image`,
+        `audio`, …) rather than under a `vision`/`audio` cap key. Those two keys
+        were projections of this list, so the chips lose nothing by being read from
+        the list itself — and they can no longer disagree with it. A modality is
+        counted when it appears in either direction, since the chip asks "which
+        arms deal in images", not which way the images flow.
         """
         cols = ", ".join(
             f"SUM(CASE WHEN caps LIKE ? THEN 1 ELSE 0 END) AS {k}"
             for k in CAP_KEYS)
         args = tuple(f'%"{k}": true%' for k in CAP_KEYS)
         row = self.conn.execute(f"SELECT {cols} FROM deployments", args).fetchone()
-        return {k: int(row[k] or 0) for k in CAP_KEYS}
+        out = {k: int(row[k] or 0) for k in CAP_KEYS}
+        for modality, count in self._modality_facets().items():
+            out[modality] = out.get(modality, 0) + count
+        return out
+
+    def _modality_facets(self) -> dict[str, int]:
+        """How many deployments can handle each content type, either direction."""
+        counts: dict[str, int] = {}
+        for r in self.conn.execute(
+                "SELECT modalities, output_modalities FROM weights").fetchall():
+            seen = set()
+            for col in ("modalities", "output_modalities"):
+                try:
+                    seen.update(json.loads(r[col] or "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            for modality in seen:
+                counts[modality] = counts.get(modality, 0) + 1
+        return counts
 
     def explore_models(
         self, *, q: str | None = None, provider: str | None = None,
@@ -3606,6 +3632,16 @@ class Store:
         if capability and capability in CAP_KEYS:
             where.append("d.caps LIKE ?")
             args.append(f'%"{capability}": true%')
+        elif capability and capability in self._modality_facets():
+            # A content type rather than a behaviour: the chip row is flat, and
+            # `image`/`audio` are facets of a modality. Restricted to the modality
+            # vocabulary the registry actually carries, so an unknown key keeps its
+            # existing contract — ignored, not silently narrowed to nothing.
+            where.append("EXISTS (SELECT 1 FROM weights mw JOIN deployments md"
+                         " ON md.weights_id = mw.weights_id"
+                         " WHERE md.deploy_id = d.deploy_id"
+                         " AND (mw.modalities LIKE ? OR mw.output_modalities LIKE ?))")
+            args += [f'%"{capability}"%', f'%"{capability}"%']
         if untried_only:
             where.append("(d.zero_price=1 OR d.free_variant=1 OR d.trial_credits=1) AND COALESCE(s.n, 0) = 0")
         elif free_only:

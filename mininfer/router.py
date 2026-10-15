@@ -332,6 +332,8 @@ class Policy:
                 tokens_in=int(t.get("tokens_in", 1000)),
                 tokens_out=int(t.get("tokens_out", 400)),
                 require=dict(t.get("require") or {}),
+                require_input_modalities=tuple(t.get("require_input_modalities") or ()),
+                require_output_modalities=tuple(t.get("require_output_modalities") or ()),
                 min_context=int(t.get("min_context", 0)),
                 min_success_lb=float(t.get("min_success_lb", pol.min_success_lb)),
                 benchmark_keys=tuple(t.get("benchmark_keys") or ()),
@@ -842,6 +844,28 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
             continue
         if not have:
             return f"unsupported capability: {cap}"
+    # Modality requirements, kept separate from the capability loop above because a
+    # content type is not a behaviour. Same three-valued treatment: an unreported
+    # input modality follows `on_unverified_capability`, and it has to, or the
+    # `_SCHEMA_HINT` fix that stopped inventing modality data would silently start
+    # rejecting every arm instead of only the ones that are actually refuted.
+    have_in = set(_json_field(d.get("modalities")) or [])
+    have_out = set(_json_field(d.get("output_modalities")) or [])
+    for want, have, label in (
+        (getattr(task, "require_input_modalities", ()) or (), have_in, "input"),
+        (getattr(task, "require_output_modalities", ()) or (), have_out, "output"),
+    ):
+        for modality in want:
+            if modality in have:
+                continue
+            if not have:
+                mode = (getattr(task, "on_unverified_capability", None)
+                        or policy.on_unverified_capability)
+                if mode == "reject":
+                    return (f"unverified modality: {label} {modality} "
+                            f"(no source reported any)")
+                continue
+            return f"unsupported {label} modality: {modality}"
     need_ctx = max(policy.min_context, task.min_context)
     if need_ctx and (c.context_window or 0) < need_ctx:
         return f"context {c.context_window or 0} < {need_ctx}"

@@ -213,8 +213,7 @@ def opt(v) -> bool | None:
 
 
 def caps_from_params(
-    params: Iterable[str] | None, *, vision: bool | None = None,
-    reasoning: bool | None = None,
+    params: Iterable[str] | None, *, reasoning: bool | None = None,
 ) -> dict:
     """Capabilities are THREE-valued: True / False / None (unreported).
 
@@ -223,6 +222,11 @@ def caps_from_params(
     of 1660 deployments on the first real run; collapsing it to True is worse.
     `None` is carried through and the policy decides, the same way an unknown
     price is not a zero price.
+
+    Returns behaviours only. `vision` and `audio` used to be here as projections of
+    the input modality list, which is a second copy of a fact `weights_for` already
+    records — and the copy is what let `caps["audio"]` (accepts) be confused with
+    the `tts`/`music` roles (emits).
     """
     p = {str(x).lower() for x in params} if params else None
     if p is None:
@@ -237,10 +241,8 @@ def caps_from_params(
     return {
         "tools": tools,
         "structured": structured,
-        "vision": vision,
         "reasoning": reasoning,
         "caching": caching,
-        "audio": None,
     }
 
 

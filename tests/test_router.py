@@ -238,8 +238,11 @@ def test_capability_is_three_valued():
         "an unreported capability must not be coerced to False"
 
     declared = caps_from_params(["tools", "response_format"])
-    assert declared == {"tools": True, "structured": True, "vision": None,
-                        "reasoning": False, "caching": False, "audio": None}
+    assert declared == {"tools": True, "structured": True,
+                        "reasoning": False, "caching": False}
+    # `vision` and `audio` are not behaviours: they are projections of the input
+    # modality list, and a second copy of a fact is a copy that can disagree.
+    assert "vision" not in declared and "audio" not in declared
 
 
 def test_prior_success_blends_leaderboards():
