@@ -40,6 +40,6 @@ def ingest_novita(snap: Snapshot) -> Run:
                                    {"in": pin, "out": pout}, reason))
         ev = evidence("deployment", d.deploy_id, {"price_in": pin, "price_out": pout,
                                                    "context_window": ctx},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

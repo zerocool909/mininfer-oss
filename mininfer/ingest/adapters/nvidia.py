@@ -24,7 +24,7 @@ def ingest_nvidia(snap: Snapshot, *, limit: int = 0) -> Run:
                     trial=True, caps=caps_from_params(None),
                     limits=default_free_limits("nvidia"), limits_confirmed=False)
         ev = evidence("deployment", d.deploy_id, {"trial_credits": True},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev))
     return run
 

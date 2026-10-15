@@ -22,7 +22,7 @@ def ingest_google(snap: Snapshot) -> Run:
                     limits=default_free_limits("google"), limits_confirmed=False)
         ev = evidence("deployment", d.deploy_id,
                        {"context_window": d.context_window, "methods": mods},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev))
     return run
 

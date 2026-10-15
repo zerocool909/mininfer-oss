@@ -32,6 +32,6 @@ def ingest_chutes(snap: Snapshot) -> Run:
         ev = evidence("deployment", d.deploy_id,
                        {"price_in": pin, "price_out": pout, "quantization": d.quantization,
                         "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

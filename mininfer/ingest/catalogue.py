@@ -24,7 +24,10 @@ SOURCES: dict[str, SourceSpec] = {
     "huggingface": SourceSpec(
         "huggingface", 0, "https://router.huggingface.co/v1/models", "hf_router",
         "per-provider is_free + first_token_latency_ms + throughput",
-        confidence="aggregator_api",
+        # A gateway *reporting what its upstreams claim*, not the upstreams
+        # themselves — weaker than a first-party catalogue, and it was already
+        # recorded that way at the call site.
+        confidence="provider_reported_probe",
     ),
     "deepinfra": SourceSpec(
         "deepinfra", 0, "https://api.deepinfra.com/v1/openai/models", "deepinfra",
@@ -56,7 +59,12 @@ SOURCES: dict[str, SourceSpec] = {
     ),
     # ---- Tier 1: free API key = real free quota ---------------------------
     "groq": SourceSpec("groq", 1, "https://api.groq.com/openai/v1/models", "openai_compat",
-                       "fastest free tier; rpm/rpd per model", key_env="GROQ_API_KEY"),
+                       "fastest free tier; rpm/rpd per model", key_env="GROQ_API_KEY",
+                       # Groq's own endpoint, so it is the authority on itself. It
+                       # defaulted to `aggregator_api` while the adapter hardcoded
+                       # `provider_api`, which is how the catalogue came to disagree
+                       # with its own registry.
+                       confidence="provider_api"),
     "google": SourceSpec("google", 1, "https://generativelanguage.googleapis.com/v1beta/models",
                          "google", "AI Studio free RPD per model", key_env="GEMINI_API_KEY"),
     "cerebras": SourceSpec("cerebras", 1, "https://api.cerebras.ai/v1/models", "openai_compat",

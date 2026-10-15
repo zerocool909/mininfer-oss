@@ -52,7 +52,7 @@ def ingest_openai_compat(snap: Snapshot) -> Run:
                     limits_confirmed=False)
         ev = evidence("deployment", d.deploy_id,
                        {"provider_model_id": mid, "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev))
     return run
 

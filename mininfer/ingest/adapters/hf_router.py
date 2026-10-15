@@ -42,6 +42,6 @@ def ingest_hf_router(snap: Snapshot) -> Run:
                            {"price_in": pin, "price_out": pout, "is_free": is_free,
                             "first_token_ms": d.first_token_ms, "throughput": d.throughput,
                             "caps": d.caps, "context_window": d.context_window},
-                           snap.source, snap.url, snap.fetched_at, "provider_reported_probe")
+                           snap.source, snap.url, snap.fetched_at, snap.observed_via)
             run.add(Bundle(w, d, ev, prices=price))
     return run

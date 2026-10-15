@@ -53,7 +53,7 @@ def ingest_github(snap: Snapshot) -> Run:
                        {"provider_model_id": mid, "context_window": d.context_window,
                         "caps": d.caps, "modalities": mods if mods else None,
                         "limits": json.dumps(limits)},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev))
     return run
 

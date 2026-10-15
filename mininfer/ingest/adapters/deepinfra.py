@@ -31,6 +31,6 @@ def ingest_deepinfra(snap: Snapshot) -> Run:
         ev = evidence("deployment", d.deploy_id,
                        {"price_in": pin, "price_out": pout, "price_cached_in": pcache,
                         "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

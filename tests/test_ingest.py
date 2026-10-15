@@ -76,12 +76,42 @@ def test_every_source_can_be_dispatched():
     assert not missing, f"sources point at adapters that do not exist: {missing}"
 
 
+def test_evidence_carries_the_catalogues_confidence_not_a_hardcoded_one():
+    """The catalogue declared a confidence per source; 11 adapters restated it, and
+    two had drifted. `groq` was declared `aggregator_api` (0.85) while its rows
+    carried `provider_api` (0.95) — so the value the resolver ranks by was whatever
+    the adapter happened to say, not what the catalogue documented.
+    """
+    from mininfer.ingest import SOURCES
+
+    spec = SOURCES["groq"]
+    snap = _snap("groq", [{"id": "a/b", "context_window": 1000}])
+    snap.observed_via = spec.confidence
+    b = ingest_openai_compat(snap).bundles[0]
+    assert b.evidence, "no evidence to check"
+    assert {e.observed_via for e in b.evidence} == {spec.confidence}, \
+        "the adapter restated a confidence instead of reading the catalogue's"
+
+    # And the declaration itself is now the authority, not a default that happened
+    # to look plausible: Groq's own /models is first-party.
+    assert spec.confidence == "provider_api"
+    assert SOURCES["huggingface"].confidence == "provider_reported_probe", \
+        "a gateway relaying its upstreams' claims is weaker than a first-party catalogue"
+
+
 def test_every_source_describes_itself():
+    from mininfer.schema import SOURCE_CONFIDENCE
+
     for name, spec in SOURCES.items():
         assert spec.name == name, name
         assert spec.note, f"{name} has no note explaining what it is for"
         assert spec.tier in (0, 1, 2), name
-        assert spec.confidence in ("aggregator_api", "provider_api", "scraped")
+        # Assert against the vocabulary itself, not a hand-copied list: the old one
+        # allowed `scraped`, which is not a `SOURCE_CONFIDENCE` key, so a source
+        # declaring it would have been silently recorded at the 0.5 fallback. A
+        # declared confidence that does not exist is a typo the registry absorbs.
+        assert spec.confidence in SOURCE_CONFIDENCE, (
+            f"{name} declares {spec.confidence!r}, which is not a SOURCE_CONFIDENCE key")
 
 
 def test_a_source_without_an_endpoint_says_so_clearly():

@@ -92,7 +92,7 @@ def ingest_openrouter(snap: Snapshot, *, with_endpoints: bool = True, max_endpoi
         ev += evidence("deployment", d.deploy_id,
                         {"price_in": pin, "price_out": pout, "context_window": d.context_window,
                          "caps": d.caps, "free_variant": free_variant},
-                        snap.source + "/models", snap.url, snap.fetched_at, "aggregator_api")
+                        snap.source + "/models", snap.url, snap.fetched_at, snap.observed_via)
         if (reason := validate_prices("openrouter", mid, pin, pout)) and pin:
             run.quarantine.append(("openrouter", d.deploy_id, "pricing", {"in": pin, "out": pout}, reason))
         run.add(Bundle(w, d, ev, prices=price))

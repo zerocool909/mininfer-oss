@@ -35,6 +35,6 @@ def ingest_vercel(snap: Snapshot) -> Run:
         ev = evidence("deployment", d.deploy_id,
                        {"price_in": pin, "price_out": pout, "context_window": d.context_window,
                         "caps": d.caps, "free_variant": free_variant, "tags": m.get("tags")},
-                       snap.source, snap.url, snap.fetched_at, "aggregator_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run
