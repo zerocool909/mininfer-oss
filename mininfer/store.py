@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses as dc
+import hashlib
 import json
 import os
 import pathlib
@@ -163,6 +164,21 @@ PRICE_SUSPECT = "suspect"
 PRICE_QUARANTINED = "quarantined"
 PRICE_EXPIRED = "expired"
 PRICE_STATES = (PRICE_CANONICAL, PRICE_SUSPECT, PRICE_QUARANTINED, PRICE_EXPIRED)
+
+# The fact layer's states. Deliberately *not* states: `unverified` is the absence
+# of a resolution (`value` NULL), and `refuted` is a value (`false`) — conflating
+# either with a state is the confusion the three-valued design exists to prevent.
+FACT_CANONICAL = "canonical"      # resolved from evidence, uncontested
+FACT_DISPUTED = "disputed"        # two fresh votes at the same confidence disagree
+FACT_STALE = "stale"              # resolved, but nobody has re-asserted it in a while
+FACT_PINNED = "pinned"            # an operator said so; only another operator overturns it
+FACT_STATES = (FACT_CANONICAL, FACT_DISPUTED, FACT_STALE, FACT_PINNED)
+
+#: A capability is a *slow-moving* fact — it changes when the weights or the
+#: gateway change, not daily the way a price does — so this sits well above
+#: `PRICE_FRESHNESS_DAYS`. Ageing marks the fact `stale`; it does **not** stop it
+#: being used, exactly as an `expired` price is still ranked.
+FACT_FRESHNESS_DAYS = _env_number("FQS_FRESHNESS_DAYS", 90)
 
 # The anomaly kinds. `stale` is deliberately *not* one: a stale price is a
 # freshness fact (already a `price_resolution` state, and a re-ingest fixes it),
@@ -1394,6 +1410,220 @@ class Store:
                VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
             (snap.source, snap.url, snap.fetched_at, snap.sha256, snap.nbytes, snap.storage_uri),
         )
+
+    # ------------------------------------------------------- fact resolution
+
+    #: Facts that belong to the *artifact* rather than to one gateway. A modality
+    #: is a property of the weights, so every deployment of those weights is a peer
+    #: whose claim counts. Everything else — `cap.*` — is a property of the gateway
+    #: that serves it (one can refuse tool calls the next honours), so only the
+    #: deployment's own evidence decides and a peer may never supply a value.
+    WEIGHTS_SCOPED_PREFIXES = ("modality.",)
+
+    def _is_weights_scoped(self, field: str) -> bool:
+        return field.startswith(self.WEIGHTS_SCOPED_PREFIXES)
+
+    def _fact_evidence(self) -> list[dict[str, Any]]:
+        """Every capability/modality claim, one row per field.
+
+        Reads the exploded `cap.<key>` rows, and also explodes any legacy
+        `field='caps'` blob still in the table — those carry their `null`s inside the
+        JSON, which is exactly how an unreported capability came to overwrite a
+        reported one. `null` entries are dropped here as well as at emission, so the
+        rule holds for rows written before the fix.
+        """
+        sql = ("SELECT id, entity_kind, entity_id, field, value, source, url,"
+               " fetched_at, confidence, observed_via FROM evidence"
+               " WHERE field IN ('caps')"
+               "    OR field LIKE 'cap.%' OR field LIKE 'modality.%'")
+        out: list[dict[str, Any]] = []
+        for r in self.conn.execute(sql).fetchall():
+            row = dict(r)
+            if row["field"] == "caps":
+                try:
+                    blob = json.loads(row["value"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(blob, dict):
+                    continue
+                for cap, val in blob.items():
+                    if val is None:
+                        continue
+                    out.append({**row, "field": f"cap.{cap}", "value": json.dumps(val)})
+                continue
+            if row["value"] is None:
+                continue
+            out.append(row)
+        return out
+
+    def _fact_voter(self, row: dict, providers: dict[str, str]) -> str:
+        """Who gets the vote. The *upstream*, not the adapter.
+
+        `_source_key` collapses `hf/novita` and `hf/hyperbolic` into one `huggingface`
+        vote, because both carry `source='huggingface'` — so a single adapter serving
+        four gateways would confirm itself. The deployment's provider is the real
+        identity.
+        """
+        if row["entity_kind"] == "deployment":
+            return providers.get(row["entity_id"]) or row["source"] or "unknown"
+        return row["source"] or "unknown"
+
+    def _resolve_one_fact(self, rows: list[dict], providers: dict[str, str],
+                          now: dt.datetime | None = None) -> dict[str, Any]:
+        """Pick the winner for one (entity, field) and name the state.
+
+        Higher confidence wins outright, then newest — there is no margin, because a
+        boolean has no magnitude to compare. A tie between two *fresh* voters at the
+        same confidence is a `disputed` fact rather than an arbitrary winner.
+        """
+        votes = [r for r in rows if r["confidence"] is not None]
+        if not votes:
+            votes = list(rows)
+        # Total order, so the result is reproducible and a replayed snapshot cannot
+        # win by insertion order — it carries its original `fetched_at`.
+        votes.sort(key=lambda r: (r["confidence"] or 0.0, r["fetched_at"] or "", r["id"]))
+        winner = votes[-1]
+        voters = {self._fact_voter(r, providers) for r in votes}
+
+        state = FACT_PINNED if winner["observed_via"] == "manual" else FACT_CANONICAL
+        reason = f"{winner['observed_via']} ({winner['confidence']:.2f})"
+
+        # A disagreement among *equals* is a dispute. A weaker source contradicting a
+        # stronger one is not: it simply loses, and saying so would drown the
+        # disputes that need a human.
+        rivals = [r for r in votes[:-1]
+                  if r["value"] != winner["value"]
+                  and (r["confidence"] or 0.0) == (winner["confidence"] or 0.0)]
+        if rivals and state != FACT_PINNED:
+            state = FACT_DISPUTED
+            reason = (f"{len(rivals) + 1} sources at {winner['confidence']:.2f} disagree: "
+                      f"{winner['value']} kept over {', '.join(sorted({r['value'] for r in rivals}))}")
+
+        age = _age_days(winner["fetched_at"], now=now)
+        if state == FACT_CANONICAL and age is not None and age > FACT_FRESHNESS_DAYS:
+            state = FACT_STALE
+            reason = f"newest claim is {age:.0f}d old ({reason})"
+
+        return {
+            "entity_kind": winner["entity_kind"],
+            "entity_id": winner["entity_id"],
+            "field": winner["field"],
+            "value": winner["value"],
+            "state": state,
+            "reason": reason,
+            "source": winner["source"],
+            "observed_at": winner["fetched_at"],
+            "confidence": winner["confidence"],
+            "voters": len(voters),
+        }
+
+    def resolve_facts(self, *, now: dt.datetime | None = None) -> dict[str, Any]:
+        """Re-derive every capability and modality fact from its evidence.
+
+        The counterpart of `reconcile_prices`, and deliberately shaped like it:
+        nothing in `evidence` is mutated, so this is re-runnable at will and a changed
+        rule is a re-run rather than a migration. Writes `fact_resolution`, and a
+        `fact_history` row only when a belief actually *changes*.
+
+        A fact with no evidence is **not written at all**. Unverified is the absence
+        of a resolution, not a resolution to NULL — and storing it would make
+        "nobody reported this" indistinguishable from "we resolved it to nothing".
+        """
+        stamp = utcnow()
+        providers = {d["deploy_id"]: d.get("provider") or d.get("provider_family") or ""
+                     for d in self.deployments()}
+        rows = self._fact_evidence()
+        # Snapshot the *prior* belief before overwriting it. Reading it inside the
+        # writer would compare each fact against the value just written, so every row
+        # would look unchanged and no history would ever be recorded.
+        prior = {(r["entity_kind"], r["entity_id"], r["field"]): r
+                 for r in self.conn.execute(
+                     "SELECT entity_kind, entity_id, field, value, state"
+                     " FROM fact_resolution").fetchall()}
+
+        # Weights-scoped facts pool across every deployment of the artifact; copy
+        # them onto the weights id so one group holds all the peers' claims. Uses the
+        # *resolved* id — an alias and its canonical are the same artifact, so they
+        # must land in one group rather than two.
+        weights_of = {d["deploy_id"]: (d.get("weights_id_resolved") or d["weights_id"])
+                      for d in self.deployments()}
+        grouped: dict[tuple[str, str, str], list[dict]] = {}
+        for r in rows:
+            if self._is_weights_scoped(r["field"]):
+                if r["entity_kind"] == "deployment":
+                    wid = weights_of.get(r["entity_id"])
+                    if not wid:
+                        continue
+                    r = {**r, "entity_kind": "weights", "entity_id": wid}
+                elif r["entity_kind"] == "weights":
+                    pass
+                else:
+                    continue
+            key = (r["entity_kind"], r["entity_id"], r["field"])
+            grouped.setdefault(key, []).append(r)
+
+        resolutions = [self._resolve_one_fact(g, providers, now) for g in grouped.values()]
+        for res in resolutions:
+            self.conn.execute(
+                """INSERT INTO fact_resolution (entity_kind, entity_id, field, value,
+                       state, reason, source, observed_at, confidence, voters,
+                       reconciled_at)
+                   VALUES (:entity_kind,:entity_id,:field,:value,:state,:reason,:source,
+                       :observed_at,:confidence,:voters,:stamp)
+                   ON CONFLICT (entity_kind, entity_id, field) DO UPDATE SET
+                       value=excluded.value, state=excluded.state, reason=excluded.reason,
+                       source=excluded.source, observed_at=excluded.observed_at,
+                       confidence=excluded.confidence, voters=excluded.voters,
+                       reconciled_at=excluded.reconciled_at""",
+                {**res, "stamp": stamp},
+            )
+        history = self._record_fact_history(resolutions, stamp, prior)
+        states: dict[str, int] = {}
+        for res in resolutions:
+            states[res["state"]] = states.get(res["state"], 0) + 1
+        return {"facts": len(resolutions), "states": states, "history": history,
+                "unverified_entities": self._unverified_fact_entities(rows)}
+
+    def _unverified_fact_entities(self, rows: list[dict]) -> int:
+        """Deployments with at least one capability nobody has ever reported.
+
+        Reported rather than stored: "we have no evidence" is a fact about the
+        evidence, not a resolved value.
+        """
+        seen = {r["entity_id"] for r in rows if r["entity_kind"] == "deployment"}
+        return len({d["deploy_id"] for d in self.deployments()}) - len(seen)
+
+    def _record_fact_history(self, resolutions: list[dict], stamp: str,
+                             prior: dict) -> int:
+        """Append a belief row when a fact we hold *changes*.
+
+        Append-only and change-only, like `price_history`, and it records the value
+        **and** the state: the same value moving from `canonical` to `disputed` is a
+        different belief. `prior` is the belief *before* this pass — passed in rather
+        than re-read, because by now the table already holds the new values.
+        """
+        if not resolutions:
+            return 0
+        written = 0
+        for res in resolutions:
+            key = (res["entity_kind"], res["entity_id"], res["field"])
+            prev = prior.get(key)
+            if prev is not None and prev["value"] == res["value"] and prev["state"] == res["state"]:
+                continue
+            digest = hashlib.sha256(
+                f"{key[0]}|{key[1]}|{key[2]}|{res['value']}|{res['state']}|{stamp}"
+                .encode()).hexdigest()
+            self.conn.execute(
+                """INSERT INTO fact_history (history_id, entity_kind, entity_id, field,
+                       value, state, reason, source, observed_at, confidence,
+                       effective_from)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (history_id) DO NOTHING""",
+                (digest, res["entity_kind"], res["entity_id"], res["field"], res["value"],
+                 res["state"], res["reason"], res["source"], res["observed_at"],
+                 res["confidence"], stamp),
+            )
+            written += 1
+        return written
 
     def _add_evidence(self, items: Iterable[Evidence]) -> None:
         rows = [e.to_row() for e in items]
