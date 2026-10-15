@@ -471,3 +471,30 @@ def test_the_output_half_survives_a_second_ingest_that_omits_it():
         ).fetchone()["output_modalities"]
         assert "audio" in got, "a silent source erased the reported output list"
         s.close()
+
+
+def test_github_does_not_refute_capabilities_from_a_modality_list():
+    """`supported_input_modalities` is a modality list, not `supported_parameters`.
+
+    Passing it to `caps_from_params` intersected it against tool/structured/cache
+    names, found nothing, and returned `False` for all three — a confident
+    refutation computed from the wrong field. Worse than `None`: an unknown
+    capability follows `on_unverified_capability`, but `False` rejects outright on
+    every `reject`-mode task, with a reason that is wrong. GitHub publishes no
+    `supported_parameters`, so the honest answer is to say nothing.
+    """
+    snap = _snap("github", payload=[{
+        "id": "openai/gpt-4o",
+        "supported_input_modalities": ["text", "image"],
+        "limits": {"max_input_tokens": 128000, "max_output_tokens": 4096},
+    }])
+    b = ADAPTERS["github"](snap).bundles[0]
+
+    assert b.weights.modalities == ("text", "image"), "the field it read was discarded"
+    assert b.weights.output_modalities == (), "absent is not [text]"
+    assert b.deployment.caps["tools"] is None, "a capability was refuted from a modality list"
+    assert b.deployment.caps["structured"] is None
+    assert b.evidence, "this adapter used to emit no evidence at all"
+    assert {e.field for e in b.evidence} >= {"provider_model_id", "context_window"}
+    assert not any(e.field == "caps" for e in b.evidence), \
+        "an all-None caps dict is not a claim"
