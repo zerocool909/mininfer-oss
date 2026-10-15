@@ -31,6 +31,7 @@ def ingest_openrouter(snap: Snapshot, *, with_endpoints: bool = True, max_endpoi
         hf = m.get("hugging_face_id")
         arch = m.get("architecture") or {}
         mods = arch.get("input_modalities") or []
+        outs = arch.get("output_modalities") or []
         # `pricing.*` is USD per token — the `openrouter` contract scales it. The
         # deployment does not carry a price; the observation below does.
         price = read_prices_for("openrouter", m, snap)
@@ -59,7 +60,7 @@ def ingest_openrouter(snap: Snapshot, *, with_endpoints: bool = True, max_endpoi
             sources.append("openrouter/artificial_analysis")
         if elos:
             sources.append("openrouter/design_arena")
-        w = weights_for(name, hf, modalities=mods, benchmark=benchmark,
+        w = weights_for(name, hf, modalities=mods, output_modalities=outs, benchmark=benchmark,
                          benchmark_source="+".join(sources) or None)
         pmid = mid
         free_variant = mid.endswith(":free")

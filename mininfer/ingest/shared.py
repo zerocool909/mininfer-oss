@@ -129,7 +129,9 @@ def evidence(
 
 
 def weights_for(name: str, hf_repo: str | None, *, released: str | None = None,
-                 modalities: Iterable[str] = (), source: str = "", url: str | None = None,
+                 modalities: Iterable[str] = (),
+                 output_modalities: Iterable[str] = (),
+                 source: str = "", url: str | None = None,
                  fetched_at: str = "", benchmark: dict | None = None,
                  benchmark_source: str | None = None) -> Weights:
     wid = weights_id_for(hf_repo, name)
@@ -142,6 +144,7 @@ def weights_for(name: str, hf_repo: str | None, *, released: str | None = None,
         arch="moe" if is_moe_name(name) else None,
         released_at=released,
         modalities=tuple(modalities),
+        output_modalities=tuple(output_modalities),
         aliases=(name, normalize(name)),
         benchmark=benchmark or {},
         benchmark_source=benchmark_source,

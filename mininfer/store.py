@@ -382,6 +382,9 @@ CREATE TABLE IF NOT EXISTS weights (
   license          TEXT,
   released_at      TEXT,
   modalities       TEXT DEFAULT '[]',
+  -- The output half of modality. `modalities` above is the *input* list and always
+  -- was — five sources publish an output list too and every adapter discarded it.
+  output_modalities TEXT DEFAULT '[]',
   aliases          TEXT DEFAULT '[]',
   benchmark        TEXT DEFAULT '{}',
   benchmark_source TEXT,
@@ -423,6 +426,11 @@ CREATE TABLE IF NOT EXISTS deployments (
   -- Derived by `_sync_pricing_states` (P4). Never hand-set: it is a function of
   -- the price, the free markers, the routing status and quota headroom.
   pricing_state     TEXT,
+  -- How much to trust `caps`. `caps` holds the resolved value (three-valued:
+  -- true / false / null) and keeps its shape; this holds only the entries whose
+  -- state is not `canonical`, as `{"tools": "disputed"}`. Empty for almost every
+  -- row, which is why it is a blob rather than a table join on the hot path.
+  caps_state        TEXT DEFAULT '{}',
   source            TEXT,
   source_url        TEXT,
   first_seen        TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -973,7 +981,18 @@ class Store:
         # Why a deployment left `live` (`hibernated` = a free arm that started
         # charging, awaiting a human) and when, so the review has context.
         "deployments": {"status_reason": "TEXT", "status_changed_at": "TEXT",
-                        "pricing_state": "TEXT", "status_source": "TEXT DEFAULT 'source'"},
+                        "pricing_state": "TEXT", "status_source": "TEXT DEFAULT 'source'",
+                        # The capability states that are NOT `canonical`, as a JSON
+                        # blob — `{}` for the overwhelming majority of rows, so it
+                        # costs almost nothing to carry on the hot path. The
+                        # resolved *value* stays in `caps` (three-valued, shape
+                        # unchanged) and this says how much to trust it. The
+                        # DEFAULT matters: ALTER TABLE backfills existing rows with
+                        # it, so a migrated registry reads `{}` rather than NULL.
+                        "caps_state": "TEXT DEFAULT '{}'"},
+        # Modality is directional: `modalities` is the input half and was the only
+        # half recorded, while five sources publish the output half too.
+        "weights": {"output_modalities": "TEXT DEFAULT '[]'"},
         # The storied half of a model dossier, added after the table shipped.
         "model_dossiers": {"warrior": "TEXT", "story": "TEXT"},
     }
@@ -1055,11 +1074,11 @@ class Store:
         self.conn.execute(
             """
             INSERT INTO weights (weights_id, display_name, hf_repo, hf_revision, family,
-                params_b, arch, license, released_at, modalities, aliases, benchmark,
-                benchmark_source, last_seen)
+                params_b, arch, license, released_at, modalities, output_modalities, aliases,
+                benchmark, benchmark_source, last_seen)
             VALUES (:weights_id,:display_name,:hf_repo,:hf_revision,:family,:params_b,:arch,
-                :license,:released_at,:modalities,:aliases,:benchmark,:benchmark_source,
-                CURRENT_TIMESTAMP)
+                :license,:released_at,:modalities,:output_modalities,:aliases,:benchmark,
+                :benchmark_source, CURRENT_TIMESTAMP)
             ON CONFLICT(weights_id) DO UPDATE SET
                 display_name = COALESCE(excluded.display_name, weights.display_name),
                 hf_repo      = COALESCE(excluded.hf_repo, weights.hf_repo),
@@ -1071,6 +1090,11 @@ class Store:
                 released_at  = COALESCE(excluded.released_at, weights.released_at),
                 modalities   = CASE WHEN excluded.modalities != '[]'
                                     THEN excluded.modalities ELSE weights.modalities END,
+                -- Same rule, same reason: an unreported output list asserts nothing,
+                -- so it must not overwrite one a source did report.
+                output_modalities = CASE WHEN excluded.output_modalities != '[]'
+                                    THEN excluded.output_modalities
+                                    ELSE weights.output_modalities END,
                 aliases      = CASE WHEN excluded.aliases != '[]'
                                     THEN excluded.aliases ELSE weights.aliases END,
                 benchmark    = CASE WHEN excluded.benchmark NOT IN ('{}','null')
@@ -3398,11 +3422,29 @@ class Store:
         view — it silently attaches one model's benchmarks and outcomes to
         another — so a disagreement on parameter count refuses the merge and
         records why, instead of trusting the caller.
+
+        **Preserving, not deciding.** The merge deletes the alias's `weights` row,
+        so its facts have to be captured first — `unmerge_variant` cannot bring
+        them back, because it recreates the row from three columns and a
+        *deployment's* display name. Two things happen before the delete:
+
+        * the alias's fact columns **fill the canonical's gaps** (`COALESCE`, the
+          same rule `upsert_weights` already uses) — a present value is never
+          overwritten, so this is a preservation rule, not a resolution rule;
+        * weights-scoped `evidence` **follows the id**, because 2,058 rows in the
+          live registry key `entity_id` on a `weights_id` and would otherwise be
+          left pointing at a row that no longer exists.
+
+        Choosing between two *present* values is deliberately not done here. That
+        is the fact resolver's job (per-field, confidence-then-newest), and a
+        second rule here would compete with it.
         """
         if alias_id == canonical_id:
             return 0
+        cols = ("display_name, hf_repo, hf_revision, family, params_b, arch, license,"
+                " released_at, modalities, aliases, benchmark, benchmark_source")
         a = self.conn.execute(
-            "SELECT display_name, params_b FROM weights WHERE weights_id=?", (alias_id,)
+            f"SELECT {cols} FROM weights WHERE weights_id=?", (alias_id,)
         ).fetchone()
         b = self.conn.execute(
             "SELECT display_name, params_b FROM weights WHERE weights_id=?", (canonical_id,)
@@ -3420,6 +3462,13 @@ class Store:
                  f"vs {b['display_name']!r}"),
             )
             return 0
+
+        self._absorb_weights_facts(a, canonical_id)
+        # Before the row goes: evidence keyed on the old id must follow it.
+        self.conn.execute(
+            "UPDATE evidence SET entity_id=? WHERE entity_kind='weights' AND entity_id=?",
+            (canonical_id, alias_id),
+        )
         cur = self.conn.execute(
             "UPDATE deployments SET weights_id=? WHERE weights_id=?", (canonical_id, alias_id))
         moved = cur.rowcount
@@ -3433,6 +3482,40 @@ class Store:
         )
         self.conn.execute("DELETE FROM weights WHERE weights_id=?", (alias_id,))
         return moved
+
+    #: Scalar weights columns carried over only when the canonical has none.
+    _ABSORB_SCALARS = ("hf_repo", "hf_revision", "family", "params_b", "arch",
+                       "license", "released_at", "benchmark_source")
+    #: JSON weights columns, empty when `[]` / `{}`. Compared as text, matching
+    #: the `CASE WHEN excluded.modalities != '[]'` rule in `upsert_weights`.
+    _ABSORB_LISTS = (("modalities", "[]"), ("aliases", "[]"),
+                     ("benchmark", "{}"))
+
+    def _absorb_weights_facts(self, alias_row, canonical_id: str) -> None:
+        """Fill the canonical's empty weights columns from the alias being deleted.
+
+        Called before the alias row is removed. Never overwrites a value the
+        canonical already has — see `merge_weights` for why that distinction
+        matters. Takes the already-fetched alias row rather than re-reading it.
+        """
+        sets: list[str] = []
+        args: list = []
+        for col in self._ABSORB_SCALARS:
+            if alias_row[col] is not None:
+                sets.append(f"{col} = COALESCE({col}, ?)")
+                args.append(alias_row[col])
+        for col, empty in self._ABSORB_LISTS:
+            value = alias_row[col]
+            if value and value not in (empty, "null"):
+                sets.append(f"{col} = CASE WHEN {col} IS NULL OR {col} IN ('{empty}', 'null')"
+                            f" THEN ? ELSE {col} END")
+                args.append(value)
+        if not sets:
+            return
+        args.append(canonical_id)
+        self.conn.execute(
+            f"UPDATE weights SET {', '.join(sets)} WHERE weights_id = ?", args)
+
 
     def merged_ok(self, alias_id: str) -> bool:
         """True if `alias_id` was merged (or no longer exists as a live row)."""

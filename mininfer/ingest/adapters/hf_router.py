@@ -19,7 +19,8 @@ def ingest_hf_router(snap: Snapshot) -> Run:
         repo = m.get("id", "")
         arch = m.get("architecture") or {}
         mods = arch.get("input_modalities") or []
-        w = weights_for(repo, repo, modalities=mods)
+        outs = arch.get("output_modalities") or []
+        w = weights_for(repo, repo, modalities=mods, output_modalities=outs)
         for p in m.get("providers", []):
             prov = p.get("provider") or "unknown"
             # Each provider block carries its own `pricing.*`, in USD/Mtok per

@@ -371,3 +371,77 @@ def test_ingest_succeeds_when_every_source_was_skipped(monkeypatch):
                         lambda _s, _a: {"sources": 3, "ok": 0, "failed": 0, "skipped": 3})
 
     assert cli.cmd_ingest(_ingest_args()) == 0
+
+
+# --------------------------------------------------------------------------- #
+# modality is directional
+#
+# `modalities` is the *input* half and always was. Six sources publish an output
+# list as well, and every adapter discarded it — so an image generator and a
+# vision-capable text model were byte-identical in the registry.
+# --------------------------------------------------------------------------- #
+
+
+def test_both_modality_halves_are_recorded():
+    run = ingest_openai_compat(_snap("groq", [{
+        "id": "gpt-audio",
+        "input_modalities": ["text", "audio"],
+        "output_modalities": ["text", "audio"],
+    }]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text", "audio")
+    assert w.output_modalities == ("text", "audio")
+
+
+def test_a_source_that_publishes_no_output_list_leaves_it_unknown():
+    """`[]` is "unreported". Defaulting to `["text"]` would assert a fact nobody made,
+    and it is the whole distinction the three-valued design exists to protect."""
+    run = ingest_openai_compat(_snap("groq", [{"id": "llama-3.3-70b",
+                                               "input_modalities": ["text"]}]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text",)
+    assert w.output_modalities == ()
+
+
+def test_novita_records_both_halves_where_it_previously_read_neither():
+    run = ADAPTERS["novita"](_snap("novita", [{
+        "id": "deepseek/deepseek-v3",
+        "context_size": 64000,
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    }]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text",)
+    assert w.output_modalities == ("text",)
+
+
+def test_openrouter_records_the_output_half():
+    run = ADAPTERS["openrouter"](_snap("openrouter", [{
+        "id": "google/lyria-3-pro",
+        "name": "Lyria 3 Pro",
+        "architecture": {"input_modalities": ["text", "image"],
+                         "output_modalities": ["text", "audio"]},
+    }]), with_endpoints=False)
+    w = run.bundles[0].weights
+    assert w.modalities == ("text", "image")
+    assert "audio" in w.output_modalities, "a music generator must not read as text-only"
+
+
+def test_the_output_half_survives_a_second_ingest_that_omits_it():
+    """Same rule as `modalities`: an unreported list asserts nothing and must not
+    overwrite one a source did report."""
+    from mininfer.schema import Weights
+    from mininfer.store import Store
+    import tempfile, pathlib
+
+    with tempfile.TemporaryDirectory() as td:
+        s = Store(pathlib.Path(td) / "m.db")
+        s.upsert_weights(Weights("hf:a/omni", "omni",
+                                 modalities=("text",), output_modalities=("text", "audio")))
+        s.upsert_weights(Weights("hf:a/omni", "omni", modalities=("text",)))
+        s.commit()
+        got = s.conn.execute(
+            "SELECT output_modalities FROM weights WHERE weights_id='hf:a/omni'"
+        ).fetchone()["output_modalities"]
+        assert "audio" in got, "a silent source erased the reported output list"
+        s.close()

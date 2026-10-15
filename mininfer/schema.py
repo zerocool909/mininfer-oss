@@ -112,7 +112,12 @@ class Weights:
     arch: str | None = None  # dense | moe | unknown
     license: str | None = None
     released_at: str | None = None
+    #: Modality is directional and these are the two halves. `modalities` is the
+    #: *input* list and always was; `output_modalities` is what the model can
+    #: produce. Keeping only the first made an image generator and a
+    #: vision-capable text model indistinguishable in the registry.
     modalities: tuple[str, ...] = ()
+    output_modalities: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     benchmark: dict[str, float] = field(default_factory=dict)
     benchmark_source: str | None = None
@@ -120,6 +125,7 @@ class Weights:
     def to_row(self) -> dict[str, Any]:
         d = asdict(self)
         d["modalities"] = json.dumps(list(self.modalities))
+        d["output_modalities"] = json.dumps(list(self.output_modalities))
         d["aliases"] = json.dumps(list(self.aliases))
         d["benchmark"] = json.dumps(self.benchmark)
         return d

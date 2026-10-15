@@ -21,8 +21,9 @@ def ingest_vercel(snap: Snapshot) -> Run:
         price = read_prices_for("vercel", m, snap)
         pin, pout = price.price_in, price.price_out
         mods = (m.get("modalities") or {}).get("input") or []
+        outs = (m.get("modalities") or {}).get("output") or []
         free_variant = mid.endswith("-free")
-        w = weights_for(name, None, modalities=mods)
+        w = weights_for(name, None, modalities=mods, output_modalities=outs)
         d = make_deploy(
             "vercel", mid, w.weights_id, source=snap.source, source_url=snap.url,
             ctx=m.get("context_window"), maxout=m.get("max_tokens"),

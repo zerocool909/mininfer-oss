@@ -480,9 +480,15 @@ def cmd_resolve(args) -> int:
         store.close()
         return 0
 
-    merged, review = propose(store, auto=not args.no_auto)
-    store.commit()
-    print(f"auto-merged: {len(merged)}")
+    merged, review = propose(store, auto=not args.no_auto, dry_run=args.dry_run)
+    # `--dry-run` must not commit: the merge is a delete, so a pass that wrote
+    # here would make the flag a lie. It used to be passed only to
+    # `--split-variants` and `--adjudicate`, leaving the auto-merge half writing
+    # through a flag that promised it would not.
+    if not args.dry_run:
+        store.commit()
+    print(f"auto-merged: {len(merged)}"
+          + ("   (dry-run — nothing written)" if args.dry_run else ""))
     for p in merged[:15]:
         print(f"  {p.alias_id}\n    -> {p.canonical_id}   ({p.reason})")
     print(f"\nneeds review: {len(review)}")
