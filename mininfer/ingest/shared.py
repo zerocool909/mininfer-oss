@@ -120,12 +120,30 @@ def evidence(
     kind: str, eid: str, fields: dict, source: str, url: str | None,
     fetched_at: str, observed_via: str,
 ) -> list[Evidence]:
+    """One `Evidence` row per *field*, never one per payload.
+
+    The `is not None` guard is the whole point and it only works a field at a time.
+    A `caps` dict passed whole is not `None`, so it sailed through and its inner
+    `null`s were recorded as claims — which then overwrote confirmations from
+    sources that had actually reported the capability. Exploding the dict is what
+    makes "unreported" unrepresentable as evidence, and it is also the shape the
+    fact resolver wants: it ranks a fact per field, not per blob.
+    """
     conf = SOURCE_CONFIDENCE.get(observed_via, 0.5)
-    return [
-        Evidence(kind, eid, k, v, source, url, fetched_at, conf, observed_via)
-        for k, v in fields.items()
-        if v is not None
-    ]
+    out: list[Evidence] = []
+    for k, v in fields.items():
+        if k == "caps" and isinstance(v, dict):
+            # `cap.<key>`: a capability is a fact about one behaviour, so it carries
+            # its own provenance and can never be dragged down by a sibling.
+            for cap, val in v.items():
+                if val is not None:
+                    out.append(Evidence(kind, eid, f"cap.{cap}", val, source, url,
+                                        fetched_at, conf, observed_via))
+            continue
+        if v is not None:
+            out.append(Evidence(kind, eid, k, v, source, url, fetched_at, conf,
+                                observed_via))
+    return out
 
 
 def weights_for(name: str, hf_repo: str | None, *, released: str | None = None,

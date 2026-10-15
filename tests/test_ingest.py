@@ -382,6 +382,32 @@ def test_ingest_succeeds_when_every_source_was_skipped(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+def test_a_caps_blob_emits_one_row_per_reported_capability():
+    """The root cause of the capability clobber.
+
+    `evidence()` guards `if v is not None`, but a `caps` dict passed whole is not
+    `None` — so it sailed through and its inner `null`s were recorded as claims,
+    which then overwrote confirmations from sources that had actually reported the
+    capability. Exploding it is what makes "unreported" unrepresentable.
+    """
+    from mininfer.ingest.shared import evidence
+
+    ev = evidence("deployment", "p:x",
+                  {"caps": {"tools": True, "structured": None, "vision": False}},
+                  "s", "u", "2026-01-01T00:00:00+00:00", "aggregator_api")
+    got = {e.field: e.value for e in ev}
+    assert got == {"cap.tools": True, "cap.vision": False}, got
+    assert "cap.structured" not in got, "an unreported capability became a claim"
+
+
+def test_a_none_field_is_never_evidence():
+    from mininfer.ingest.shared import evidence
+
+    ev = evidence("weights", "hf:a/m", {"benchmark": None, "display_name": "m"},
+                  "s", "u", "2026-01-01T00:00:00+00:00", "aggregator_api")
+    assert [e.field for e in ev] == ["display_name"]
+
+
 def test_both_modality_halves_are_recorded():
     run = ingest_openai_compat(_snap("groq", [{
         "id": "gpt-audio",

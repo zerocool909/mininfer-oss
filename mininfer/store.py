@@ -586,6 +586,59 @@ CREATE TABLE IF NOT EXISTS price_history (
 );
 CREATE INDEX IF NOT EXISTS idx_ph_deploy ON price_history(deploy_id, kind, effective_from);
 
+-- The fact resolver's decision, per entity and field (the capability/modality
+-- counterpart of `price_resolution`). Derived from `evidence` and re-derivable at
+-- will, but stored rather than computed by a view because the algorithm is not
+-- expressible in SQL: it pools weights-scoped evidence across every deployment of
+-- an artifact, ranks by source confidence and then freshness, and distinguishes
+-- "nobody reported it" from "a source denied it".
+--
+-- `value` is the resolved three-valued answer: `true`, `false`, or NULL for
+-- unverified. NULL is the *absence of a resolution*, not a third value — the
+-- distinction the whole design protects. `state` is one of
+-- canonical | disputed | stale | pinned.
+--
+-- No surrogate `id`: `sync` drops those, so the key is the identity.
+CREATE TABLE IF NOT EXISTS fact_resolution (
+  entity_kind   TEXT NOT NULL,   -- 'weights' | 'deployment'
+  entity_id     TEXT NOT NULL,
+  field         TEXT NOT NULL,   -- 'cap.tools' | 'modality.in' | 'modality.out'
+  value         TEXT,            -- 'true' | 'false' | NULL = unverified
+  state         TEXT NOT NULL,
+  reason        TEXT,
+  source        TEXT,
+  observed_at   TEXT,
+  confidence    REAL,
+  -- Upstreams that voted, not sources: an adapter serving several gateways must
+  -- not let them confirm each other into one vote.
+  voters        INTEGER NOT NULL DEFAULT 0,
+  reconciled_at TEXT NOT NULL,
+  PRIMARY KEY (entity_kind, entity_id, field)
+);
+CREATE INDEX IF NOT EXISTS idx_fr_state ON fact_resolution(state);
+
+-- The fact layer's belief history, the counterpart of `price_history`. Append-only
+-- and change-only, recording the value *and* the state: the same value moving from
+-- `canonical` to `disputed` is a different belief.
+--
+-- `history_id` is content-derived text, not a rowid, because `sync` drops
+-- surrogate ids and two mirrors must agree about which belief a row is.
+CREATE TABLE IF NOT EXISTS fact_history (
+  history_id     TEXT PRIMARY KEY,
+  entity_kind    TEXT NOT NULL,
+  entity_id      TEXT NOT NULL,
+  field          TEXT NOT NULL,
+  value          TEXT,
+  state          TEXT NOT NULL,
+  reason         TEXT,
+  source         TEXT,
+  observed_at    TEXT,
+  confidence     REAL,
+  effective_from TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fh_entity
+  ON fact_history(entity_kind, entity_id, field, effective_from);
+
 CREATE TABLE IF NOT EXISTS snapshots (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   source      TEXT, url TEXT, fetched_at TEXT,
