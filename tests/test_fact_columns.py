@@ -45,11 +45,25 @@ def test_an_existing_registry_gains_them_without_losing_data(tmp_path):
                                    caps={"tools": True, "structured": None}))
     s.commit()
     # Simulate the pre-migration shape, then forget the path as a new process would.
+    # Postgres refuses to drop a column a view selects, so the dependent view goes
+    # first; `initialize` recreates it, which is also what makes the view safe
+    # against a future column (it is `select d.*`, and therefore positional).
+    try:
+        s.conn.execute("DROP VIEW IF EXISTS deployments_priced")
+        s.conn.execute("DROP VIEW IF EXISTS weights_resolved")
+    except Exception:
+        pass
     for table, column in NEW_COLUMNS:
         s.conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     s.commit()
+    # `initialize` keys the cache on the resolved path for a file registry and on the
+    # DSN for Postgres, so clear whichever this Store used — otherwise the reopen
+    # skips both the DDL and `_migrate` and the assertion passes for the wrong reason.
+    keys = {str(path.resolve()), str(getattr(s, "target", "") or "")}
     s.close()
-    _INITIALIZED_DBS.discard(str(path.resolve()))
+    for _k in keys:
+        if _k:
+            _INITIALIZED_DBS.discard(_k)
 
     s = Store(path)
     for table, column in NEW_COLUMNS:

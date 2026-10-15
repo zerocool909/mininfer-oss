@@ -1066,6 +1066,7 @@ class Store:
     }
 
     def _migrate(self) -> None:
+        widened: set[str] = set()
         for table, columns in self._ADDED_COLUMNS.items():
             have = self.conn.columns(table)
             if not have:
@@ -1073,6 +1074,20 @@ class Store:
             for name, decl in columns.items():
                 if name not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    widened.add(table)
+        # A view built on `d.*` / `w.*` is *positional*, and Postgres's
+        # `CREATE OR REPLACE VIEW` may only append columns: widening the base table
+        # inserts the new column into the middle of the star expansion and Postgres
+        # refuses with "cannot change name of view column X to Y". That is the trap
+        # `_ROUTING_STATS_VIEW`'s comment warns about, and this is the other half of
+        # the fix — the view has to be dropped on the boot that changed its shape,
+        # which is the only boot where it is being redefined anyway.
+        for view, base in (("deployments_priced", "deployments"),
+                           ("weights_resolved", "weights"),
+                           ("routing_stats", "observations"),
+                           ("price_history_dated", "price_history")):
+            if base in widened:
+                self.conn.execute(f"DROP VIEW IF EXISTS {view}")
         # An index on an *added* column has to be created here, after the ALTER,
         # not in the base DDL: `CREATE INDEX IF NOT EXISTS … (session_id)` would
         # run against an old registry that does not have the column yet and fail
