@@ -3200,6 +3200,7 @@ class Store:
             """SELECT d.deploy_id, d.weights_id, d.provider, d.provider_model_id,
                       d.context_window, d.max_output, d.price_in, d.price_out,
                       d.zero_price, d.free_variant, d.subscription, d.trial_credits,
+                      d.caps, d.caps_state,
                       d.status, d.status_reason, d.uptime_1d, d.first_token_ms,
                       d.throughput, d.pricing_state,
                       w.display_name, w.family, w.params_b, w.arch, w.modalities,

@@ -248,3 +248,26 @@ def test_the_prompt_forbids_recommending_a_task_the_arm_cannot_serve():
     out = _prompt({"caps": {"structured": False}}, [], ["extraction"])
     assert "only name tasks this arm can actually serve" in out
     assert "`null` means" in out, "the three-valued rule must be stated, not implied"
+
+
+def test_the_scout_arm_row_carries_capabilities(tmp_path):
+    """`free_deployments()` selects an explicit column list, and `caps` was not in it.
+
+    Same class of bug as the structural gate reading modality through a dict-only
+    parser: the data exists, the query does not fetch it, and the consumer silently
+    sees nothing. `_facts` was given `caps` and still received `{}` because the row
+    it was handed never had the column — which left the confidence derivation unable
+    to discriminate at all, and the prompt unable to see what an arm can do.
+    """
+    from mininfer.schema import Deployment, Weights
+
+    s = Store(tmp_path / "arms.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    s.upsert_deployment(Deployment("p:x", "hf:a/m", "p", "x", zero_price=True,
+                                   caps={"tools": True, "structured": False}))
+    s.commit()
+
+    row = s.free_deployments()[0]
+    assert "caps" in row and "caps_state" in row
+    assert row["caps"], "the scout's arm row lost its capabilities"
+    s.close()
