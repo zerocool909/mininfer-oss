@@ -378,3 +378,72 @@ def test_the_modality_requirement_separates_refuted_from_unreported(tmp_path):
     assert "unsupported input modality" in (verdicts["textonly"] or "")
     assert verdicts["silent"] is None, \
         "an unreported modality is not the same as a refuted one"
+
+
+# --------------------------------------------------------------------------- #
+# the resolver's output must reach the router (the two gaps found after step 8)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_disputed_capability_is_not_silently_treated_as_canonical(tmp_path):
+    """Ticket 06 and 13 both decided `disputed` follows `on_unverified_capability`.
+
+    It was recorded and never read: `_reject` consulted only the value, so a fact
+    two sources disagreed about was served as though it were settled. A state
+    machine nothing consumes is not a mechanism.
+    """
+    from mininfer.router import Policy, build_candidates
+
+    s = Store(tmp_path / "dis.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    d = Deployment("p:x", "hf:a/m", "p", "x", zero_price=True, context_window=200000)
+    s.upsert_deployment(d)
+    # Equal confidence, conflicting values: a genuine dispute, not a loss.
+    s._add_evidence([
+        _ev("deployment", "p:x", "cap.structured", True, 0.7, source="gateway-a"),
+        _ev("deployment", "p:x", "cap.structured", False, 0.7, source="gateway-b"),
+    ])
+    s.commit()
+    s.resolve_facts()
+    s.commit()
+    assert _facts(s, "deployment", "p:x", "cap.structured")["state"] == "disputed"
+
+    policy, tasks = Policy.load("config/policy.yaml")
+    policy.require_callable = False
+    # `sql_generation` requires `structured` and rejects an unverified one.
+    verdicts = {c.deploy_id: c.rejected for c in build_candidates(s, tasks["sql_generation"], policy)}
+    assert verdicts["p:x"] and "disputed" in verdicts["p:x"], \
+        f"a disputed capability was served as canonical: {verdicts['p:x']!r}"
+    s.close()
+
+
+def test_resolve_facts_projects_into_the_column_the_router_reads(tmp_path):
+    """Writing `fact_resolution` without projecting leaves the router reading a
+    column the resolver does not maintain, so a re-run changes nothing anyone uses."""
+    import json as _json
+
+    s = Store(tmp_path / "proj.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    s.upsert_deployment(Deployment("p:x", "hf:a/m", "p", "x"))
+    s._add_evidence([_ev("deployment", "p:x", "cap.tools", True, 0.95, via="provider_api")])
+    s.commit()
+
+    rep = s.resolve_facts()
+    s.commit()
+    assert rep["projected"] == 1
+
+    row = s.conn.execute(
+        "SELECT caps, caps_state FROM deployments WHERE deploy_id='p:x'").fetchone()
+    assert _json.loads(row["caps"])["tools"] is True
+    assert row["caps_state"] == "{}"
+
+    # And a change in evidence is reflected on a re-run, which is the point.
+    s._add_evidence([_ev("deployment", "p:x", "cap.tools", False, 0.95, when="2026-11-01T00:00:00+00:00")])
+    s.commit()
+    s.resolve_facts()
+    s.commit()
+    row = s.conn.execute(
+        "SELECT caps FROM deployments WHERE deploy_id='p:x'").fetchone()
+    assert _json.loads(row["caps"])["tools"] is False, \
+        "a re-run did not reach the column the router reads"
+    s.close()

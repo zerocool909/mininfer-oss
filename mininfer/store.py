@@ -1661,11 +1661,51 @@ class Store:
                 {**res, "stamp": stamp},
             )
         history = self._record_fact_history(resolutions, stamp, prior)
+        # Project. Writing `fact_resolution` without this would leave the router
+        # reading a column the resolver does not maintain, so a re-run would change
+        # nothing that anything consumes — the resolver has to be the author of the
+        # value, not just of the record behind it.
+        projected = self._project_caps(resolutions)
         states: dict[str, int] = {}
         for res in resolutions:
             states[res["state"]] = states.get(res["state"], 0) + 1
         return {"facts": len(resolutions), "states": states, "history": history,
+                "projected": projected,
                 "unverified_entities": self._unverified_fact_entities(rows)}
+
+    def _project_caps(self, resolutions: list[dict]) -> int:
+        """Write resolved capabilities onto the deployments the router reads.
+
+        Only for deployments that resolved at least one capability: an arm with no
+        capability evidence must keep whatever it has rather than be blanked, because
+        "we have no evidence" is not "it has no capabilities".
+
+        `caps` keeps its three-valued shape (true / false / null) so `_reject` needs
+        no change; `caps_state` carries only the entries that are not `canonical`, so
+        it costs nothing on the hot path for the overwhelming majority of rows.
+        """
+        by_deploy: dict[str, dict[str, dict]] = {}
+        for res in resolutions:
+            if res["entity_kind"] != "deployment" or not res["field"].startswith("cap."):
+                continue
+            by_deploy.setdefault(res["entity_id"], {})[res["field"].split(".", 1)[1]] = res
+        written = 0
+        for deploy_id, caps in by_deploy.items():
+            values: dict[str, Any] = {}
+            states: dict[str, str] = {}
+            for cap, res in sorted(caps.items()):
+                try:
+                    values[cap] = json.loads(res["value"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if res["state"] != FACT_CANONICAL:
+                    states[cap] = res["state"]
+            cur = self.conn.execute(
+                "UPDATE deployments SET caps=?, caps_state=? WHERE deploy_id=?",
+                (json.dumps(values), json.dumps(states), deploy_id),
+            )
+            written += cur.rowcount
+        return written
 
     def _unverified_fact_entities(self, rows: list[dict]) -> int:
         """Deployments with at least one capability nobody has ever reported.

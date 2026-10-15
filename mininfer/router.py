@@ -34,7 +34,7 @@ from . import probe as probe_mod
 from .bandit import bandit_order
 from .execute import available_providers
 from .schema import Candidate, TaskProfile
-from .store import Store
+from .store import FACT_DISPUTED, Store
 
 # --------------------------------------------------------------------------- #
 # statistics & caching
@@ -877,7 +877,12 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
         if not needed:
             continue
         have = caps.get(cap)
-        if have is None:
+        # A *disputed* capability is genuinely uncertain, so it takes the same route as
+        # an unreported one. `stale` deliberately does not: a confirmation does not
+        # become false because nobody re-asserted it, and gating on it would pre-empt
+        # `free_floor_exempt` on exactly the untried free arms that exists to try.
+        disputed = _json_field(d.get("caps_state")).get(cap) == FACT_DISPUTED
+        if have is None or disputed:
             # The task gets the last word: whether an unverified capability is
             # tolerable depends on what it is used for. A model that cannot emit a
             # tool call fails silently — the loop simply does nothing — while a
@@ -885,7 +890,10 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
             mode = (getattr(task, "on_unverified_capability", None)
                     or policy.on_unverified_capability)
             if mode == "reject":
-                return f"unverified capability: {cap} (source never reported it)"
+                why = ("sources disagree" if disputed
+                       else "source never reported it")
+                kind = "disputed" if disputed else "unverified"
+                return f"{kind} capability: {cap} ({why})"
             continue
         if not have:
             return f"unsupported capability: {cap}"
