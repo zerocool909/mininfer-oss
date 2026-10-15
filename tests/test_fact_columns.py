@@ -447,3 +447,48 @@ def test_resolve_facts_projects_into_the_column_the_router_reads(tmp_path):
     assert _json.loads(row["caps"])["tools"] is False, \
         "a re-run did not reach the column the router reads"
     s.close()
+
+
+def test_the_resolver_can_pool_modality_across_the_deployments_of_an_artifact(tmp_path):
+    """Weights-scoped pooling had no input until modality became evidence.
+
+    The adapters set modality on the `Weights` object and nothing emitted it as a
+    claim, so the scope that is *supposed* to pool across every deployment of an
+    artifact had nothing to pool — tested, and inert against real data.
+    """
+    from mininfer.schema import Evidence
+
+    s = Store(tmp_path / "pool.db")
+    anchor = Evidence("weights", "hf:a/omni", "display_name", "omni", "src", "u", _T,
+                      0.95, "provider_api")
+    s.upsert_weights(Weights("hf:a/omni", "omni", modalities=("text", "image"),
+                             output_modalities=("text", "audio")), [anchor])
+    s.commit()
+
+    fields = {r["field"]: r["value"] for r in s.conn.execute(
+        "SELECT field, value FROM evidence WHERE entity_kind='weights'"
+        " AND entity_id='hf:a/omni'").fetchall()}
+    assert "modality.in" in fields and "audio" not in fields["modality.in"]
+    assert "modality.out" in fields and "audio" in fields["modality.out"]
+
+    # And the resolver now pools them onto the artifact.
+    s.upsert_deployment(Deployment("p:x", "hf:a/omni", "p", "x", zero_price=True))
+    s.commit()
+    s.resolve_facts()
+    s.commit()
+    pooled = _facts(s, "weights", "hf:a/omni", "modality.out")
+    assert pooled is not None and "audio" in pooled["value"]
+    s.close()
+
+
+def test_modality_evidence_is_not_attributed_to_nobody(tmp_path):
+    """With no sibling claim to borrow provenance from, nothing is recorded — a fact
+    attributed to a source that said nothing is worse than an unrecorded one."""
+    s = Store(tmp_path / "noanchor.db")
+    s.upsert_weights(Weights("hf:a/m", "m", modalities=("text", "image")))
+    s.commit()
+    n = s.conn.execute(
+        "SELECT COUNT(*) c FROM evidence WHERE entity_kind='weights'"
+        " AND field LIKE 'modality.%'").fetchone()["c"]
+    assert n == 0
+    s.close()

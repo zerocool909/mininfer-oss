@@ -48,6 +48,51 @@ _SEARCH_LIMIT = 3
 _SNIPPET_CHARS = 400
 
 
+def derive_confidence(sources: list[dict], facts: dict) -> tuple[float, dict]:
+    """How much a dossier should be trusted, from what it was built on.
+
+    Replaces the writing model's own 0.0-1.0 self-report, which was doing real work:
+    it gates routing through `dossier_min_confidence` (0.6). A self-assessment cannot
+    be right or wrong, so it cannot be calibrated — and it showed: four of the first
+    five real dossiers came back at exactly 0.40, over arms with three sources and
+    arms with sparse facts alike.
+
+    Derived instead from what is *checkable*:
+
+    * **sources** — how many, saturating at three. Nothing else is available.
+    * **leaderboards** — an arm on a benchmark has an independent opinion of it.
+    * **capability coverage** — how many of `CAP_KEYS` are resolved rather than
+      `null`. A dossier written for an arm whose capabilities nobody has reported is
+      guessing about the one thing that decides which tasks it can serve.
+
+    The writer's own number is kept as `facts.writer_confidence`: visible, and not
+    authoritative. Returns `(confidence, basis)` so a reader can see the arithmetic
+    rather than trust a bare float.
+    """
+    from .schema import CAP_KEYS
+
+    n_sources = len(sources or [])
+    n_boards = len(facts.get("leaderboards") or [])
+    caps = facts.get("caps") or {}
+    resolved = sum(1 for k in CAP_KEYS if caps.get(k) is not None)
+
+    base = 0.30
+    from_sources = 0.10 * min(n_sources, 3)
+    from_boards = 0.10 * min(n_boards, 2)
+    from_caps = 0.15 * (resolved / max(len(CAP_KEYS), 1))
+    score = base + from_sources + from_boards + from_caps
+    # No sources at all is the floor: the dossier is the registry facts restated.
+    if not n_sources:
+        score = min(score, 0.35)
+    return round(max(0.0, min(1.0, score)), 2), {
+        "sources": n_sources, "leaderboards": n_boards,
+        "caps_resolved": resolved, "caps_of": len(CAP_KEYS),
+        "from_sources": round(from_sources, 2),
+        "from_leaderboards": round(from_boards, 2),
+        "from_caps": round(from_caps, 2),
+    }
+
+
 def _parse_json_field(raw: str | None, default: Any) -> Any:
     if not raw:
         return default
@@ -244,10 +289,12 @@ def _synthesize(agent_model: str | None, prompt: str) -> dict:
         v = data.get(key) or []
         return v if isinstance(v, list) else [v]
 
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
+
+    def _self_report(payload: dict) -> float | None:
+        try:
+            return max(0.0, min(1.0, float(payload.get("confidence"))))
+        except (TypeError, ValueError):
+            return None
 
     return {
         # Which arm in the fallback chain actually answered — provenance for the
@@ -260,7 +307,9 @@ def _synthesize(agent_model: str | None, prompt: str) -> dict:
         "when_to_use": [str(x) for x in _list("when_to_use")],
         "when_not_to_use": [str(x) for x in _list("when_not_to_use")],
         "best_for": [str(x) for x in _list("best_for")],
-        "confidence": max(0.0, min(1.0, confidence)),
+        # Kept, not used. `derive_confidence` replaces it because a self-assessment
+        # cannot be calibrated; this stays so the two can be compared.
+        "writer_confidence": _self_report(data),
     }
 
 
@@ -320,6 +369,11 @@ def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
         facts["search"] = search_meta
         dossier = _synthesize(agent_model, _prompt(facts, sources, task_names))
         facts["agent_model"] = dossier.get("_agent_model") or ""
+        # After the sources are known and before the row is written: `confidence`
+        # gates routing, so it has to be measured rather than asserted.
+        confidence, basis = derive_confidence(sources, facts)
+        dossier["confidence"] = confidence
+        facts["confidence_basis"] = basis
         # Enforce, do not request. The prompt states the eligibility rule and the
         # writer does not reliably follow it, so a stored dossier is made sound here
         # instead. What was dropped is recorded, because silently shortening a list

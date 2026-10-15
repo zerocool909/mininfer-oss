@@ -1172,7 +1172,8 @@ class Store:
             """,
             row,
         )
-        self._add_evidence(evidence)
+        claims = list(evidence) + self._modality_claims(w, list(evidence))
+        self._add_evidence(claims)
 
     def upsert_deployment(
         self, d: Deployment, evidence: Iterable[Evidence] = (), quarantine: Iterable[tuple] = (),
@@ -1491,6 +1492,38 @@ class Store:
         if row["entity_kind"] == "deployment":
             return providers.get(row["entity_id"]) or row["source"] or "unknown"
         return row["source"] or "unknown"
+
+    #: Modality facts are properties of the artifact, so their evidence is scoped to
+    #: the weights row. The field names are what the resolver pools on.
+    _MODALITY_FIELDS = (("modalities", "modality.in"),
+                        ("output_modalities", "modality.out"))
+
+    def _modality_claims(self, w: Weights, evidence: list[Evidence]) -> list[Evidence]:
+        """Record an artifact's modality lists as weights-scoped evidence.
+
+        Without this the resolver's weights-scoped pooling has no input at all: the
+        adapters set modality on the `Weights` object and nothing ever emitted it as a
+        claim, so the one scope that is supposed to pool across every deployment of an
+        artifact had nothing to pool.
+
+        Provenance is borrowed from the adapter's own claims for this same weights row
+        — they came from the same payload — and with nothing to borrow from the value
+        is left unrecorded rather than attributed to a source that said nothing. This
+        mirrors `_adopt_deployment_caps`, deliberately: one seam per fact kind.
+        """
+        existing = {e.field for e in evidence}
+        anchor = evidence[0] if evidence else None
+        out: list[Evidence] = []
+        for attr, field in self._MODALITY_FIELDS:
+            if field in existing:
+                continue
+            values = list(getattr(w, attr, ()) or ())
+            if not values or anchor is None:
+                continue
+            out.append(Evidence("weights", w.weights_id, field, values,
+                                anchor.source, anchor.url, anchor.fetched_at,
+                                anchor.confidence, anchor.observed_via))
+        return out
 
     def _adopt_deployment_caps(self, d: Deployment) -> None:
         """Record a deployment's `caps` dict as claims when no adapter did.
