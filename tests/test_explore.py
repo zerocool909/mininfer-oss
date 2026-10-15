@@ -177,7 +177,7 @@ def test_benchmarks_travel_with_the_model(store):
 def test_facets_report_confirmed_capabilities(store):
     caps = store._capability_facets()
     assert caps["tools"] == 3
-    assert caps["image"] == 1, "the modality facet replaced the projected vision cap"
+    assert "image" not in caps, "a modality is not a capability"
     assert caps["structured"] == 2
     assert caps["reasoning"] == 0
 
@@ -200,4 +200,6 @@ def test_endpoint_serves_the_explorer(tmp_path, monkeypatch):
     assert body["models"][0]["deploy_id"] == "openrouter:qwen7b-free"
     assert body["models"][0]["caps"]["tools"] is True
     assert isinstance(body["providers"], list) and "groq" in body["providers"]
-    assert body["capabilities"]["image"] == 1
+    # A modality is not a capability: its own key, so the chip row can word it
+    # differently and neither list has to guess which kind a value is.
+    assert body["modalities"]["image"] == 1

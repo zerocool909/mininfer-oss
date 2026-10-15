@@ -3587,10 +3587,7 @@ class Store:
             for k in CAP_KEYS)
         args = tuple(f'%"{k}": true%' for k in CAP_KEYS)
         row = self.conn.execute(f"SELECT {cols} FROM deployments", args).fetchone()
-        out = {k: int(row[k] or 0) for k in CAP_KEYS}
-        for modality, count in self._modality_facets().items():
-            out[modality] = out.get(modality, 0) + count
-        return out
+        return {k: int(row[k] or 0) for k in CAP_KEYS}
 
     def _modality_facets(self) -> dict[str, int]:
         """How many deployments can handle each content type, either direction."""
@@ -3729,6 +3726,10 @@ class Store:
                 "count": len(models), "models": models,
                 "providers": providers,
                 "capabilities": self._capability_facets(),
+                # Kept separate rather than merged into `capabilities`: a modality
+                # is a content type, not a behaviour, and the chip row words them
+                # differently ("deployments confirm" is wrong for `image`).
+                "modalities": self._modality_facets(),
                 "sort": sort if sort in order else "name"}
 
     def recent_decisions(self, limit: int = 10) -> list[dict[str, Any]]:

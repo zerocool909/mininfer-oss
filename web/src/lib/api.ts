@@ -332,6 +332,8 @@ export interface ExploreResult {
   models: ExploreModel[]
   providers: string[]
   capabilities: Record<string, number>
+  /** Content types, by value (`image`, `audio`). Not capabilities. */
+  modalities: Record<string, number>
   sort: string
 }
 
