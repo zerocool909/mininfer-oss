@@ -315,3 +315,66 @@ def test_a_weights_scoped_fact_pools_peers_and_a_gateway_scoped_one_does_not(tmp
     assert _facts(s, "deployment", "gateway-b:m", "cap.tools") is None, \
         "a gateway-scoped fact leaked across gateways"
     s.close()
+
+
+# --------------------------------------------------------------------------- #
+# the structural gate (ticket 09 / handoff step 8)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_model_that_produces_media_is_rejected_regardless_of_its_name(tmp_path):
+    """`kling-v2.6-motion-control`, `seedance-*`, `veo-*`, `recraft-*`, `gpt-image-*`
+    and `grok-imagine-image` carry none of the name tokens, so the token list cannot
+    see them. What a model *produces* can.
+
+    This test exists because the gate silently did nothing on its first
+    implementation: `_json_field` is dict-only and returns `{}` for a JSON array, so
+    every arm read an empty output list.
+    """
+    from mininfer.router import Policy, build_candidates
+
+    s = Store(tmp_path / "gate.db")
+    s.upsert_weights(Weights("hf:a/veo", "veo-3", output_modalities=("video",)))
+    s.upsert_weights(Weights("hf:a/chat", "chat-9", output_modalities=("text",)))
+    s.upsert_weights(Weights("hf:a/unknown", "mystery"))
+    for wid in ("hf:a/veo", "hf:a/chat", "hf:a/unknown"):
+        s.upsert_deployment(Deployment(wid.split("/")[-1], wid, "p", wid.split("/")[-1],
+                                       zero_price=True, context_window=200000,
+                                       caps={"tools": True}))
+    s.commit()
+
+    policy, tasks = Policy.load("config/policy.yaml")
+    policy.require_callable = False
+    pool = build_candidates(s, tasks["general_chat"], policy)
+    verdicts = {c.deploy_id: c.rejected for c in pool}
+
+    assert "output_modalities" in (verdicts["veo"] or ""), \
+        "a video producer was not caught structurally"
+    assert verdicts["chat"] is None, "a text producer must be admitted"
+    assert verdicts["unknown"] is None, \
+        "an arm with no reported output modality is unverified, not refuted"
+
+
+def test_the_modality_requirement_separates_refuted_from_unreported(tmp_path):
+    """An arm that reports modalities but not the required one is *refuted*; an arm
+    that reports none at all is *unverified* and follows the policy. Collapsing the
+    two is how a schema fix becomes a silent coverage loss."""
+    from mininfer.router import Policy, build_candidates
+
+    s = Store(tmp_path / "req.db")
+    s.upsert_weights(Weights("hf:a/textonly", "t", modalities=("text",)))
+    s.upsert_weights(Weights("hf:a/silent", "s"))
+    for wid in ("hf:a/textonly", "hf:a/silent"):
+        s.upsert_deployment(Deployment(wid.split("/")[-1], wid, "p", wid.split("/")[-1],
+                                       zero_price=True, context_window=200000,
+                                       caps={"structured": True}))
+    s.commit()
+
+    policy, tasks = Policy.load("config/policy.yaml")
+    policy.require_callable = False
+    task = tasks["shelf_image_audit"]
+    verdicts = {c.deploy_id: c.rejected
+                for c in build_candidates(s, task, policy)}
+    assert "unsupported input modality" in (verdicts["textonly"] or "")
+    assert verdicts["silent"] is None, \
+        "an unreported modality is not the same as a refuted one"
