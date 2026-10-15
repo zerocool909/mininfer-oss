@@ -29,7 +29,6 @@ def ingest_vercel(snap: Snapshot) -> Run:
             ctx=m.get("context_window"), maxout=m.get("max_tokens"),
             free_variant=free_variant,
             caps=caps_from_params(m.get("supported_parameters") or None,
-                                   vision=bool({"image"} & set(mods)) if mods else None,
                                    reasoning=True if "reasoning" in (m.get("tags") or []) else None),
             status="deprecated" if m.get("deprecated_at") else "live",
         )

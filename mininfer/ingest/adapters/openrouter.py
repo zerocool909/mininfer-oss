@@ -79,7 +79,6 @@ def ingest_openrouter(snap: Snapshot, *, with_endpoints: bool = True, max_endpoi
             ctx=m.get("context_length"), maxout=(m.get("top_provider") or {}).get("max_completion_tokens"),
             free_variant=free_variant,
             caps=caps_from_params(m.get("supported_parameters") or None,
-                                   vision=bool({"image"} & set(mods)) if mods else None,
                                    reasoning=True if (m.get("reasoning") or {}).get("mandatory") else None),
             limits=default_free_limits("openrouter") if (free_variant or (pin == 0)) else {},
             limits_confirmed=False,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from ..shared import (
-    caps_from_modalities,
     make_deploy,
     evidence,
     f,
@@ -34,8 +33,7 @@ def ingest_hf_router(snap: Snapshot) -> Run:
                 ctx=p.get("context_length"),
                 free_variant=is_free,
                 caps={"tools": opt(p.get("supports_tools")),
-                      "structured": opt(p.get("supports_structured_output")),
-                      **caps_from_modalities(mods)},
+                      "structured": opt(p.get("supports_structured_output"))},
                 uptime=None, ftl=f(p.get("first_token_latency_ms")),
                 tput=f(p.get("throughput")),
                 status=p.get("status") or "live",

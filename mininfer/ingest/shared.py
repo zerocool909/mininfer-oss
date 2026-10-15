@@ -245,10 +245,21 @@ def caps_from_params(
 
 
 def caps_from_modalities(mods: Iterable[str] | None) -> dict:
-    m = {str(x).lower() for x in mods} if mods else None
-    if m is None:
-        return {"vision": None, "audio": None}
-    return {"vision": bool({"image", "vision", "video"} & m), "audio": "audio" in m}
+    """REMOVED — modality is not a capability.
+
+    This existed only to project a modality list onto `vision`/`audio`, and both of
+    its callers already passed the same list to `weights_for(modalities=…)`, so the
+    same fact was recorded twice and the two copies could drift. `vision` and `audio`
+    are projections of `input_modalities`, not behaviours, and a projection with its
+    own storage is just a second thing to keep in step.
+
+    Kept as a stub that returns nothing so an out-of-tree caller fails loudly at the
+    module boundary rather than silently reintroducing the duplicate.
+    """
+    raise NotImplementedError(
+        "caps_from_modalities was removed: pass the modality list to "
+        "weights_for(modalities=...) instead — a capability is a behaviour, a "
+        "modality is a content type.")
 
 
 def default_free_limits(provider: str) -> dict[str, int]:
