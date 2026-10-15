@@ -645,8 +645,8 @@ export interface FreeModel {
   benchmark: string | null
   core_competency: string | null
   summary: string | null
-  warrior: string | null
-  story: string | null
+  /** JSON array of {key,label,source,value,url} — the arm's standing. */
+  leaderboards: string | null
   strengths: string | null
   weaknesses: string | null
   when_to_use: string | null
@@ -677,8 +677,8 @@ export interface Dossier {
   price_out: number | null
   core_competency: string | null
   summary: string | null
-  warrior: string | null
-  story: string | null
+  /** JSON array of {key,label,source,value,url} — the arm's standing. */
+  leaderboards: string | null
   strengths: string | null // JSON array
   weaknesses: string | null // JSON array
   when_to_use: string | null // JSON array

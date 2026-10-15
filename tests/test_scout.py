@@ -37,7 +37,6 @@ def store(tmp_path):
 
 def _fake_synth(agent_model, prompt):
     return {"core_competency": "core", "summary": "sum",
-            "warrior": "The Test Blade", "story": "A story of one task.",
             "strengths": ["s"], "weaknesses": ["w"],
             "when_to_use": ["general_chat"], "when_not_to_use": ["x"],
             "best_for": ["general_chat"], "confidence": 0.9}
@@ -86,7 +85,7 @@ def test_scout_writes_and_skips_fresh(store, monkeypatch):
     d = store.dossier("openrouter:m")
     assert d["core_competency"] == "core"
     # The storied half round-trips beside the factual fields.
-    assert d["warrior"] == "The Test Blade" and d["story"] == "A story of one task."
+    assert d["core_competency"], "the factual half is still written"
 
     # Fresh dossier: a second pass skips it, a forced one rewrites it.
     again = scout_mod.scout(store, search_enabled=False, task_names=["general_chat"])
@@ -96,58 +95,6 @@ def test_scout_writes_and_skips_fresh(store, monkeypatch):
     assert forced["written"] == 1
 
 
-def test_a_dossier_missing_its_story_is_re_synthesised_without_a_search(store, monkeypatch):
-    """An upgrade path: old dossiers gain their warrior from their own facts."""
-    store.upsert_dossier("openrouter:m", weights_id="hf:m", display_name="M",
-                         provider="openrouter", price_out=0.0, core_competency="core",
-                         summary="sum", strengths=[], weaknesses=[], when_to_use=[],
-                         when_not_to_use=[], best_for=[], search_sources=[],
-                         # Facts that still match the deployment: only the missing
-                         # story should mark it stale, not a facts change.
-                         facts={"status": "live", "pricing_state": "free",
-                                "price_out": 0.0},
-                         confidence=0.5,
-                         generated_at=_utcnow())
-    store.commit()
-    searched: list[str] = []
-    monkeypatch.setattr(scout_mod, "_synthesize", _fake_synth)
-    monkeypatch.setattr(scout_mod, "_search",
-                        lambda s, d, e, **k: searched.append(d["deploy_id"]) or ([], {}))
-    rep = scout_mod.scout(store, search_enabled=True, task_names=["general_chat"])
-    assert rep["written"] == 1 and rep["skipped_fresh"] == 0
-    assert searched == []                       # facts were sufficient, no search
-    assert store.dossier("openrouter:m")["warrior"] == "The Test Blade"
-
-
-def test_changing_the_voice_re_voices_the_dossier_without_a_search(store, monkeypatch):
-    """`--tone deadpool` must actually rewrite — a dossier with a warrior still
-    looks fresh, so the recorded tone is what makes the change detectable."""
-    store.upsert_dossier("openrouter:m", weights_id="hf:m", display_name="M",
-                         provider="openrouter", price_out=0.0, core_competency="core",
-                         summary="sum", warrior="The Old Voice", story="old",
-                         strengths=[], weaknesses=[], when_to_use=[],
-                         when_not_to_use=[], best_for=[], search_sources=[],
-                         facts={"status": "live", "pricing_state": "free",
-                                "price_out": 0.0, "scout_tone": "epic"},
-                         confidence=0.5,
-                         generated_at=_utcnow())
-    store.commit()
-    searched: list[str] = []
-    monkeypatch.setattr(scout_mod, "_synthesize", _fake_synth)
-    monkeypatch.setattr(scout_mod, "_search",
-                        lambda s, d, e, **k: searched.append(d["deploy_id"]) or ([], {}))
-
-    # Same tone -> still fresh, skipped.
-    monkeypatch.setenv("MI_SCOUT_TONE", "epic")
-    assert scout_mod.scout(store, search_enabled=True,
-                           task_names=["general_chat"])["skipped_fresh"] == 1
-
-    # New tone -> rewritten, no search spent.
-    monkeypatch.setenv("MI_SCOUT_TONE", "deadpool")
-    rep = scout_mod.scout(store, search_enabled=True, task_names=["general_chat"])
-    assert rep["written"] == 1 and rep["skipped_fresh"] == 0
-    assert searched == []
-    assert store.dossier("openrouter:m")["warrior"] == "The Test Blade"
 
 
 def test_scout_skips_deprecated(store, monkeypatch):
@@ -159,15 +106,6 @@ def test_scout_skips_deprecated(store, monkeypatch):
                           task_names=["general_chat"])
     assert rep["scanned"] == 0 and rep["written"] == 0
 
-
-def test_the_dossier_voice_is_configurable(monkeypatch):
-    facts = {"display_name": "X"}
-    monkeypatch.delenv("MI_SCOUT_TONE", raising=False)
-    assert "Epic-fantasy" in scout_mod._prompt(facts, [], ["t"])   # default
-    monkeypatch.setenv("MI_SCOUT_TONE", "deadpool")
-    assert "Deadpool" in scout_mod._prompt(facts, [], ["t"])
-    monkeypatch.setenv("MI_SCOUT_TONE", "plain")
-    assert "No metaphor" in scout_mod._prompt(facts, [], ["t"])
 
 
 def test_scout_search_uses_tinyfish_by_default(store, monkeypatch):

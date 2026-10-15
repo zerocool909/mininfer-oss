@@ -1526,10 +1526,6 @@ def _print_scouted(d: dict) -> None:
         print(f"  ! {d['deploy_id']}: {d['error']}")
         return
     print(f"  ok {d['display_name']}  conf={d.get('confidence', 0.0):.2f}")
-    if d.get("warrior"):
-        print(f"     warrior: ⚔ {d['warrior']}")
-    if d.get("story"):
-        print(f"     story:   {d['story'][:150]}")
     comp = (d.get("core_competency") or "").strip()
     if comp:
         print(f"     core: {comp[:110]}")
@@ -1549,8 +1545,6 @@ def cmd_scout(args) -> int:
     from . import scout as scout_mod
     from .router import Policy
 
-    if getattr(args, "tone", None):
-        os.environ["MI_SCOUT_TONE"] = args.tone
     _, tasks = Policy.load(args.policy)
     store = _open(args)
 
@@ -1598,10 +1592,6 @@ def cmd_dossiers(args) -> int:
         print(f"\n{r['display_name']}  [{r['provider']}]  "
               f"conf={r.get('confidence') or 0.0:.2f}")
         print(f"  deploy: {r['deploy_id']}  updated: {r.get('generated_at')}")
-        if r.get("warrior"):
-            print(f"  warrior: ⚔ {r['warrior']}")
-        if r.get("story"):
-            print(f"  story:  {r['story'][:200]}")
         if r.get("core_competency"):
             print(f"  core:   {r['core_competency']}")
         if r.get("best_for"):
@@ -2152,8 +2142,6 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--only-new", action="store_true",
                     help="scout only free arms that have no dossier yet (the"
                          " new-model event queue)")
-    sc.add_argument("--tone", choices=["epic", "plain", "deadpool"], default=None,
-                    help="voice for the dossier's warrior/story (default epic)")
     sc.add_argument("--interval", type=float, default=0.0,
                     help="loop every N seconds (0 = one pass)")
     sc.set_defaults(fn=cmd_scout)

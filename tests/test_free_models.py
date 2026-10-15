@@ -43,7 +43,7 @@ def _seed(path) -> Store:
     s.upsert_dossier("p2:f2", weights_id="w2", display_name="Beta", provider="p2",
                      price_out=0.0, core_competency="good at beta things",
                      summary="A summary of Beta.",
-                     warrior="The Beta Blade", story="Beta holds the line.",
+                     leaderboards=[{"key": "coding", "label": "Coding", "value": 1.0}],
                      strengths=[], weaknesses=[],
                      when_to_use=["t"], when_not_to_use=[], best_for=["t"],
                      search_sources=[{"title": "src", "url": "https://s/"}],
@@ -60,8 +60,8 @@ def test_the_store_lists_the_whole_free_tier(tmp_path):
     assert ids == {"p1:f1", "p2:f2"}          # the paid arm is absent
     by_id = {r["deploy_id"]: r for r in rows}
     assert by_id["p2:f2"]["summary"] == "A summary of Beta."
-    assert by_id["p2:f2"]["warrior"] == "The Beta Blade"
-    assert by_id["p2:f2"]["story"] == "Beta holds the line."
+    assert by_id["p2:f2"]["core_competency"] == "good at beta things"
+    assert by_id["p2:f2"]["leaderboards"], "leaderboards are first-class"
     assert by_id["p1:f1"]["summary"] is None  # not scouted yet, still listed
     s.close()
 

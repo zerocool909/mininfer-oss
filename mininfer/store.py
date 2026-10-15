@@ -840,12 +840,11 @@ CREATE TABLE IF NOT EXISTS model_dossiers (
   price_out       REAL,
   core_competency TEXT,
   summary         TEXT,
-  -- The storied half: a warrior archetype and a short analogy tying the model's
-  -- competency to the tasks it wins. Kept beside the factual fields, never in
-  -- place of them, so the router and the summary stay honest while the form guide
-  -- reads like a legend.
-  warrior         TEXT,
-  story           TEXT,
+  -- The leaderboards this arm appears on, as `[{key,label,source,value,url}]`.
+  -- First-class rather than a line inside `facts`: a reader wants a model's
+  -- standing without parsing a provenance blob, and the shape was already
+  -- computed for the prompt and then buried.
+  leaderboards    TEXT DEFAULT '[]',
   strengths       TEXT DEFAULT '[]',
   weaknesses      TEXT DEFAULT '[]',
   when_to_use     TEXT DEFAULT '[]',
@@ -1063,7 +1062,7 @@ class Store:
         # half recorded, while five sources publish the output half too.
         "weights": {"output_modalities": "TEXT DEFAULT '[]'"},
         # The storied half of a model dossier, added after the table shipped.
-        "model_dossiers": {"warrior": "TEXT", "story": "TEXT"},
+        "model_dossiers": {"leaderboards": "TEXT DEFAULT '[]'"},
     }
 
     def _migrate(self) -> None:
@@ -3184,7 +3183,7 @@ class Store:
     def upsert_dossier(self, deploy_id: str, *, weights_id: str, display_name: str,
                        provider: str, price_out: float | None,
                        core_competency: str, summary: str,
-                       warrior: str = "", story: str = "",
+                       leaderboards: list[dict] | None = None,
                        strengths: list[str], weaknesses: list[str],
                        when_to_use: list[str], when_not_to_use: list[str],
                        best_for: list[str], search_sources: list[dict],
@@ -3192,15 +3191,15 @@ class Store:
         """Write one dossier row, replacing an older one for the same arm."""
         self.conn.execute(
             """INSERT INTO model_dossiers (deploy_id, weights_id, display_name, provider,
-                    price_out, core_competency, summary, warrior, story, strengths,
+                    price_out, core_competency, summary, leaderboards, strengths,
                     weaknesses, when_to_use, when_not_to_use, best_for, search_sources,
                     facts, confidence, generated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(deploy_id) DO UPDATE SET
                     weights_id=excluded.weights_id, display_name=excluded.display_name,
                     provider=excluded.provider, price_out=excluded.price_out,
                     core_competency=excluded.core_competency, summary=excluded.summary,
-                    warrior=excluded.warrior, story=excluded.story,
+                    leaderboards=excluded.leaderboards,
                     strengths=excluded.strengths, weaknesses=excluded.weaknesses,
                     when_to_use=excluded.when_to_use,
                     when_not_to_use=excluded.when_not_to_use,
@@ -3208,7 +3207,7 @@ class Store:
                     facts=excluded.facts, confidence=excluded.confidence,
                     generated_at=excluded.generated_at""",
             (deploy_id, weights_id, display_name, provider, price_out,
-             core_competency, summary, warrior, story,
+             core_competency, summary, json.dumps(leaderboards or []),
              json.dumps(strengths), json.dumps(weaknesses),
              json.dumps(when_to_use), json.dumps(when_not_to_use), json.dumps(best_for),
              json.dumps(search_sources), json.dumps(facts), confidence, generated_at),
@@ -3278,7 +3277,7 @@ class Store:
                    d.price_out, d.context_window, d.status, d.pricing_state,
                    d.zero_price, d.free_variant,
                    w.display_name, w.family, w.params_b, w.benchmark,
-                   m.core_competency, m.summary, m.warrior, m.story,
+                   m.core_competency, m.summary, m.leaderboards,
                    m.strengths, m.weaknesses,
                    m.when_to_use, m.when_not_to_use, m.best_for, m.search_sources,
                    m.confidence, m.generated_at

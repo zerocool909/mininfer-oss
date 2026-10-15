@@ -87,7 +87,7 @@ export function FormGuide() {
   }, [])
 
   function togglePinned(m: FreeModel) {
-    if (!m.core_competency && !m.story) return
+    if (!m.core_competency) return
     setPinned((prev) =>
       prev.some((p) => p.deploy_id === m.deploy_id)
         ? prev.filter((p) => p.deploy_id !== m.deploy_id)
@@ -173,7 +173,7 @@ export function FormGuide() {
               </h2>
               <p className="mt-1 text-[12.5px] text-muted-foreground">
                 {rows.length} free model{rows.length === 1 ? '' : 's'} · {scouted} mustered.
-                Each a warrior, each task a capability it commands. Summaries via{' '}
+                One line per arm, with the leaderboards it appears on.{' '}
                 <span className="text-foreground/80">TinyFish</span>.
               </p>
             </div>
@@ -263,7 +263,7 @@ export function FormGuide() {
                 <TableBody>
                   {filtered.map((m) => {
                     const best = parseJson<string[]>(m.best_for, [])
-                    const ready = Boolean(m.core_competency || m.story)
+                    const ready = Boolean(m.core_competency)
                     return (
                       <TableRow
                         key={m.deploy_id}
@@ -274,11 +274,6 @@ export function FormGuide() {
                           <div className="truncate font-medium text-foreground/90" title={m.display_name ?? m.deploy_id}>
                             {m.display_name ?? m.deploy_id}
                           </div>
-                          {m.warrior && (
-                            <div className="truncate text-[11px] font-semibold italic text-brand" title={m.warrior}>
-                              ⚔ {m.warrior}
-                            </div>
-                          )}
                           <div className="truncate font-mono text-[10.5px] text-muted-foreground" title={m.provider}>
                             {m.provider}
                           </div>
@@ -374,17 +369,6 @@ function PinnedCard({ model, onDismiss }: { model: FreeModel; onDismiss: () => v
         </div>
         <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </div>
-
-      {(model.warrior || model.story) && (
-        <div className="mt-2.5 rounded-lg border border-brand/30 bg-brand/[0.06] px-3 py-2">
-          {model.warrior && (
-            <div className="text-[12.5px] font-bold tracking-tight text-brand">⚔ {model.warrior}</div>
-          )}
-          {model.story && (
-            <p className="mt-1 text-[12px] italic leading-5 text-foreground/85">{model.story}</p>
-          )}
-        </div>
-      )}
 
       {best.length > 0 && (
         <div className="mt-2.5 flex flex-wrap gap-1.5">
