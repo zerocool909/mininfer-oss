@@ -1199,6 +1199,24 @@ class Store:
                     zero_price=(resolved["price_in"] == 0 and resolved["price_out"] == 0),
                 )
         row = d.to_row()
+        row.setdefault("caps_state", "{}")
+        # Record the claims *before* drawing the conclusion from them. The adapter
+        # emits observations and never decides a capability, exactly as it never
+        # decides a price: writing `d.caps` straight through was the clobber, because
+        # a source that reported nothing erased a confirmation another source made.
+        self._add_evidence(evidence)
+        resolved_caps = self._resolve_deployment_caps(d.deploy_id, d.provider)
+        if resolved_caps is None:
+            # The adapter set `caps` but did not emit it as a claim — 11 of the 14 do
+            # not, so without this the write path would still be the adapter's
+            # opinion rather than a conclusion. Adopt it as a claim first, borrowing
+            # the provenance the adapter's *other* findings carry, since it came from
+            # the same payload.
+            self._adopt_deployment_caps(d)
+            resolved_caps = self._resolve_deployment_caps(d.deploy_id, d.provider)
+        if resolved_caps is not None:
+            row["caps"] = json.dumps(resolved_caps["caps"])
+            row["caps_state"] = json.dumps(resolved_caps["states"])
         row["zero_price"] = int(d.zero_price)
         row["free_variant"] = int(d.free_variant)
         row["subscription"] = int(d.subscription)
@@ -1261,12 +1279,12 @@ class Store:
                 context_window, max_output, quantization, price_in, price_out, price_cached_in,
                 zero_price, free_variant, subscription, trial_credits, discount, caps, limits,
                 limits_confirmed, uptime_1d, first_token_ms, throughput, status, status_reason,
-                status_source, status_changed_at, source, source_url, last_seen)
+                status_source, status_changed_at, source, source_url, last_seen, caps_state)
             VALUES (:deploy_id,:weights_id,:provider,:provider_model_id,:context_window,
                 :max_output,:quantization,:price_in,:price_out,:price_cached_in,:zero_price,
                 :free_variant,:subscription,:trial_credits,:discount,:caps,:limits,
                 :limits_confirmed,:uptime_1d,:first_token_ms,:throughput,:status,:status_reason,
-                :status_source, :now, :source, :source_url, :now)
+                :status_source, :now, :source, :source_url, :now, :caps_state)
             ON CONFLICT(deploy_id) DO UPDATE SET
                 weights_id     = excluded.weights_id,
                 context_window = COALESCE(excluded.context_window, deployments.context_window),
@@ -1281,6 +1299,7 @@ class Store:
                 trial_credits  = excluded.trial_credits,
                 discount       = COALESCE(excluded.discount, deployments.discount),
                 caps           = CASE WHEN excluded.caps != '{}' THEN excluded.caps ELSE deployments.caps END,
+                caps_state     = CASE WHEN excluded.caps != '{}' THEN excluded.caps_state ELSE deployments.caps_state END,
                 limits         = CASE WHEN excluded.limits != '{}' THEN excluded.limits ELSE deployments.limits END,
                 limits_confirmed = MAX(excluded.limits_confirmed, deployments.limits_confirmed),
                 uptime_1d      = COALESCE(excluded.uptime_1d, deployments.uptime_1d),
@@ -1302,7 +1321,6 @@ class Store:
             """,
             row,
         )
-        self._add_evidence(evidence)
         for source, entity_id, field, value, reason in quarantine:
             self.conn.execute(
                 "INSERT INTO quarantine (source, entity_id, field, value, reason) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
@@ -1423,7 +1441,7 @@ class Store:
     def _is_weights_scoped(self, field: str) -> bool:
         return field.startswith(self.WEIGHTS_SCOPED_PREFIXES)
 
-    def _fact_evidence(self) -> list[dict[str, Any]]:
+    def _fact_evidence(self, deploy_id: str | None = None) -> list[dict[str, Any]]:
         """Every capability/modality claim, one row per field.
 
         Reads the exploded `cap.<key>` rows, and also explodes any legacy
@@ -1431,13 +1449,20 @@ class Store:
         JSON, which is exactly how an unreported capability came to overwrite a
         reported one. `null` entries are dropped here as well as at emission, so the
         rule holds for rows written before the fix.
+
+        `deploy_id` narrows to one deployment, which is what the write path needs:
+        loading the whole table per deployment would be quadratic over an ingest.
         """
         sql = ("SELECT id, entity_kind, entity_id, field, value, source, url,"
                " fetched_at, confidence, observed_via FROM evidence"
-               " WHERE field IN ('caps')"
-               "    OR field LIKE 'cap.%' OR field LIKE 'modality.%'")
+               " WHERE (field IN ('caps')"
+               "    OR field LIKE 'cap.%' OR field LIKE 'modality.%')")
+        args: tuple = ()
+        if deploy_id is not None:
+            sql += " AND entity_kind='deployment' AND entity_id=?"
+            args = (deploy_id,)
         out: list[dict[str, Any]] = []
-        for r in self.conn.execute(sql).fetchall():
+        for r in self.conn.execute(sql, args).fetchall():
             row = dict(r)
             if row["field"] == "caps":
                 try:
@@ -1467,6 +1492,65 @@ class Store:
         if row["entity_kind"] == "deployment":
             return providers.get(row["entity_id"]) or row["source"] or "unknown"
         return row["source"] or "unknown"
+
+    def _adopt_deployment_caps(self, d: Deployment) -> None:
+        """Record a deployment's `caps` dict as claims when no adapter did.
+
+        An adapter is supposed to emit observations and let the store conclude, but
+        most set `caps` on the `Deployment` and never put it in `evidence` — so their
+        capabilities would never reach the resolver and the old last-writer-wins path
+        would still decide them.
+
+        Provenance is *borrowed* from the adapter's other claims for this deployment,
+        because they came from the same payload. With none to borrow, nothing is
+        written: attributing a capability to a source that said nothing would be
+        worse than leaving it unresolved.
+        """
+        claims = {k: v for k, v in (d.caps or {}).items() if v is not None}
+        if not claims:
+            return
+        sibling = self.conn.execute(
+            "SELECT source, url, fetched_at, confidence, observed_via FROM evidence"
+            " WHERE entity_kind='deployment' AND entity_id=?"
+            " ORDER BY confidence DESC, id DESC LIMIT 1", (d.deploy_id,)).fetchone()
+        if sibling is None:
+            return
+        self._add_evidence([
+            Evidence("deployment", d.deploy_id, f"cap.{k}", v, sibling["source"],
+                     sibling["url"], sibling["fetched_at"], sibling["confidence"],
+                     sibling["observed_via"])
+            for k, v in sorted(claims.items())
+        ])
+
+    def _resolve_deployment_caps(self, deploy_id: str, provider: str) -> dict[str, Any] | None:
+        """This deployment's capabilities, resolved from its **own** evidence.
+
+        Called on the write path, so the stored `caps` is a conclusion drawn from
+        observations rather than the last adapter's opinion — the same seam the price
+        already uses. Own evidence only: `cap.*` is a property of the gateway, so a
+        peer serving the same weights may never supply it.
+
+        Returns None when this deployment has no capability evidence at all, so a
+        caller cannot wipe a row's existing caps with an empty resolution.
+        """
+        rows = self._fact_evidence(deploy_id)
+        rows = [r for r in rows if r["field"].startswith("cap.")]
+        if not rows:
+            return None
+        grouped: dict[str, list[dict]] = {}
+        for r in rows:
+            grouped.setdefault(r["field"], []).append(r)
+        caps: dict[str, Any] = {}
+        states: dict[str, str] = {}
+        for field, group in sorted(grouped.items()):
+            res = self._resolve_one_fact(group, {deploy_id: provider})
+            try:
+                caps[field.split(".", 1)[1]] = json.loads(res["value"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if res["state"] != FACT_CANONICAL:
+                states[field.split(".", 1)[1]] = res["state"]
+        return {"caps": caps, "states": states}
 
     def _resolve_one_fact(self, rows: list[dict], providers: dict[str, str],
                           now: dt.datetime | None = None) -> dict[str, Any]:

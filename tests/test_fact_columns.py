@@ -90,6 +90,97 @@ def _facts(s, entity_kind, entity_id, field):
         (entity_kind, entity_id, field)).fetchone()
 
 
+def test_caps_reach_the_resolver_even_when_the_adapter_omits_them_from_evidence(tmp_path):
+    """11 of the 14 adapters set `caps` on the Deployment and emit no caps evidence.
+
+    Without adopting that dict as a claim, step 4's projection never sees it and the
+    old last-writer-wins path still decides those capabilities — the fix would look
+    landed and change nothing for most of the registry.
+    """
+    import json
+
+    s = Store(tmp_path / "f11.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    d = Deployment("p:x", "hf:a/m", "p", "x", caps={"tools": True})
+    # Evidence for a *different* field: the sibling whose provenance gets borrowed.
+    s.upsert_deployment(d, [_ev("deployment", "p:x", "context_window", 8192, 0.95,
+                                via="provider_api")])
+    s.commit()
+
+    caps = json.loads(s.conn.execute(
+        "SELECT caps FROM deployments WHERE deploy_id='p:x'").fetchone()["caps"])
+    assert caps.get("tools") is True, "the adapter's caps never reached the resolver"
+    adopted = s.conn.execute(
+        "SELECT confidence, observed_via FROM evidence WHERE entity_id='p:x'"
+        " AND field='cap.tools'").fetchone()
+    assert adopted is not None
+    assert adopted["observed_via"] == "provider_api", \
+        "provenance must be borrowed from the adapter's own sibling claim"
+    s.close()
+
+
+def test_a_source_that_reports_nothing_does_not_erase_a_confirmation(tmp_path):
+    """The defect this whole effort started from, end to end through the write path.
+
+    `upsert_deployment` used to write the adapter's `caps` dict straight through, so
+    a source publishing nothing about `tools` erased a confirmation another source
+    had made. Now the adapter emits claims and the store resolves the conclusion —
+    the seam the price already used.
+    """
+    import json
+
+    from mininfer.ingest.shared import evidence as claims
+
+    s = Store(tmp_path / "f9.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+
+    good = Deployment("p:x", "hf:a/m", "p", "x",
+                      caps={"tools": True, "structured": True})
+    s.upsert_deployment(good, claims("deployment", "p:x", {"caps": good.caps},
+                                     "src-a", None, _T, "aggregator_api"))
+    s.commit()
+
+    # A second source that says nothing at all about either capability.
+    silent = Deployment("p:x", "hf:a/m", "p", "x",
+                        caps={"tools": None, "structured": None})
+    s.upsert_deployment(silent, claims("deployment", "p:x", {"caps": silent.caps},
+                                       "src-b", None, _T, "aggregator_api"))
+    s.commit()
+
+    row = s.conn.execute(
+        "SELECT caps, caps_state FROM deployments WHERE deploy_id='p:x'").fetchone()
+    caps = json.loads(row["caps"])
+    assert caps["tools"] is True, "a silent source erased a confirmed capability"
+    assert caps["structured"] is True
+    assert row["caps_state"] == "{}", "a canonical fact needs no state entry"
+    s.close()
+
+
+def test_a_dispute_is_visible_in_caps_state(tmp_path):
+    """`caps` keeps the resolved value; `caps_state` carries only what is not canonical,
+    so a reader can see how much to trust it without parsing anything else."""
+    import json
+
+    from mininfer.ingest.shared import evidence as claims
+
+    s = Store(tmp_path / "f10.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    for src in ("src-a", "src-b"):
+        d = Deployment("p:x", "hf:a/m", "p", "x", caps={"tools": True})
+        s.upsert_deployment(d, claims("deployment", "p:x", {"caps": {"tools": True}},
+                                      src, None, _T, "aggregator_api"))
+    s.commit()
+    # Same confidence band (0.85), conflicting values: a genuine dispute.
+    d = Deployment("p:x", "hf:a/m", "p", "x", caps={"tools": False})
+    s.upsert_deployment(d, claims("deployment", "p:x", {"caps": {"tools": False}},
+                                  "src-c", None, _T, "aggregator_api"))
+    s.commit()
+    state = json.loads(s.conn.execute(
+        "SELECT caps_state FROM deployments WHERE deploy_id='p:x'").fetchone()["caps_state"])
+    assert state.get("tools") == "disputed", state
+    s.close()
+
+
 def test_an_unreported_capability_is_not_a_claim(tmp_path):
     """The original defect. A `null` inside a legacy caps blob used to be recorded
     as a claim and overwrite a confirmation from a source that had reported it."""
