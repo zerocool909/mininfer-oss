@@ -52,6 +52,28 @@ def test_merge_preserves_the_absorbed_rows_facts(tmp_path):
     s.close()
 
 
+def test_merge_carries_the_output_half_of_modality(tmp_path):
+    """`output_modalities` must be in the absorb list, not just the mod *input* half.
+
+    A code review caught this: the column was added after `_absorb_weights_facts`
+    was written, so a merge silently deleted a music generator's output list —
+    the exact loss this feature exists to prevent.
+    """
+    s = Store(tmp_path / "m4.db")
+    s.upsert_weights(Weights("slug:lyria", "Lyria 3 Pro", modalities=("text", "image"),
+                             output_modalities=("text", "audio")))
+    s.upsert_weights(Weights("hf:google/lyria-3-pro", "lyria-3-pro"))
+    s.commit()
+
+    s.merge_weights("slug:lyria", "hf:google/lyria-3-pro", "same model", 1.0)
+    s.commit()
+    got = s.conn.execute(
+        "SELECT output_modalities FROM weights WHERE weights_id='hf:google/lyria-3-pro'"
+    ).fetchone()["output_modalities"]
+    assert "audio" in got, "the alias's output modality was discarded by the merge"
+    s.close()
+
+
 def test_merge_never_overwrites_a_value_the_canonical_already_has(tmp_path):
     """Preserving a gap is not the same as picking a winner.
 

@@ -3442,7 +3442,8 @@ class Store:
         if alias_id == canonical_id:
             return 0
         cols = ("display_name, hf_repo, hf_revision, family, params_b, arch, license,"
-                " released_at, modalities, aliases, benchmark, benchmark_source")
+                " released_at, modalities, output_modalities, aliases, benchmark,"
+                " benchmark_source")
         a = self.conn.execute(
             f"SELECT {cols} FROM weights WHERE weights_id=?", (alias_id,)
         ).fetchone()
@@ -3488,8 +3489,8 @@ class Store:
                        "license", "released_at", "benchmark_source")
     #: JSON weights columns, empty when `[]` / `{}`. Compared as text, matching
     #: the `CASE WHEN excluded.modalities != '[]'` rule in `upsert_weights`.
-    _ABSORB_LISTS = (("modalities", "[]"), ("aliases", "[]"),
-                     ("benchmark", "{}"))
+    _ABSORB_LISTS = (("modalities", "[]"), ("output_modalities", "[]"),
+                     ("aliases", "[]"), ("benchmark", "{}"))
 
     def _absorb_weights_facts(self, alias_row, canonical_id: str) -> None:
         """Fill the canonical's empty weights columns from the alias being deleted.
