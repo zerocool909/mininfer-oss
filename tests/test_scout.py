@@ -219,3 +219,32 @@ def test_only_new_scouts_arms_without_a_dossier(store, monkeypatch):
                           on_arm=lambda d: seen.append(d["deploy_id"]))
     assert seen == ["openrouter:new"]
     assert rep["written"] == 1
+
+
+def test_the_facts_a_dossier_is_written_from_include_its_capabilities(tmp_path):
+    """The scout was blind to what an arm can *do*.
+
+    Measured on the first five real dossiers: 5 of 13 recommended (arm, task) pairs
+    were not servable, because `best_for` named tasks requiring `tools`/`structured`
+    for arms the registry had `false` or `null` for. The prompt already said not to
+    contradict the facts — it was simply not handed the ones that matter.
+    """
+    from mininfer.scout import _facts
+    from mininfer.schema import Deployment, Weights
+
+    w = Weights("hf:a/m", "m", modalities=("text", "image"))
+    d = Deployment("p:x", "hf:a/m", "p", "x",
+                   caps={"structured": False, "tools": True},
+                   limits={}, limits_confirmed=False)
+    facts = _facts({**d.to_row(), **w.to_row()}, None, [])
+    assert facts["caps"]["structured"] is False
+    assert facts["caps"]["tools"] is True
+    assert "caps_state" in facts
+
+
+def test_the_prompt_forbids_recommending_a_task_the_arm_cannot_serve():
+    from mininfer.scout import _prompt
+
+    out = _prompt({"caps": {"structured": False}}, [], ["extraction"])
+    assert "only name tasks this arm can actually serve" in out
+    assert "`null` means" in out, "the three-valued rule must be stated, not implied"

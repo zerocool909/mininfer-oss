@@ -95,6 +95,15 @@ def _facts(deploy: dict, outcomes: dict | None, tags: list[dict]) -> dict:
         "status": deploy.get("status"),
         "status_reason": deploy.get("status_reason"),
         "pricing_state": deploy.get("pricing_state"),
+        # The arm's capabilities, and how much to trust them. Without these the
+        # dossier is written blind to what the model can *do*, and recommends it for
+        # tasks the router will then refuse: measured on the first five real
+        # dossiers, 5 of 13 recommended (arm, task) pairs were not servable, and one
+        # of them named `extraction` for a model whose own row said
+        # `structured: false`. `_prompt` already told the writer not to contradict
+        # the facts; it simply was not given the ones that matter most here.
+        "caps": _parse_json_field(deploy.get("caps"), {}),
+        "caps_state": _parse_json_field(deploy.get("caps_state"), {}),
         "uptime_1d": deploy.get("uptime_1d"),
         "first_token_ms": deploy.get("first_token_ms"),
         "throughput": deploy.get("throughput"),
@@ -178,6 +187,12 @@ Rules:
 - Everything you write is read by an operator, and `best_for` is read by the router.
   There is no decorative field: every sentence must be something the facts or the
   sources actually support.
+- **`best_for` and `when_to_use` must only name tasks this arm can actually serve.**
+  Read `caps` against the task list: a task requiring `tools` cannot be recommended
+  for an arm whose `tools` is not `true`, and one requiring `structured` cannot be
+  recommended for an arm whose `structured` is not `true`. `null` means *nobody has
+  reported it*, so it is not a yes. A recommendation the router then refuses is worse
+  than no recommendation — it reads as a considered judgement and is not one.
 - `when_to_use` and `best_for` must use the task names given above where possible.
 - Never assert a benchmark, a price, or a capability the registry facts do not show.
   The leaderboards above are the whole of what is known about its standing — do not
