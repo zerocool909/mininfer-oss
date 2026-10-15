@@ -76,12 +76,42 @@ def test_every_source_can_be_dispatched():
     assert not missing, f"sources point at adapters that do not exist: {missing}"
 
 
+def test_evidence_carries_the_catalogues_confidence_not_a_hardcoded_one():
+    """The catalogue declared a confidence per source; 11 adapters restated it, and
+    two had drifted. `groq` was declared `aggregator_api` (0.85) while its rows
+    carried `provider_api` (0.95) — so the value the resolver ranks by was whatever
+    the adapter happened to say, not what the catalogue documented.
+    """
+    from mininfer.ingest import SOURCES
+
+    spec = SOURCES["groq"]
+    snap = _snap("groq", [{"id": "a/b", "context_window": 1000}])
+    snap.observed_via = spec.confidence
+    b = ingest_openai_compat(snap).bundles[0]
+    assert b.evidence, "no evidence to check"
+    assert {e.observed_via for e in b.evidence} == {spec.confidence}, \
+        "the adapter restated a confidence instead of reading the catalogue's"
+
+    # And the declaration itself is now the authority, not a default that happened
+    # to look plausible: Groq's own /models is first-party.
+    assert spec.confidence == "provider_api"
+    assert SOURCES["huggingface"].confidence == "provider_reported_probe", \
+        "a gateway relaying its upstreams' claims is weaker than a first-party catalogue"
+
+
 def test_every_source_describes_itself():
+    from mininfer.schema import SOURCE_CONFIDENCE
+
     for name, spec in SOURCES.items():
         assert spec.name == name, name
         assert spec.note, f"{name} has no note explaining what it is for"
         assert spec.tier in (0, 1, 2), name
-        assert spec.confidence in ("aggregator_api", "provider_api", "scraped")
+        # Assert against the vocabulary itself, not a hand-copied list: the old one
+        # allowed `scraped`, which is not a `SOURCE_CONFIDENCE` key, so a source
+        # declaring it would have been silently recorded at the 0.5 fallback. A
+        # declared confidence that does not exist is a typo the registry absorbs.
+        assert spec.confidence in SOURCE_CONFIDENCE, (
+            f"{name} declares {spec.confidence!r}, which is not a SOURCE_CONFIDENCE key")
 
 
 def test_a_source_without_an_endpoint_says_so_clearly():
@@ -371,3 +401,130 @@ def test_ingest_succeeds_when_every_source_was_skipped(monkeypatch):
                         lambda _s, _a: {"sources": 3, "ok": 0, "failed": 0, "skipped": 3})
 
     assert cli.cmd_ingest(_ingest_args()) == 0
+
+
+# --------------------------------------------------------------------------- #
+# modality is directional
+#
+# `modalities` is the *input* half and always was. Six sources publish an output
+# list as well, and every adapter discarded it — so an image generator and a
+# vision-capable text model were byte-identical in the registry.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_caps_blob_emits_one_row_per_reported_capability():
+    """The root cause of the capability clobber.
+
+    `evidence()` guards `if v is not None`, but a `caps` dict passed whole is not
+    `None` — so it sailed through and its inner `null`s were recorded as claims,
+    which then overwrote confirmations from sources that had actually reported the
+    capability. Exploding it is what makes "unreported" unrepresentable.
+    """
+    from mininfer.ingest.shared import evidence
+
+    ev = evidence("deployment", "p:x",
+                  {"caps": {"tools": True, "structured": None, "vision": False}},
+                  "s", "u", "2026-01-01T00:00:00+00:00", "aggregator_api")
+    got = {e.field: e.value for e in ev}
+    assert got == {"cap.tools": True, "cap.vision": False}, got
+    assert "cap.structured" not in got, "an unreported capability became a claim"
+
+
+def test_a_none_field_is_never_evidence():
+    from mininfer.ingest.shared import evidence
+
+    ev = evidence("weights", "hf:a/m", {"benchmark": None, "display_name": "m"},
+                  "s", "u", "2026-01-01T00:00:00+00:00", "aggregator_api")
+    assert [e.field for e in ev] == ["display_name"]
+
+
+def test_both_modality_halves_are_recorded():
+    run = ingest_openai_compat(_snap("groq", [{
+        "id": "gpt-audio",
+        "input_modalities": ["text", "audio"],
+        "output_modalities": ["text", "audio"],
+    }]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text", "audio")
+    assert w.output_modalities == ("text", "audio")
+
+
+def test_a_source_that_publishes_no_output_list_leaves_it_unknown():
+    """`[]` is "unreported". Defaulting to `["text"]` would assert a fact nobody made,
+    and it is the whole distinction the three-valued design exists to protect."""
+    run = ingest_openai_compat(_snap("groq", [{"id": "llama-3.3-70b",
+                                               "input_modalities": ["text"]}]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text",)
+    assert w.output_modalities == ()
+
+
+def test_novita_records_both_halves_where_it_previously_read_neither():
+    run = ADAPTERS["novita"](_snap("novita", [{
+        "id": "deepseek/deepseek-v3",
+        "context_size": 64000,
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    }]))
+    w = run.bundles[0].weights
+    assert w.modalities == ("text",)
+    assert w.output_modalities == ("text",)
+
+
+def test_openrouter_records_the_output_half():
+    run = ADAPTERS["openrouter"](_snap("openrouter", [{
+        "id": "google/lyria-3-pro",
+        "name": "Lyria 3 Pro",
+        "architecture": {"input_modalities": ["text", "image"],
+                         "output_modalities": ["text", "audio"]},
+    }]), with_endpoints=False)
+    w = run.bundles[0].weights
+    assert w.modalities == ("text", "image")
+    assert "audio" in w.output_modalities, "a music generator must not read as text-only"
+
+
+def test_the_output_half_survives_a_second_ingest_that_omits_it():
+    """Same rule as `modalities`: an unreported list asserts nothing and must not
+    overwrite one a source did report."""
+    from mininfer.schema import Weights
+    from mininfer.store import Store
+    import tempfile, pathlib
+
+    with tempfile.TemporaryDirectory() as td:
+        s = Store(pathlib.Path(td) / "m.db")
+        s.upsert_weights(Weights("hf:a/omni", "omni",
+                                 modalities=("text",), output_modalities=("text", "audio")))
+        s.upsert_weights(Weights("hf:a/omni", "omni", modalities=("text",)))
+        s.commit()
+        got = s.conn.execute(
+            "SELECT output_modalities FROM weights WHERE weights_id='hf:a/omni'"
+        ).fetchone()["output_modalities"]
+        assert "audio" in got, "a silent source erased the reported output list"
+        s.close()
+
+
+def test_github_does_not_refute_capabilities_from_a_modality_list():
+    """`supported_input_modalities` is a modality list, not `supported_parameters`.
+
+    Passing it to `caps_from_params` intersected it against tool/structured/cache
+    names, found nothing, and returned `False` for all three — a confident
+    refutation computed from the wrong field. Worse than `None`: an unknown
+    capability follows `on_unverified_capability`, but `False` rejects outright on
+    every `reject`-mode task, with a reason that is wrong. GitHub publishes no
+    `supported_parameters`, so the honest answer is to say nothing.
+    """
+    snap = _snap("github", payload=[{
+        "id": "openai/gpt-4o",
+        "supported_input_modalities": ["text", "image"],
+        "limits": {"max_input_tokens": 128000, "max_output_tokens": 4096},
+    }])
+    b = ADAPTERS["github"](snap).bundles[0]
+
+    assert b.weights.modalities == ("text", "image"), "the field it read was discarded"
+    assert b.weights.output_modalities == (), "absent is not [text]"
+    assert b.deployment.caps["tools"] is None, "a capability was refuted from a modality list"
+    assert b.deployment.caps["structured"] is None
+    assert b.evidence, "this adapter used to emit no evidence at all"
+    assert {e.field for e in b.evidence} >= {"provider_model_id", "context_window"}
+    assert not any(e.field == "caps" for e in b.evidence), \
+        "an all-None caps dict is not a claim"

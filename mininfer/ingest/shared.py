@@ -120,16 +120,36 @@ def evidence(
     kind: str, eid: str, fields: dict, source: str, url: str | None,
     fetched_at: str, observed_via: str,
 ) -> list[Evidence]:
+    """One `Evidence` row per *field*, never one per payload.
+
+    The `is not None` guard is the whole point and it only works a field at a time.
+    A `caps` dict passed whole is not `None`, so it sailed through and its inner
+    `null`s were recorded as claims — which then overwrote confirmations from
+    sources that had actually reported the capability. Exploding the dict is what
+    makes "unreported" unrepresentable as evidence, and it is also the shape the
+    fact resolver wants: it ranks a fact per field, not per blob.
+    """
     conf = SOURCE_CONFIDENCE.get(observed_via, 0.5)
-    return [
-        Evidence(kind, eid, k, v, source, url, fetched_at, conf, observed_via)
-        for k, v in fields.items()
-        if v is not None
-    ]
+    out: list[Evidence] = []
+    for k, v in fields.items():
+        if k == "caps" and isinstance(v, dict):
+            # `cap.<key>`: a capability is a fact about one behaviour, so it carries
+            # its own provenance and can never be dragged down by a sibling.
+            for cap, val in v.items():
+                if val is not None:
+                    out.append(Evidence(kind, eid, f"cap.{cap}", val, source, url,
+                                        fetched_at, conf, observed_via))
+            continue
+        if v is not None:
+            out.append(Evidence(kind, eid, k, v, source, url, fetched_at, conf,
+                                observed_via))
+    return out
 
 
 def weights_for(name: str, hf_repo: str | None, *, released: str | None = None,
-                 modalities: Iterable[str] = (), source: str = "", url: str | None = None,
+                 modalities: Iterable[str] = (),
+                 output_modalities: Iterable[str] = (),
+                 source: str = "", url: str | None = None,
                  fetched_at: str = "", benchmark: dict | None = None,
                  benchmark_source: str | None = None) -> Weights:
     wid = weights_id_for(hf_repo, name)
@@ -142,6 +162,7 @@ def weights_for(name: str, hf_repo: str | None, *, released: str | None = None,
         arch="moe" if is_moe_name(name) else None,
         released_at=released,
         modalities=tuple(modalities),
+        output_modalities=tuple(output_modalities),
         aliases=(name, normalize(name)),
         benchmark=benchmark or {},
         benchmark_source=benchmark_source,
@@ -192,8 +213,7 @@ def opt(v) -> bool | None:
 
 
 def caps_from_params(
-    params: Iterable[str] | None, *, vision: bool | None = None,
-    reasoning: bool | None = None,
+    params: Iterable[str] | None, *, reasoning: bool | None = None,
 ) -> dict:
     """Capabilities are THREE-valued: True / False / None (unreported).
 
@@ -202,6 +222,11 @@ def caps_from_params(
     of 1660 deployments on the first real run; collapsing it to True is worse.
     `None` is carried through and the policy decides, the same way an unknown
     price is not a zero price.
+
+    Returns behaviours only. `vision` and `audio` used to be here as projections of
+    the input modality list, which is a second copy of a fact `weights_for` already
+    records — and the copy is what let `caps["audio"]` (accepts) be confused with
+    the `tts`/`music` roles (emits).
     """
     p = {str(x).lower() for x in params} if params else None
     if p is None:
@@ -216,18 +241,27 @@ def caps_from_params(
     return {
         "tools": tools,
         "structured": structured,
-        "vision": vision,
         "reasoning": reasoning,
         "caching": caching,
-        "audio": None,
     }
 
 
 def caps_from_modalities(mods: Iterable[str] | None) -> dict:
-    m = {str(x).lower() for x in mods} if mods else None
-    if m is None:
-        return {"vision": None, "audio": None}
-    return {"vision": bool({"image", "vision", "video"} & m), "audio": "audio" in m}
+    """REMOVED — modality is not a capability.
+
+    This existed only to project a modality list onto `vision`/`audio`, and both of
+    its callers already passed the same list to `weights_for(modalities=…)`, so the
+    same fact was recorded twice and the two copies could drift. `vision` and `audio`
+    are projections of `input_modalities`, not behaviours, and a projection with its
+    own storage is just a second thing to keep in step.
+
+    Kept as a stub that returns nothing so an out-of-tree caller fails loudly at the
+    module boundary rather than silently reintroducing the duplicate.
+    """
+    raise NotImplementedError(
+        "caps_from_modalities was removed: pass the modality list to "
+        "weights_for(modalities=...) instead — a capability is a behaviour, a "
+        "modality is a content type.")
 
 
 def default_free_limits(provider: str) -> dict[str, int]:

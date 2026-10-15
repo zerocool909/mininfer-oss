@@ -195,7 +195,13 @@ def _extraction_prompt(text: str, tables: list, source_type: str, url: str) -> s
         f"URL: {url}\nDeclared source type: {source_type}.\n\n"
         "Extract every AI model mentioned, with ONLY facts actually stated on the "
         "page. Never invent prices, benchmark scores, or capabilities. Use null for "
-        "anything the page does not state. `price_in_usd_per_mtok` and "
+        "anything the page does not state, and **omit any key the page does not "
+        "state rather than writing `false` for it** — `false` is a refutation, not a "
+        "silence. A capability is a behaviour (tool calling, structured output); a "
+        "modality is a content type, and the two directions are separate fields: "
+        "`input_modalities` is what it accepts, `output_modalities` what it "
+        "produces. Use only these modality values: text, image, audio, video, file. "
+        "`price_in_usd_per_mtok` and "
         "`price_out_usd_per_mtok` are USD per million tokens. `free` is true/false/"
         "null. `benchmarks` is a list of {\"name\", \"score\"}.\n\n"
         f"Return ONLY one JSON object with this exact shape (no markdown fences, no "
@@ -304,11 +310,12 @@ def _normalize_fact(m: dict, source: str, url: str, fetched_at: str) -> dict | N
     if free is True and pin is None and pout is None:
         pin, pout = 0.0, 0.0  # "free" with no stated price -> list price zero
 
-    modalities = m.get("modalities") or []
-    if isinstance(modalities, str):
-        modalities = [modalities]
+    def _mods(key: str) -> list:
+        got = m.get(key) or []
+        return [got] if isinstance(got, str) else list(got)
 
-    weights = weights_for(name, None, modalities=modalities,
+    weights = weights_for(name, None, modalities=_mods("input_modalities"),
+                           output_modalities=_mods("output_modalities"),
                            source=source, url=url, fetched_at=fetched_at,
                            benchmark=benchmarks, benchmark_source=source)
     deploy = make_deploy(
@@ -324,7 +331,8 @@ def _normalize_fact(m: dict, source: str, url: str, fetched_at: str) -> dict | N
         "price_error": price_error,
         "price_in": pin, "price_out": pout, "free": free,
         "benchmarks": benchmarks,
-        "modalities": list(modalities),
+        "modalities": _mods("input_modalities"),
+        "output_modalities": _mods("output_modalities"),
     }
 
 

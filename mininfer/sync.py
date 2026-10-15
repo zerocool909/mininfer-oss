@@ -26,13 +26,14 @@ import pathlib
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parent.parent / "supabase" / "schema.sql"
 
 _KEYED = ["weights", "weight_aliases", "deployments", "snapshots", "quota_buckets",
-          "sessions", "pushed_models", "price_resolution", "price_anomalies"]
+          "sessions", "pushed_models", "price_resolution", "price_anomalies",
+          "fact_resolution"]
 # `pricing_evidence` is append-only like `observations`, but it always travels:
 # it is the input the stored `deployments.price_*` was resolved from, so a mirror
 # without it holds prices whose provenance cannot be checked. At ~3 rows per
 # deployment it is far smaller than the opt-in `evidence` log.
 _APPEND = ["observations", "decisions", "quarantine", "pricing_evidence",
-           "pricing_transitions", "price_history"]
+           "pricing_transitions", "price_history", "fact_history"]
 # Evidence is large (~200k rows) and opt-in; when requested it goes after the
 # keyed tables so entity ids exist first.
 _EVIDENCE = "evidence"
@@ -51,6 +52,9 @@ _PK = {
     # carries the same price *and* the same justification without re-running
     # Python over the mirror.
     "price_resolution": ["deploy_id", "kind"],
+    # The fact resolver's decision, for the same reason: a mirror that holds the
+    # resolved `caps` but not the provenance cannot check it.
+    "fact_resolution": ["entity_kind", "entity_id", "field"],
     # The anomaly log. Keyed on the content-derived id, not a rowid, because sync
     # drops surrogate ids.
     "price_anomalies": ["anomaly_id"],

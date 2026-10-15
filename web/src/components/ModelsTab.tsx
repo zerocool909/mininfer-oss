@@ -81,6 +81,7 @@ export function ModelsTab() {
   }, [load])
 
   const caps = useMemo(() => Object.keys(data?.capabilities ?? {}), [data])
+  const mods = useMemo(() => Object.keys(data?.modalities ?? {}), [data])
 
   const first = data ? Math.min(data.offset + 1, data.total) : 0
   const last = data ? Math.min(data.offset + data.count, data.total) : 0
@@ -179,6 +180,27 @@ export function ModelsTab() {
               >
                 {c}
                 <span className="ml-1 opacity-60">{data?.capabilities[c] ?? 0}</span>
+              </button>
+            ))}
+            {mods.length > 0 && (
+              <span className="self-center text-[10px] uppercase tracking-wide text-muted-foreground">
+                modality
+              </span>
+            )}
+            {mods.map((m) => (
+              <button
+                key={m}
+                onClick={() => setCapability(capability === m ? '' : m)}
+                // Different words on purpose: "confirm" is right for a behaviour a
+                // source reported, and wrong for a content type a model handles.
+                title={`${data?.modalities[m] ?? 0} deployments handle ${m} (either direction)`}
+                className={cn(
+                  'rounded-full border border-dashed px-2.5 py-1 text-xs',
+                  capability === m ? 'border-brand/40 bg-brand/10 text-brand' : 'border-border text-muted-foreground',
+                )}
+              >
+                {m}
+                <span className="ml-1 opacity-60">{data?.modalities[m] ?? 0}</span>
               </button>
             ))}
           </div>

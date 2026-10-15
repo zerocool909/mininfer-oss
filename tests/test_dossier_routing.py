@@ -212,3 +212,83 @@ def test_dossier_report_scores_the_shadow_pick(tmp_path, capsys):
     assert "shadow counterfactuals:   1" in out
     assert "shadow better: 1 (100.0%)" in out
     assert "aligned" in out
+
+
+# --------------------------------------------------------------------------- #
+# the dossier acceptance test (ticket 08)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_dossier_recommending_a_task_its_arm_cannot_serve_is_unsound(tmp_path):
+    """The criterion, and the reason it is a check rather than prompt wording.
+
+    `best_for` is a dossier's only routing-relevant field, and the router refuses an
+    arm it is not eligible for. So "every `best_for` names a task this arm can serve"
+    subsumes the rest: a nonexistent task, a claim contradicting a registry fact, and
+    a capability guessed from a snippet are all caught by the same gate.
+
+    The first five real dossiers failed it 5 times out of 13.
+    """
+    from mininfer.dossier_audit import audit_dossiers
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    s = Store(tmp_path / "audit.db")
+    # `extraction` requires `structured`; this arm's row says it does not have it.
+    s.upsert_weights(Weights("hf:a/nostruct", "nostruct"))
+    s.upsert_deployment(Deployment("p:ns", "hf:a/nostruct", "p", "ns",
+                                   context_window=32000, zero_price=True,
+                                   caps={"structured": False}))
+    # This one has it.
+    s.upsert_weights(Weights("hf:a/good", "good"))
+    s.upsert_deployment(Deployment("p:good", "hf:a/good", "p", "good",
+                                   context_window=32000, zero_price=True,
+                                   caps={"structured": True}))
+    s.upsert_dossier("p:ns", weights_id="hf:a/nostruct", display_name="ns",
+                     provider="p", price_out=0.0, core_competency="c", summary="s",
+                     strengths=[], weaknesses=[], when_to_use=[], when_not_to_use=[],
+                     best_for=["extraction", "not_a_task"], search_sources=[],
+                     facts={}, confidence=0.9, generated_at="t")
+    s.upsert_dossier("p:good", weights_id="hf:a/good", display_name="good",
+                     provider="p", price_out=0.0, core_competency="c", summary="s",
+                     strengths=[], weaknesses=[], when_to_use=[], when_not_to_use=[],
+                     best_for=["extraction"], search_sources=[],
+                     facts={}, confidence=0.9, generated_at="t")
+    s.commit()
+
+    rep = audit_dossiers(s)
+    assert rep["dossiers"] == 2 and rep["checked"] == 3
+    reasons = {f["reason"] for f in rep["findings"]}
+    assert any("structured" in r for r in reasons), "a refuted capability was not caught"
+    assert "not a task in this policy" in reasons
+    assert all(f["deploy_id"] != "p:good" for f in rep["findings"]), \
+        "an arm that can serve its task must pass"
+    s.close()
+
+
+def test_a_stored_dossier_is_made_sound_rather_than_asked_to_be(tmp_path):
+    """The prompt states the eligibility rule; the writer does not reliably follow it.
+
+    After `caps` reached the facts *and* the rule reached the prompt, a rescout still
+    produced 4 unsound recommendations out of 14 — including `shelf_image_audit` for a
+    model whose own row says `structured: false`. So the filter runs in code, and what
+    it drops is recorded rather than silently shortening the list.
+    """
+    from mininfer.dossier_audit import build_pools, sound_best_for
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    s = Store(tmp_path / "sound.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    s.upsert_deployment(Deployment("p:x", "hf:a/m", "p", "x", zero_price=True,
+                                   context_window=32000, caps={"structured": False}))
+    s.commit()
+
+    _, tasks, pools = build_pools(s)
+    kept, dropped = sound_best_for("p:x", ["summarise", "extraction", "telepathy"],
+                                   tasks, pools)
+
+    assert kept == ["summarise"], f"an unservable task survived: {kept}"
+    assert {d["task"] for d in dropped} == {"extraction", "telepathy"}
+    assert all(d["reason"] for d in dropped), "a drop must say why"
+    s.close()

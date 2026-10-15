@@ -27,6 +27,6 @@ def ingest_sambanova(snap: Snapshot) -> Run:
                     trial=True, caps=caps_from_params(None))
         ev = evidence("deployment", d.deploy_id, {"price_in": pin, "price_out": pout,
                                                    "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

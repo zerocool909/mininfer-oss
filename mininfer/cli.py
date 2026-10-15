@@ -480,9 +480,15 @@ def cmd_resolve(args) -> int:
         store.close()
         return 0
 
-    merged, review = propose(store, auto=not args.no_auto)
-    store.commit()
-    print(f"auto-merged: {len(merged)}")
+    merged, review = propose(store, auto=not args.no_auto, dry_run=args.dry_run)
+    # `--dry-run` must not commit: the merge is a delete, so a pass that wrote
+    # here would make the flag a lie. It used to be passed only to
+    # `--split-variants` and `--adjudicate`, leaving the auto-merge half writing
+    # through a flag that promised it would not.
+    if not args.dry_run:
+        store.commit()
+    print(f"auto-merged: {len(merged)}"
+          + ("   (dry-run — nothing written)" if args.dry_run else ""))
     for p in merged[:15]:
         print(f"  {p.alias_id}\n    -> {p.canonical_id}   ({p.reason})")
     print(f"\nneeds review: {len(review)}")
@@ -1520,10 +1526,6 @@ def _print_scouted(d: dict) -> None:
         print(f"  ! {d['deploy_id']}: {d['error']}")
         return
     print(f"  ok {d['display_name']}  conf={d.get('confidence', 0.0):.2f}")
-    if d.get("warrior"):
-        print(f"     warrior: ⚔ {d['warrior']}")
-    if d.get("story"):
-        print(f"     story:   {d['story'][:150]}")
     comp = (d.get("core_competency") or "").strip()
     if comp:
         print(f"     core: {comp[:110]}")
@@ -1543,8 +1545,6 @@ def cmd_scout(args) -> int:
     from . import scout as scout_mod
     from .router import Policy
 
-    if getattr(args, "tone", None):
-        os.environ["MI_SCOUT_TONE"] = args.tone
     _, tasks = Policy.load(args.policy)
     store = _open(args)
 
@@ -1580,6 +1580,13 @@ def cmd_scout(args) -> int:
 def cmd_dossiers(args) -> int:
     """The form guide table: what every free arm is good at and when to use it."""
     store = _open(args)
+    if getattr(args, "audit", False):
+        from .dossier_audit import audit_dossiers, format_audit
+
+        rep = audit_dossiers(store, args.policy)
+        print(json.dumps(rep, indent=2) if args.json else format_audit(rep))
+        store.close()
+        return 1 if rep["unsound"] else 0
     rows = store.dossiers(substr=args.substr or None, limit=args.limit or None)
     store.close()
     if args.json:
@@ -1592,10 +1599,6 @@ def cmd_dossiers(args) -> int:
         print(f"\n{r['display_name']}  [{r['provider']}]  "
               f"conf={r.get('confidence') or 0.0:.2f}")
         print(f"  deploy: {r['deploy_id']}  updated: {r.get('generated_at')}")
-        if r.get("warrior"):
-            print(f"  warrior: ⚔ {r['warrior']}")
-        if r.get("story"):
-            print(f"  story:  {r['story'][:200]}")
         if r.get("core_competency"):
             print(f"  core:   {r['core_competency']}")
         if r.get("best_for"):
@@ -2146,8 +2149,6 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--only-new", action="store_true",
                     help="scout only free arms that have no dossier yet (the"
                          " new-model event queue)")
-    sc.add_argument("--tone", choices=["epic", "plain", "deadpool"], default=None,
-                    help="voice for the dossier's warrior/story (default epic)")
     sc.add_argument("--interval", type=float, default=0.0,
                     help="loop every N seconds (0 = one pass)")
     sc.set_defaults(fn=cmd_scout)
@@ -2156,6 +2157,8 @@ def main(argv: list[str] | None = None) -> int:
     dg.add_argument("substr", nargs="?", default="")
     dg.add_argument("--limit", type=int, default=0)
     dg.add_argument("--json", action="store_true")
+    dg.add_argument("--audit", action="store_true",
+                    help="check every best_for against what the router would serve")
     dg.set_defaults(fn=cmd_dossiers)
 
     dr = sub.add_parser("dossier-report",

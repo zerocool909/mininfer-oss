@@ -32,6 +32,7 @@ import re
 
 from . import search as search_mod
 from .fetch import utcnow
+from .dossier_audit import build_pools, sound_best_for
 from .leaderboards import describe
 from .store import Store
 
@@ -42,39 +43,54 @@ from .store import Store
 # single constant silently disabled `MI_AGENT_MODELS`.
 
 _SEARCH_LIMIT = 3
+#: How much of a search-result snippet to keep. The provider returns ~140
+#: characters of its own, so this rarely binds — it is a guard, not a trimmer.
 _SNIPPET_CHARS = 400
 
-#: How the storied half of a dossier is voiced. `epic` is the default warrior
-#: framing; `plain` drops the colour; `deadpool` is the irreverent,
-#: fourth-wall-breaking register. Override with `MI_SCOUT_TONE` (or `mi scout
-#: --tone deadpool`). The tone only ever applies to `warrior`/`story` — the
-#: factual fields stay dry on purpose, so the router and the summary never have to
-#: parse a punchline.
-_TONE_INSTRUCTIONS = {
-    "plain": (
-        "No metaphor. Write `warrior` as a short functional label (2-4 words) and "
-        "`story` as one plain, factual sentence."),
-    "epic": (
-        "Epic-fantasy voice: cast the model as a warrior and the tasks it wins as "
-        "the capabilities it commands. Vivid and heroic, but the metaphor must "
-        "never assert a fact the evidence does not support."),
-    "deadpool": (
-        "The voice of Deadpool: irreverent, fourth-wall-breaking, quippy, "
-        "self-aware, affectionately roasting both the model and the reader. Short, "
-        "punchy, safe-for-work, no slurs and no cruelty. Crucially, the joke must "
-        "never replace or contradict a fact — land the punchline and still say the "
-        "true thing."),
-}
 
+def derive_confidence(sources: list[dict], facts: dict) -> tuple[float, dict]:
+    """How much a dossier should be trusted, from what it was built on.
 
-def _current_tone() -> str:
-    """The active voice, normalised to a known tone (unknown -> `epic`)."""
-    tone = (os.environ.get("MI_SCOUT_TONE") or "epic").strip().lower()
-    return tone if tone in _TONE_INSTRUCTIONS else "epic"
+    Replaces the writing model's own 0.0-1.0 self-report, which was doing real work:
+    it gates routing through `dossier_min_confidence` (0.6). A self-assessment cannot
+    be right or wrong, so it cannot be calibrated — and it showed: four of the first
+    five real dossiers came back at exactly 0.40, over arms with three sources and
+    arms with sparse facts alike.
 
+    Derived instead from what is *checkable*:
 
-def _tone_instruction() -> str:
-    return _TONE_INSTRUCTIONS[_current_tone()]
+    * **sources** — how many, saturating at three. Nothing else is available.
+    * **leaderboards** — an arm on a benchmark has an independent opinion of it.
+    * **capability coverage** — how many of `CAP_KEYS` are resolved rather than
+      `null`. A dossier written for an arm whose capabilities nobody has reported is
+      guessing about the one thing that decides which tasks it can serve.
+
+    The writer's own number is kept as `facts.writer_confidence`: visible, and not
+    authoritative. Returns `(confidence, basis)` so a reader can see the arithmetic
+    rather than trust a bare float.
+    """
+    from .schema import CAP_KEYS
+
+    n_sources = len(sources or [])
+    n_boards = len(facts.get("leaderboards") or [])
+    caps = facts.get("caps") or {}
+    resolved = sum(1 for k in CAP_KEYS if caps.get(k) is not None)
+
+    base = 0.30
+    from_sources = 0.10 * min(n_sources, 3)
+    from_boards = 0.10 * min(n_boards, 2)
+    from_caps = 0.15 * (resolved / max(len(CAP_KEYS), 1))
+    score = base + from_sources + from_boards + from_caps
+    # No sources at all is the floor: the dossier is the registry facts restated.
+    if not n_sources:
+        score = min(score, 0.35)
+    return round(max(0.0, min(1.0, score)), 2), {
+        "sources": n_sources, "leaderboards": n_boards,
+        "caps_resolved": resolved, "caps_of": len(CAP_KEYS),
+        "from_sources": round(from_sources, 2),
+        "from_leaderboards": round(from_boards, 2),
+        "from_caps": round(from_caps, 2),
+    }
 
 
 def _parse_json_field(raw: str | None, default: Any) -> Any:
@@ -125,6 +141,15 @@ def _facts(deploy: dict, outcomes: dict | None, tags: list[dict]) -> dict:
         "status": deploy.get("status"),
         "status_reason": deploy.get("status_reason"),
         "pricing_state": deploy.get("pricing_state"),
+        # The arm's capabilities, and how much to trust them. Without these the
+        # dossier is written blind to what the model can *do*, and recommends it for
+        # tasks the router will then refuse: measured on the first five real
+        # dossiers, 5 of 13 recommended (arm, task) pairs were not servable, and one
+        # of them named `extraction` for a model whose own row said
+        # `structured: false`. `_prompt` already told the writer not to contradict
+        # the facts; it simply was not given the ones that matter most here.
+        "caps": _parse_json_field(deploy.get("caps"), {}),
+        "caps_state": _parse_json_field(deploy.get("caps_state"), {}),
         "uptime_1d": deploy.get("uptime_1d"),
         "first_token_ms": deploy.get("first_token_ms"),
         "throughput": deploy.get("throughput"),
@@ -179,7 +204,6 @@ def _search(store: Store, deploy: dict, enabled: bool) -> tuple[list[dict], dict
 
 def _prompt(facts: dict, sources: list[dict], task_names: list[str] | None) -> str:
     tasks = ", ".join(task_names) if task_names else "(task list not supplied)"
-    tone = _tone_instruction()
     return f"""You are the model scout for min(Infer), an LLM router. Write a "form guide" \
 dossier for ONE free model so an operator can decide which task to pick it for — \
 the way a racing form helps pick a horse for a race.
@@ -197,8 +221,6 @@ Reply with exactly one JSON object, no prose, no markdown fences:
 {{
   "core_competency": "one sentence: what this model is genuinely best at",
   "summary": "2-3 sentences of background: family, size, what it is, what it is not",
-  "warrior": "a 1-3 word warrior archetype that captures its style, e.g. 'The Swift Scout'",
-  "story": "2-3 vivid sentences casting this model as a warrior and the tasks it\n    wins as the capabilities it commands. An analogy, not a fact claim.",
   "strengths": ["..."],
   "weaknesses": ["..."],
   "when_to_use": ["task name or concrete scenario"],
@@ -208,15 +230,22 @@ Reply with exactly one JSON object, no prose, no markdown fences:
 }}
 
 Rules:
-- Voice for `warrior`/`story`: {tone}
-- Leave `core_competency`, `summary`, `when_to_use` and `best_for` dry and factual:
-  the tone never leaks into the fields the router and the summary rely on.
+- Everything you write is read by an operator, and `best_for` is read by the router.
+  There is no decorative field: every sentence must be something the facts or the
+  sources actually support.
+- **`best_for` and `when_to_use` must only name tasks this arm can actually serve.**
+  Read `caps` against the task list: a task requiring `tools` cannot be recommended
+  for an arm whose `tools` is not `true`, and one requiring `structured` cannot be
+  recommended for an arm whose `structured` is not `true`. `null` means *nobody has
+  reported it*, so it is not a yes. A recommendation the router then refuses is worse
+  than no recommendation — it reads as a considered judgement and is not one.
 - `when_to_use` and `best_for` must use the task names given above where possible.
-- `warrior` and `story` are colour for a human reading the form guide — never let
-  them assert a benchmark, a price, or a capability the facts do not support.
+- Never assert a benchmark, a price, or a capability the registry facts do not show.
+  The leaderboards above are the whole of what is known about its standing — do not
+  invent a score, and do not imply one it is not on.
 - `confidence` is your own confidence in the dossier, 0.0-1.0: lower it when the
   search context is thin or the registry facts are sparse.
-- Never invent a benchmark or a price. If a fact is unknown, say so in `summary`.
+- If a fact is unknown, say so in `summary` rather than guessing.
 """
 
 
@@ -260,10 +289,12 @@ def _synthesize(agent_model: str | None, prompt: str) -> dict:
         v = data.get(key) or []
         return v if isinstance(v, list) else [v]
 
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
+
+    def _self_report(payload: dict) -> float | None:
+        try:
+            return max(0.0, min(1.0, float(payload.get("confidence"))))
+        except (TypeError, ValueError):
+            return None
 
     return {
         # Which arm in the fallback chain actually answered — provenance for the
@@ -271,14 +302,14 @@ def _synthesize(agent_model: str | None, prompt: str) -> dict:
         "_agent_model": getattr(resp, "agent_model", ""),
         "core_competency": str(data.get("core_competency") or "").strip(),
         "summary": str(data.get("summary") or "").strip(),
-        "warrior": str(data.get("warrior") or "").strip(),
-        "story": str(data.get("story") or "").strip(),
         "strengths": [str(x) for x in _list("strengths")],
         "weaknesses": [str(x) for x in _list("weaknesses")],
         "when_to_use": [str(x) for x in _list("when_to_use")],
         "when_not_to_use": [str(x) for x in _list("when_not_to_use")],
         "best_for": [str(x) for x in _list("best_for")],
-        "confidence": max(0.0, min(1.0, confidence)),
+        # Kept, not used. `derive_confidence` replaces it because a self-assessment
+        # cannot be calibrated; this stays so the two can be compared.
+        "writer_confidence": _self_report(data),
     }
 
 
@@ -314,16 +345,17 @@ def _need_search(facts: dict, existing: dict | None) -> tuple[bool, str]:
 
 def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
               search_enabled: bool = True, task_names: list[str] | None = None,
-              dry_run: bool = False, existing: dict | None = None) -> dict:
+              dry_run: bool = False, existing: dict | None = None,
+              tasks: dict | None = None, pools: dict | None = None) -> dict:
     """Write one arm's dossier. Returns the dossier dict, with `error` on failure."""
     try:
         benchmark = _parse_json_field(deploy.get("benchmark"), {})
         outcomes = store.outcome_stats(deploy["deploy_id"])
         facts = _facts(deploy, outcomes, _leaderboard_tags(benchmark))
-        # Record the voice the dossier was written in, so a later `--tone` change
-        # is detectable and re-voices the dossier from its own facts (no search).
-        facts["scout_tone"] = _current_tone()
-
+        # Leaderboards are a first-class field, not just a line inside `facts`: a
+        # reader wants them without parsing a provenance blob. They were already
+        # computed here and then buried.
+        leaderboards = _leaderboard_tags(benchmark)
         # Decompose before spending: no search when the facts suffice, and the
         # decision is recorded so a reader can see why the arm was (not) searched.
         if not search_enabled:
@@ -337,6 +369,21 @@ def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
         facts["search"] = search_meta
         dossier = _synthesize(agent_model, _prompt(facts, sources, task_names))
         facts["agent_model"] = dossier.get("_agent_model") or ""
+        # After the sources are known and before the row is written: `confidence`
+        # gates routing, so it has to be measured rather than asserted.
+        confidence, basis = derive_confidence(sources, facts)
+        dossier["confidence"] = confidence
+        facts["confidence_basis"] = basis
+        # Enforce, do not request. The prompt states the eligibility rule and the
+        # writer does not reliably follow it, so a stored dossier is made sound here
+        # instead. What was dropped is recorded, because silently shortening a list
+        # would hide that the writer overreached.
+        if tasks is not None and pools is not None:
+            kept, dropped = sound_best_for(deploy["deploy_id"],
+                                           dossier.get("best_for"), tasks, pools)
+            dossier["best_for"] = kept
+            if dropped:
+                facts["dropped_best_for"] = dropped
     except Exception as exc:  # no key / bad agent output / search failure
         return {"deploy_id": deploy["deploy_id"], "error": str(exc)}
 
@@ -359,8 +406,7 @@ def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
             price_out=deploy.get("price_out"),
             core_competency=dossier["core_competency"],
             summary=dossier["summary"],
-            warrior=dossier.get("warrior", ""),
-            story=dossier.get("story", ""),
+            leaderboards=leaderboards,
             strengths=dossier["strengths"],
             weaknesses=dossier["weaknesses"],
             when_to_use=dossier["when_to_use"],
@@ -408,7 +454,9 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
     "n of m" would watch the bar stop short on a healthy pass.
     """
     summary: dict[str, Any] = {"scanned": 0, "written": 0, "skipped_fresh": 0,
-                               "errors": 0, "dossiers": []}
+                               "errors": 0, "dossiers": [], "dropped_best_for": 0}
+    # Built once for the pass: eligibility is a property of the task, not of the arm.
+    _, _tasks, _pools = build_pools(store)
     arms = store.new_dossier_arms() if only_new else store.free_deployments()
     for deploy in arms:
         if limit and summary["scanned"] >= int(limit):
@@ -416,17 +464,10 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
         summary["scanned"] += 1
 
         existing = store.dossier(deploy["deploy_id"]) if not force else None
-        # Two reasons a dossier may be stale beyond its age:
-        #   * it was written before the storied fields existed (no `warrior`);
-        #   * its recorded voice differs from the one now requested (`--tone`).
-        # Both are re-synthesised from the stored facts, which `_need_search` sees
-        # as sufficient — so an upgrade or a re-voice costs no search.
-        stored_facts = _parse_json_field(existing.get("facts"), {}) if existing else {}
-        missing_story = existing is not None and not existing.get("warrior")
-        tone_changed = (existing is not None
-                        and stored_facts.get("scout_tone") != _current_tone())
-        dirty = existing is not None and (_facts_changed(deploy, existing)
-                                          or missing_story or tone_changed)
+        # One reason a dossier may be stale beyond its age: the registry's view of the
+        # arm moved (`_facts_changed`). It is then re-synthesised, and `_need_search`
+        # decides whether that costs a search.
+        dirty = existing is not None and _facts_changed(deploy, existing)
         if (existing is not None and not dirty
                 and _age_hours(existing.get("generated_at")) < max_age_hours):
             summary["skipped_fresh"] += 1
@@ -437,7 +478,7 @@ def scout(store: Store, *, limit: int = 0, agent_model: str | None = None,
         dossier = scout_one(store, deploy, agent_model=agent_model,
                             search_enabled=search_enabled,
                             task_names=task_names, dry_run=dry_run,
-                            existing=existing)
+                            existing=existing, tasks=_tasks, pools=_pools)
         if dossier.get("error"):
             summary["errors"] += 1
         else:

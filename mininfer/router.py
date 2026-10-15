@@ -34,7 +34,7 @@ from . import probe as probe_mod
 from .bandit import bandit_order
 from .execute import available_providers
 from .schema import Candidate, TaskProfile
-from .store import Store
+from .store import FACT_DISPUTED, Store
 
 # --------------------------------------------------------------------------- #
 # statistics & caching
@@ -332,6 +332,8 @@ class Policy:
                 tokens_in=int(t.get("tokens_in", 1000)),
                 tokens_out=int(t.get("tokens_out", 400)),
                 require=dict(t.get("require") or {}),
+                require_input_modalities=tuple(t.get("require_input_modalities") or ()),
+                require_output_modalities=tuple(t.get("require_output_modalities") or ()),
                 min_context=int(t.get("min_context", 0)),
                 min_success_lb=float(t.get("min_success_lb", pol.min_success_lb)),
                 benchmark_keys=tuple(t.get("benchmark_keys") or ()),
@@ -430,6 +432,23 @@ _SPECIAL_ROLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("image-gen", ("stable-diffusion", "flux", "dall-e", "imagen", "diffusion")),
     ("music", ("lyria", "musicgen", "music")),
 )
+
+#: The roles a model's *output* implies, independent of what it is called. Names are
+#: the backstop, not the mechanism: a token list cannot cover whole families, and
+#: `bytedance/seedance-*`, `google/veo-*`, `recraft/recraft-*`, `openai/gpt-image-*`
+#: and `klingai/kling-*-motion-control` carry none of the tokens above while
+#: producing video or images. `safety`, `embedding` and `rerank` are absent on
+#: purpose — they are `text -> text`, so no modality rule can see them and names stay
+#: the only evidence.
+_OUTPUT_ROLE = {"video": "video-gen", "image": "image-gen", "audio": "tts"}
+
+
+def output_role(outputs) -> str | None:
+    """The generative role implied by an output modality set, if any."""
+    for modality in ("video", "image", "audio"):
+        if modality in (outputs or ()):
+            return _OUTPUT_ROLE[modality]
+    return None
 
 
 def special_role(d: dict) -> str | None:
@@ -560,6 +579,24 @@ def _json_field(raw: str | None) -> dict:
     except (json.JSONDecodeError, TypeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _json_list(raw: str | None) -> list:
+    """Parse a JSON *array* column.
+
+    `_json_field` is dict-only and returns `{}` for a list, so reading a modality
+    column through it yields an empty value for every arm — a gate that reads
+    nothing and silently rejects nothing. That failure is invisible, which is why
+    this is a separate function rather than a `default=` argument: the two column
+    shapes are different and one cannot stand in for the other.
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
 
 
 def build_candidates(store: Store, task: TaskProfile, policy: Policy, *,
@@ -823,14 +860,29 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
     # Right model, right job. A safety classifier, an embedding model, a TTS/ASR or
     # an image/music generator is not a general-purpose answerer, whatever its
     # price. A task that wants one names it in `allow_roles`.
+    allowed = getattr(task, "allow_roles", ()) or ()
+    # Structural first: what the arm *produces*. A model that emits video is not an
+    # answerer whatever it is called, and this catches the families a token list
+    # misses entirely.
+    outputs = set(_json_list(d.get("output_modalities")))
+    produced = output_role(outputs)
+    if produced and produced not in allowed:
+        return (f"unsupported: {produced} (output_modalities={sorted(outputs)})")
+    # Then the names, which is the only signal for the non-generative roles and for
+    # the arms whose output modality nobody has reported.
     role = special_role(d)
-    if role and role not in (getattr(task, "allow_roles", ()) or ()):
+    if role and role not in allowed:
         return f"unsupported: {role} model — not a general-purpose text generator"
     for cap, needed in {**policy.require, **task.require}.items():
         if not needed:
             continue
         have = caps.get(cap)
-        if have is None:
+        # A *disputed* capability is genuinely uncertain, so it takes the same route as
+        # an unreported one. `stale` deliberately does not: a confirmation does not
+        # become false because nobody re-asserted it, and gating on it would pre-empt
+        # `free_floor_exempt` on exactly the untried free arms that exists to try.
+        disputed = _json_field(d.get("caps_state")).get(cap) == FACT_DISPUTED
+        if have is None or disputed:
             # The task gets the last word: whether an unverified capability is
             # tolerable depends on what it is used for. A model that cannot emit a
             # tool call fails silently — the loop simply does nothing — while a
@@ -838,10 +890,35 @@ def _reject(c: Candidate, d: dict, caps: dict, task: TaskProfile, policy: Policy
             mode = (getattr(task, "on_unverified_capability", None)
                     or policy.on_unverified_capability)
             if mode == "reject":
-                return f"unverified capability: {cap} (source never reported it)"
+                why = ("sources disagree" if disputed
+                       else "source never reported it")
+                kind = "disputed" if disputed else "unverified"
+                return f"{kind} capability: {cap} ({why})"
             continue
         if not have:
             return f"unsupported capability: {cap}"
+    # Modality requirements, kept separate from the capability loop above because a
+    # content type is not a behaviour. Same three-valued treatment: an unreported
+    # input modality follows `on_unverified_capability`, and it has to, or the
+    # `_SCHEMA_HINT` fix that stopped inventing modality data would silently start
+    # rejecting every arm instead of only the ones that are actually refuted.
+    have_in = set(_json_list(d.get("modalities")))
+    have_out = set(_json_list(d.get("output_modalities")))
+    for want, have, label in (
+        (getattr(task, "require_input_modalities", ()) or (), have_in, "input"),
+        (getattr(task, "require_output_modalities", ()) or (), have_out, "output"),
+    ):
+        for modality in want:
+            if modality in have:
+                continue
+            if not have:
+                mode = (getattr(task, "on_unverified_capability", None)
+                        or policy.on_unverified_capability)
+                if mode == "reject":
+                    return (f"unverified modality: {label} {modality} "
+                            f"(no source reported any)")
+                continue
+            return f"unsupported {label} modality: {modality}"
     need_ctx = max(policy.min_context, task.min_context)
     if need_ctx and (c.context_window or 0) < need_ctx:
         return f"context {c.context_window or 0} < {need_ctx}"

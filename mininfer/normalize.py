@@ -24,7 +24,16 @@ _SERVE_SUFFIX = re.compile(
 # The conservative strip: serving markers only, variant tokens survive.
 _SERVE_SUFFIX_SAFE = re.compile(
     r"(?:[:|-])(?:" + "|".join(_SERVE_TOKENS) + r")$")
-_PROVIDER_PREFIX = re.compile(r"^(?:[a-z0-9_.-]+)/(?=[^/]+$)")
+# A leading `provider/name` — or `Provider: name`, the shape a *display* string
+# takes. Only the slash form was handled, so an adapter passing a display name
+# minted `slug:openai:-gpt-audio` instead of `slug:gpt-audio`, and the two
+# spellings of one model never compared equal.
+#
+# The lookaheads differ per separator on purpose: a `/` prefix may be followed by
+# a colon (`qwen/qwen3-30b-a3b:free` must still strip to the model), while a `:`
+# prefix must not swallow a later separator.
+_PROVIDER_PREFIX = re.compile(
+    r"^(?:[a-z0-9_.-]+)(?:\s*/\s*(?=[^/]+$)|\s*:\s*(?=[^:/]+$))")
 
 _ALIASES = {
     "gptoss": "gpt-oss",
@@ -49,7 +58,12 @@ def _normalize_with(name: str, suffix: re.Pattern) -> str:
         if stripped == s:
             break
         s = stripped
-    s = re.sub(r"[\s_.]+", "-", s)
+    # Brackets, parentheses and a stray colon are *separators*, not part of a name.
+    # They were left in place, which is how the registry came to hold
+    # `slug:google:-nano-banana-pro-(gemini-3-pro-image)` and `slug:flux-2-[klein]-4b`
+    # — and those malformed ids are a large share of the duplicate identities,
+    # because a clean id and a bracketed one never compare equal.
+    s = re.sub(r"[\s_.:()\[\]{}]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-: ")
     return _ALIASES.get(s, s)
 

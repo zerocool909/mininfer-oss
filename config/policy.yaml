@@ -328,7 +328,12 @@ tasks:
     description: FMCG shelf image -> structured planogram audit
     tokens_in: 2000
     tokens_out: 700
-    require: {vision: true, structured: true}
+    require: {structured: true}
+    # What the model must accept, as opposed to what it must *do*. This task read
+    # `require: {vision: true}` until capability and modality were separated — a
+    # content type is not a behaviour, and `caps["vision"]` was a projection of
+    # `input_modalities` that could disagree with the list it projected.
+    require_input_modalities: [image]
     min_context: 8000
     min_success_lb: 0.5
     benchmark_keys: [aa_intelligence]

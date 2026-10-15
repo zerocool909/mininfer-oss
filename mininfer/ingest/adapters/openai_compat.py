@@ -39,7 +39,10 @@ def ingest_openai_compat(snap: Snapshot) -> Run:
         # A model list that says it belongs to us is ours, not a provider's.
         if str(m.get("owned_by") or "").strip().lower() in SELF_OWNERS:
             continue
-        w = weights_for(mid, mid if "/" in mid else None)
+        mods = m.get("input_modalities") or []
+        outs = m.get("output_modalities") or []
+        w = weights_for(mid, mid if "/" in mid else None,
+                        modalities=mods, output_modalities=outs)
         d = make_deploy(snap.source, mid, w.weights_id, source=snap.source, source_url=snap.url,
                     ctx=m.get("context_length") or m.get("context_window") or m.get("max_model_len"),
                     pin=None, pout=None,
@@ -49,7 +52,7 @@ def ingest_openai_compat(snap: Snapshot) -> Run:
                     limits_confirmed=False)
         ev = evidence("deployment", d.deploy_id,
                        {"provider_model_id": mid, "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev))
     return run
 

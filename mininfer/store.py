@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses as dc
+import hashlib
 import json
 import os
 import pathlib
@@ -163,6 +164,21 @@ PRICE_SUSPECT = "suspect"
 PRICE_QUARANTINED = "quarantined"
 PRICE_EXPIRED = "expired"
 PRICE_STATES = (PRICE_CANONICAL, PRICE_SUSPECT, PRICE_QUARANTINED, PRICE_EXPIRED)
+
+# The fact layer's states. Deliberately *not* states: `unverified` is the absence
+# of a resolution (`value` NULL), and `refuted` is a value (`false`) — conflating
+# either with a state is the confusion the three-valued design exists to prevent.
+FACT_CANONICAL = "canonical"      # resolved from evidence, uncontested
+FACT_DISPUTED = "disputed"        # two fresh votes at the same confidence disagree
+FACT_STALE = "stale"              # resolved, but nobody has re-asserted it in a while
+FACT_PINNED = "pinned"            # an operator said so; only another operator overturns it
+FACT_STATES = (FACT_CANONICAL, FACT_DISPUTED, FACT_STALE, FACT_PINNED)
+
+#: A capability is a *slow-moving* fact — it changes when the weights or the
+#: gateway change, not daily the way a price does — so this sits well above
+#: `PRICE_FRESHNESS_DAYS`. Ageing marks the fact `stale`; it does **not** stop it
+#: being used, exactly as an `expired` price is still ranked.
+FACT_FRESHNESS_DAYS = _env_number("FQS_FRESHNESS_DAYS", 90)
 
 # The anomaly kinds. `stale` is deliberately *not* one: a stale price is a
 # freshness fact (already a `price_resolution` state, and a re-ingest fixes it),
@@ -382,6 +398,9 @@ CREATE TABLE IF NOT EXISTS weights (
   license          TEXT,
   released_at      TEXT,
   modalities       TEXT DEFAULT '[]',
+  -- The output half of modality. `modalities` above is the *input* list and always
+  -- was — five sources publish an output list too and every adapter discarded it.
+  output_modalities TEXT DEFAULT '[]',
   aliases          TEXT DEFAULT '[]',
   benchmark        TEXT DEFAULT '{}',
   benchmark_source TEXT,
@@ -423,6 +442,11 @@ CREATE TABLE IF NOT EXISTS deployments (
   -- Derived by `_sync_pricing_states` (P4). Never hand-set: it is a function of
   -- the price, the free markers, the routing status and quota headroom.
   pricing_state     TEXT,
+  -- How much to trust `caps`. `caps` holds the resolved value (three-valued:
+  -- true / false / null) and keeps its shape; this holds only the entries whose
+  -- state is not `canonical`, as `{"tools": "disputed"}`. Empty for almost every
+  -- row, which is why it is a blob rather than a table join on the hot path.
+  caps_state        TEXT DEFAULT '{}',
   source            TEXT,
   source_url        TEXT,
   first_seen        TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -577,6 +601,59 @@ CREATE TABLE IF NOT EXISTS price_history (
   effective_from TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ph_deploy ON price_history(deploy_id, kind, effective_from);
+
+-- The fact resolver's decision, per entity and field (the capability/modality
+-- counterpart of `price_resolution`). Derived from `evidence` and re-derivable at
+-- will, but stored rather than computed by a view because the algorithm is not
+-- expressible in SQL: it pools weights-scoped evidence across every deployment of
+-- an artifact, ranks by source confidence and then freshness, and distinguishes
+-- "nobody reported it" from "a source denied it".
+--
+-- `value` is the resolved three-valued answer: `true`, `false`, or NULL for
+-- unverified. NULL is the *absence of a resolution*, not a third value — the
+-- distinction the whole design protects. `state` is one of
+-- canonical | disputed | stale | pinned.
+--
+-- No surrogate `id`: `sync` drops those, so the key is the identity.
+CREATE TABLE IF NOT EXISTS fact_resolution (
+  entity_kind   TEXT NOT NULL,   -- 'weights' | 'deployment'
+  entity_id     TEXT NOT NULL,
+  field         TEXT NOT NULL,   -- 'cap.tools' | 'modality.in' | 'modality.out'
+  value         TEXT,            -- 'true' | 'false' | NULL = unverified
+  state         TEXT NOT NULL,
+  reason        TEXT,
+  source        TEXT,
+  observed_at   TEXT,
+  confidence    REAL,
+  -- Upstreams that voted, not sources: an adapter serving several gateways must
+  -- not let them confirm each other into one vote.
+  voters        INTEGER NOT NULL DEFAULT 0,
+  reconciled_at TEXT NOT NULL,
+  PRIMARY KEY (entity_kind, entity_id, field)
+);
+CREATE INDEX IF NOT EXISTS idx_fr_state ON fact_resolution(state);
+
+-- The fact layer's belief history, the counterpart of `price_history`. Append-only
+-- and change-only, recording the value *and* the state: the same value moving from
+-- `canonical` to `disputed` is a different belief.
+--
+-- `history_id` is content-derived text, not a rowid, because `sync` drops
+-- surrogate ids and two mirrors must agree about which belief a row is.
+CREATE TABLE IF NOT EXISTS fact_history (
+  history_id     TEXT PRIMARY KEY,
+  entity_kind    TEXT NOT NULL,
+  entity_id      TEXT NOT NULL,
+  field          TEXT NOT NULL,
+  value          TEXT,
+  state          TEXT NOT NULL,
+  reason         TEXT,
+  source         TEXT,
+  observed_at    TEXT,
+  confidence     REAL,
+  effective_from TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fh_entity
+  ON fact_history(entity_kind, entity_id, field, effective_from);
 
 CREATE TABLE IF NOT EXISTS snapshots (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -763,12 +840,11 @@ CREATE TABLE IF NOT EXISTS model_dossiers (
   price_out       REAL,
   core_competency TEXT,
   summary         TEXT,
-  -- The storied half: a warrior archetype and a short analogy tying the model's
-  -- competency to the tasks it wins. Kept beside the factual fields, never in
-  -- place of them, so the router and the summary stay honest while the form guide
-  -- reads like a legend.
-  warrior         TEXT,
-  story           TEXT,
+  -- The leaderboards this arm appears on, as `[{key,label,source,value,url}]`.
+  -- First-class rather than a line inside `facts`: a reader wants a model's
+  -- standing without parsing a provenance blob, and the shape was already
+  -- computed for the prompt and then buried.
+  leaderboards    TEXT DEFAULT '[]',
   strengths       TEXT DEFAULT '[]',
   weaknesses      TEXT DEFAULT '[]',
   when_to_use     TEXT DEFAULT '[]',
@@ -973,12 +1049,24 @@ class Store:
         # Why a deployment left `live` (`hibernated` = a free arm that started
         # charging, awaiting a human) and when, so the review has context.
         "deployments": {"status_reason": "TEXT", "status_changed_at": "TEXT",
-                        "pricing_state": "TEXT", "status_source": "TEXT DEFAULT 'source'"},
+                        "pricing_state": "TEXT", "status_source": "TEXT DEFAULT 'source'",
+                        # The capability states that are NOT `canonical`, as a JSON
+                        # blob — `{}` for the overwhelming majority of rows, so it
+                        # costs almost nothing to carry on the hot path. The
+                        # resolved *value* stays in `caps` (three-valued, shape
+                        # unchanged) and this says how much to trust it. The
+                        # DEFAULT matters: ALTER TABLE backfills existing rows with
+                        # it, so a migrated registry reads `{}` rather than NULL.
+                        "caps_state": "TEXT DEFAULT '{}'"},
+        # Modality is directional: `modalities` is the input half and was the only
+        # half recorded, while five sources publish the output half too.
+        "weights": {"output_modalities": "TEXT DEFAULT '[]'"},
         # The storied half of a model dossier, added after the table shipped.
-        "model_dossiers": {"warrior": "TEXT", "story": "TEXT"},
+        "model_dossiers": {"leaderboards": "TEXT DEFAULT '[]'"},
     }
 
     def _migrate(self) -> None:
+        widened: set[str] = set()
         for table, columns in self._ADDED_COLUMNS.items():
             have = self.conn.columns(table)
             if not have:
@@ -986,6 +1074,20 @@ class Store:
             for name, decl in columns.items():
                 if name not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    widened.add(table)
+        # A view built on `d.*` / `w.*` is *positional*, and Postgres's
+        # `CREATE OR REPLACE VIEW` may only append columns: widening the base table
+        # inserts the new column into the middle of the star expansion and Postgres
+        # refuses with "cannot change name of view column X to Y". That is the trap
+        # `_ROUTING_STATS_VIEW`'s comment warns about, and this is the other half of
+        # the fix — the view has to be dropped on the boot that changed its shape,
+        # which is the only boot where it is being redefined anyway.
+        for view, base in (("deployments_priced", "deployments"),
+                           ("weights_resolved", "weights"),
+                           ("routing_stats", "observations"),
+                           ("price_history_dated", "price_history")):
+            if base in widened:
+                self.conn.execute(f"DROP VIEW IF EXISTS {view}")
         # An index on an *added* column has to be created here, after the ALTER,
         # not in the base DDL: `CREATE INDEX IF NOT EXISTS … (session_id)` would
         # run against an old registry that does not have the column yet and fail
@@ -1055,11 +1157,11 @@ class Store:
         self.conn.execute(
             """
             INSERT INTO weights (weights_id, display_name, hf_repo, hf_revision, family,
-                params_b, arch, license, released_at, modalities, aliases, benchmark,
-                benchmark_source, last_seen)
+                params_b, arch, license, released_at, modalities, output_modalities, aliases,
+                benchmark, benchmark_source, last_seen)
             VALUES (:weights_id,:display_name,:hf_repo,:hf_revision,:family,:params_b,:arch,
-                :license,:released_at,:modalities,:aliases,:benchmark,:benchmark_source,
-                CURRENT_TIMESTAMP)
+                :license,:released_at,:modalities,:output_modalities,:aliases,:benchmark,
+                :benchmark_source, CURRENT_TIMESTAMP)
             ON CONFLICT(weights_id) DO UPDATE SET
                 display_name = COALESCE(excluded.display_name, weights.display_name),
                 hf_repo      = COALESCE(excluded.hf_repo, weights.hf_repo),
@@ -1071,6 +1173,11 @@ class Store:
                 released_at  = COALESCE(excluded.released_at, weights.released_at),
                 modalities   = CASE WHEN excluded.modalities != '[]'
                                     THEN excluded.modalities ELSE weights.modalities END,
+                -- Same rule, same reason: an unreported output list asserts nothing,
+                -- so it must not overwrite one a source did report.
+                output_modalities = CASE WHEN excluded.output_modalities != '[]'
+                                    THEN excluded.output_modalities
+                                    ELSE weights.output_modalities END,
                 aliases      = CASE WHEN excluded.aliases != '[]'
                                     THEN excluded.aliases ELSE weights.aliases END,
                 benchmark    = CASE WHEN excluded.benchmark NOT IN ('{}','null')
@@ -1080,7 +1187,8 @@ class Store:
             """,
             row,
         )
-        self._add_evidence(evidence)
+        claims = list(evidence) + self._modality_claims(w, list(evidence))
+        self._add_evidence(claims)
 
     def upsert_deployment(
         self, d: Deployment, evidence: Iterable[Evidence] = (), quarantine: Iterable[tuple] = (),
@@ -1106,6 +1214,24 @@ class Store:
                     zero_price=(resolved["price_in"] == 0 and resolved["price_out"] == 0),
                 )
         row = d.to_row()
+        row.setdefault("caps_state", "{}")
+        # Record the claims *before* drawing the conclusion from them. The adapter
+        # emits observations and never decides a capability, exactly as it never
+        # decides a price: writing `d.caps` straight through was the clobber, because
+        # a source that reported nothing erased a confirmation another source made.
+        self._add_evidence(evidence)
+        resolved_caps = self._resolve_deployment_caps(d.deploy_id, d.provider)
+        if resolved_caps is None:
+            # The adapter set `caps` but did not emit it as a claim — 11 of the 14 do
+            # not, so without this the write path would still be the adapter's
+            # opinion rather than a conclusion. Adopt it as a claim first, borrowing
+            # the provenance the adapter's *other* findings carry, since it came from
+            # the same payload.
+            self._adopt_deployment_caps(d)
+            resolved_caps = self._resolve_deployment_caps(d.deploy_id, d.provider)
+        if resolved_caps is not None:
+            row["caps"] = json.dumps(resolved_caps["caps"])
+            row["caps_state"] = json.dumps(resolved_caps["states"])
         row["zero_price"] = int(d.zero_price)
         row["free_variant"] = int(d.free_variant)
         row["subscription"] = int(d.subscription)
@@ -1168,12 +1294,12 @@ class Store:
                 context_window, max_output, quantization, price_in, price_out, price_cached_in,
                 zero_price, free_variant, subscription, trial_credits, discount, caps, limits,
                 limits_confirmed, uptime_1d, first_token_ms, throughput, status, status_reason,
-                status_source, status_changed_at, source, source_url, last_seen)
+                status_source, status_changed_at, source, source_url, last_seen, caps_state)
             VALUES (:deploy_id,:weights_id,:provider,:provider_model_id,:context_window,
                 :max_output,:quantization,:price_in,:price_out,:price_cached_in,:zero_price,
                 :free_variant,:subscription,:trial_credits,:discount,:caps,:limits,
                 :limits_confirmed,:uptime_1d,:first_token_ms,:throughput,:status,:status_reason,
-                :status_source, :now, :source, :source_url, :now)
+                :status_source, :now, :source, :source_url, :now, :caps_state)
             ON CONFLICT(deploy_id) DO UPDATE SET
                 weights_id     = excluded.weights_id,
                 context_window = COALESCE(excluded.context_window, deployments.context_window),
@@ -1188,6 +1314,7 @@ class Store:
                 trial_credits  = excluded.trial_credits,
                 discount       = COALESCE(excluded.discount, deployments.discount),
                 caps           = CASE WHEN excluded.caps != '{}' THEN excluded.caps ELSE deployments.caps END,
+                caps_state     = CASE WHEN excluded.caps != '{}' THEN excluded.caps_state ELSE deployments.caps_state END,
                 limits         = CASE WHEN excluded.limits != '{}' THEN excluded.limits ELSE deployments.limits END,
                 limits_confirmed = MAX(excluded.limits_confirmed, deployments.limits_confirmed),
                 uptime_1d      = COALESCE(excluded.uptime_1d, deployments.uptime_1d),
@@ -1209,7 +1336,6 @@ class Store:
             """,
             row,
         )
-        self._add_evidence(evidence)
         for source, entity_id, field, value, reason in quarantine:
             self.conn.execute(
                 "INSERT INTO quarantine (source, entity_id, field, value, reason) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
@@ -1317,6 +1443,358 @@ class Store:
                VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
             (snap.source, snap.url, snap.fetched_at, snap.sha256, snap.nbytes, snap.storage_uri),
         )
+
+    # ------------------------------------------------------- fact resolution
+
+    #: Facts that belong to the *artifact* rather than to one gateway. A modality
+    #: is a property of the weights, so every deployment of those weights is a peer
+    #: whose claim counts. Everything else — `cap.*` — is a property of the gateway
+    #: that serves it (one can refuse tool calls the next honours), so only the
+    #: deployment's own evidence decides and a peer may never supply a value.
+    WEIGHTS_SCOPED_PREFIXES = ("modality.",)
+
+    def _is_weights_scoped(self, field: str) -> bool:
+        return field.startswith(self.WEIGHTS_SCOPED_PREFIXES)
+
+    def _fact_evidence(self, deploy_id: str | None = None) -> list[dict[str, Any]]:
+        """Every capability/modality claim, one row per field.
+
+        Reads the exploded `cap.<key>` rows, and also explodes any legacy
+        `field='caps'` blob still in the table — those carry their `null`s inside the
+        JSON, which is exactly how an unreported capability came to overwrite a
+        reported one. `null` entries are dropped here as well as at emission, so the
+        rule holds for rows written before the fix.
+
+        `deploy_id` narrows to one deployment, which is what the write path needs:
+        loading the whole table per deployment would be quadratic over an ingest.
+        """
+        sql = ("SELECT id, entity_kind, entity_id, field, value, source, url,"
+               " fetched_at, confidence, observed_via FROM evidence"
+               " WHERE (field IN ('caps')"
+               "    OR field LIKE 'cap.%' OR field LIKE 'modality.%')")
+        args: tuple = ()
+        if deploy_id is not None:
+            sql += " AND entity_kind='deployment' AND entity_id=?"
+            args = (deploy_id,)
+        out: list[dict[str, Any]] = []
+        for r in self.conn.execute(sql, args).fetchall():
+            row = dict(r)
+            if row["field"] == "caps":
+                try:
+                    blob = json.loads(row["value"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(blob, dict):
+                    continue
+                for cap, val in blob.items():
+                    if val is None:
+                        continue
+                    out.append({**row, "field": f"cap.{cap}", "value": json.dumps(val)})
+                continue
+            if row["value"] is None:
+                continue
+            out.append(row)
+        return out
+
+    def _fact_voter(self, row: dict, providers: dict[str, str]) -> str:
+        """Who gets the vote. The *upstream*, not the adapter.
+
+        `_source_key` collapses `hf/novita` and `hf/hyperbolic` into one `huggingface`
+        vote, because both carry `source='huggingface'` — so a single adapter serving
+        four gateways would confirm itself. The deployment's provider is the real
+        identity.
+        """
+        if row["entity_kind"] == "deployment":
+            return providers.get(row["entity_id"]) or row["source"] or "unknown"
+        return row["source"] or "unknown"
+
+    #: Modality facts are properties of the artifact, so their evidence is scoped to
+    #: the weights row. The field names are what the resolver pools on.
+    _MODALITY_FIELDS = (("modalities", "modality.in"),
+                        ("output_modalities", "modality.out"))
+
+    def _modality_claims(self, w: Weights, evidence: list[Evidence]) -> list[Evidence]:
+        """Record an artifact's modality lists as weights-scoped evidence.
+
+        Without this the resolver's weights-scoped pooling has no input at all: the
+        adapters set modality on the `Weights` object and nothing ever emitted it as a
+        claim, so the one scope that is supposed to pool across every deployment of an
+        artifact had nothing to pool.
+
+        Provenance is borrowed from the adapter's own claims for this same weights row
+        — they came from the same payload — and with nothing to borrow from the value
+        is left unrecorded rather than attributed to a source that said nothing. This
+        mirrors `_adopt_deployment_caps`, deliberately: one seam per fact kind.
+        """
+        existing = {e.field for e in evidence}
+        anchor = evidence[0] if evidence else None
+        out: list[Evidence] = []
+        for attr, field in self._MODALITY_FIELDS:
+            if field in existing:
+                continue
+            values = list(getattr(w, attr, ()) or ())
+            if not values or anchor is None:
+                continue
+            out.append(Evidence("weights", w.weights_id, field, values,
+                                anchor.source, anchor.url, anchor.fetched_at,
+                                anchor.confidence, anchor.observed_via))
+        return out
+
+    def _adopt_deployment_caps(self, d: Deployment) -> None:
+        """Record a deployment's `caps` dict as claims when no adapter did.
+
+        An adapter is supposed to emit observations and let the store conclude, but
+        most set `caps` on the `Deployment` and never put it in `evidence` — so their
+        capabilities would never reach the resolver and the old last-writer-wins path
+        would still decide them.
+
+        Provenance is *borrowed* from the adapter's other claims for this deployment,
+        because they came from the same payload. With none to borrow, nothing is
+        written: attributing a capability to a source that said nothing would be
+        worse than leaving it unresolved.
+        """
+        claims = {k: v for k, v in (d.caps or {}).items() if v is not None}
+        if not claims:
+            return
+        sibling = self.conn.execute(
+            "SELECT source, url, fetched_at, confidence, observed_via FROM evidence"
+            " WHERE entity_kind='deployment' AND entity_id=?"
+            " ORDER BY confidence DESC, id DESC LIMIT 1", (d.deploy_id,)).fetchone()
+        if sibling is None:
+            return
+        self._add_evidence([
+            Evidence("deployment", d.deploy_id, f"cap.{k}", v, sibling["source"],
+                     sibling["url"], sibling["fetched_at"], sibling["confidence"],
+                     sibling["observed_via"])
+            for k, v in sorted(claims.items())
+        ])
+
+    def _resolve_deployment_caps(self, deploy_id: str, provider: str) -> dict[str, Any] | None:
+        """This deployment's capabilities, resolved from its **own** evidence.
+
+        Called on the write path, so the stored `caps` is a conclusion drawn from
+        observations rather than the last adapter's opinion — the same seam the price
+        already uses. Own evidence only: `cap.*` is a property of the gateway, so a
+        peer serving the same weights may never supply it.
+
+        Returns None when this deployment has no capability evidence at all, so a
+        caller cannot wipe a row's existing caps with an empty resolution.
+        """
+        rows = self._fact_evidence(deploy_id)
+        rows = [r for r in rows if r["field"].startswith("cap.")]
+        if not rows:
+            return None
+        grouped: dict[str, list[dict]] = {}
+        for r in rows:
+            grouped.setdefault(r["field"], []).append(r)
+        caps: dict[str, Any] = {}
+        states: dict[str, str] = {}
+        for field, group in sorted(grouped.items()):
+            res = self._resolve_one_fact(group, {deploy_id: provider})
+            try:
+                caps[field.split(".", 1)[1]] = json.loads(res["value"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if res["state"] != FACT_CANONICAL:
+                states[field.split(".", 1)[1]] = res["state"]
+        return {"caps": caps, "states": states}
+
+    def _resolve_one_fact(self, rows: list[dict], providers: dict[str, str],
+                          now: dt.datetime | None = None) -> dict[str, Any]:
+        """Pick the winner for one (entity, field) and name the state.
+
+        Higher confidence wins outright, then newest — there is no margin, because a
+        boolean has no magnitude to compare. A tie between two *fresh* voters at the
+        same confidence is a `disputed` fact rather than an arbitrary winner.
+        """
+        votes = [r for r in rows if r["confidence"] is not None]
+        if not votes:
+            votes = list(rows)
+        # Total order, so the result is reproducible and a replayed snapshot cannot
+        # win by insertion order — it carries its original `fetched_at`.
+        votes.sort(key=lambda r: (r["confidence"] or 0.0, r["fetched_at"] or "", r["id"]))
+        winner = votes[-1]
+        voters = {self._fact_voter(r, providers) for r in votes}
+
+        state = FACT_PINNED if winner["observed_via"] == "manual" else FACT_CANONICAL
+        reason = f"{winner['observed_via']} ({winner['confidence']:.2f})"
+
+        # A disagreement among *equals* is a dispute. A weaker source contradicting a
+        # stronger one is not: it simply loses, and saying so would drown the
+        # disputes that need a human.
+        rivals = [r for r in votes[:-1]
+                  if r["value"] != winner["value"]
+                  and (r["confidence"] or 0.0) == (winner["confidence"] or 0.0)]
+        if rivals and state != FACT_PINNED:
+            state = FACT_DISPUTED
+            reason = (f"{len(rivals) + 1} sources at {winner['confidence']:.2f} disagree: "
+                      f"{winner['value']} kept over {', '.join(sorted({r['value'] for r in rivals}))}")
+
+        age = _age_days(winner["fetched_at"], now=now)
+        if state == FACT_CANONICAL and age is not None and age > FACT_FRESHNESS_DAYS:
+            state = FACT_STALE
+            reason = f"newest claim is {age:.0f}d old ({reason})"
+
+        return {
+            "entity_kind": winner["entity_kind"],
+            "entity_id": winner["entity_id"],
+            "field": winner["field"],
+            "value": winner["value"],
+            "state": state,
+            "reason": reason,
+            "source": winner["source"],
+            "observed_at": winner["fetched_at"],
+            "confidence": winner["confidence"],
+            "voters": len(voters),
+        }
+
+    def resolve_facts(self, *, now: dt.datetime | None = None) -> dict[str, Any]:
+        """Re-derive every capability and modality fact from its evidence.
+
+        The counterpart of `reconcile_prices`, and deliberately shaped like it:
+        nothing in `evidence` is mutated, so this is re-runnable at will and a changed
+        rule is a re-run rather than a migration. Writes `fact_resolution`, and a
+        `fact_history` row only when a belief actually *changes*.
+
+        A fact with no evidence is **not written at all**. Unverified is the absence
+        of a resolution, not a resolution to NULL — and storing it would make
+        "nobody reported this" indistinguishable from "we resolved it to nothing".
+        """
+        stamp = utcnow()
+        providers = {d["deploy_id"]: d.get("provider") or d.get("provider_family") or ""
+                     for d in self.deployments()}
+        rows = self._fact_evidence()
+        # Snapshot the *prior* belief before overwriting it. Reading it inside the
+        # writer would compare each fact against the value just written, so every row
+        # would look unchanged and no history would ever be recorded.
+        prior = {(r["entity_kind"], r["entity_id"], r["field"]): r
+                 for r in self.conn.execute(
+                     "SELECT entity_kind, entity_id, field, value, state"
+                     " FROM fact_resolution").fetchall()}
+
+        # Weights-scoped facts pool across every deployment of the artifact; copy
+        # them onto the weights id so one group holds all the peers' claims. Uses the
+        # *resolved* id — an alias and its canonical are the same artifact, so they
+        # must land in one group rather than two.
+        weights_of = {d["deploy_id"]: (d.get("weights_id_resolved") or d["weights_id"])
+                      for d in self.deployments()}
+        grouped: dict[tuple[str, str, str], list[dict]] = {}
+        for r in rows:
+            if self._is_weights_scoped(r["field"]):
+                if r["entity_kind"] == "deployment":
+                    wid = weights_of.get(r["entity_id"])
+                    if not wid:
+                        continue
+                    r = {**r, "entity_kind": "weights", "entity_id": wid}
+                elif r["entity_kind"] == "weights":
+                    pass
+                else:
+                    continue
+            key = (r["entity_kind"], r["entity_id"], r["field"])
+            grouped.setdefault(key, []).append(r)
+
+        resolutions = [self._resolve_one_fact(g, providers, now) for g in grouped.values()]
+        for res in resolutions:
+            self.conn.execute(
+                """INSERT INTO fact_resolution (entity_kind, entity_id, field, value,
+                       state, reason, source, observed_at, confidence, voters,
+                       reconciled_at)
+                   VALUES (:entity_kind,:entity_id,:field,:value,:state,:reason,:source,
+                       :observed_at,:confidence,:voters,:stamp)
+                   ON CONFLICT (entity_kind, entity_id, field) DO UPDATE SET
+                       value=excluded.value, state=excluded.state, reason=excluded.reason,
+                       source=excluded.source, observed_at=excluded.observed_at,
+                       confidence=excluded.confidence, voters=excluded.voters,
+                       reconciled_at=excluded.reconciled_at""",
+                {**res, "stamp": stamp},
+            )
+        history = self._record_fact_history(resolutions, stamp, prior)
+        # Project. Writing `fact_resolution` without this would leave the router
+        # reading a column the resolver does not maintain, so a re-run would change
+        # nothing that anything consumes — the resolver has to be the author of the
+        # value, not just of the record behind it.
+        projected = self._project_caps(resolutions)
+        states: dict[str, int] = {}
+        for res in resolutions:
+            states[res["state"]] = states.get(res["state"], 0) + 1
+        return {"facts": len(resolutions), "states": states, "history": history,
+                "projected": projected,
+                "unverified_entities": self._unverified_fact_entities(rows)}
+
+    def _project_caps(self, resolutions: list[dict]) -> int:
+        """Write resolved capabilities onto the deployments the router reads.
+
+        Only for deployments that resolved at least one capability: an arm with no
+        capability evidence must keep whatever it has rather than be blanked, because
+        "we have no evidence" is not "it has no capabilities".
+
+        `caps` keeps its three-valued shape (true / false / null) so `_reject` needs
+        no change; `caps_state` carries only the entries that are not `canonical`, so
+        it costs nothing on the hot path for the overwhelming majority of rows.
+        """
+        by_deploy: dict[str, dict[str, dict]] = {}
+        for res in resolutions:
+            if res["entity_kind"] != "deployment" or not res["field"].startswith("cap."):
+                continue
+            by_deploy.setdefault(res["entity_id"], {})[res["field"].split(".", 1)[1]] = res
+        written = 0
+        for deploy_id, caps in by_deploy.items():
+            values: dict[str, Any] = {}
+            states: dict[str, str] = {}
+            for cap, res in sorted(caps.items()):
+                try:
+                    values[cap] = json.loads(res["value"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if res["state"] != FACT_CANONICAL:
+                    states[cap] = res["state"]
+            cur = self.conn.execute(
+                "UPDATE deployments SET caps=?, caps_state=? WHERE deploy_id=?",
+                (json.dumps(values), json.dumps(states), deploy_id),
+            )
+            written += cur.rowcount
+        return written
+
+    def _unverified_fact_entities(self, rows: list[dict]) -> int:
+        """Deployments with at least one capability nobody has ever reported.
+
+        Reported rather than stored: "we have no evidence" is a fact about the
+        evidence, not a resolved value.
+        """
+        seen = {r["entity_id"] for r in rows if r["entity_kind"] == "deployment"}
+        return len({d["deploy_id"] for d in self.deployments()}) - len(seen)
+
+    def _record_fact_history(self, resolutions: list[dict], stamp: str,
+                             prior: dict) -> int:
+        """Append a belief row when a fact we hold *changes*.
+
+        Append-only and change-only, like `price_history`, and it records the value
+        **and** the state: the same value moving from `canonical` to `disputed` is a
+        different belief. `prior` is the belief *before* this pass — passed in rather
+        than re-read, because by now the table already holds the new values.
+        """
+        if not resolutions:
+            return 0
+        written = 0
+        for res in resolutions:
+            key = (res["entity_kind"], res["entity_id"], res["field"])
+            prev = prior.get(key)
+            if prev is not None and prev["value"] == res["value"] and prev["state"] == res["state"]:
+                continue
+            digest = hashlib.sha256(
+                f"{key[0]}|{key[1]}|{key[2]}|{res['value']}|{res['state']}|{stamp}"
+                .encode()).hexdigest()
+            self.conn.execute(
+                """INSERT INTO fact_history (history_id, entity_kind, entity_id, field,
+                       value, state, reason, source, observed_at, confidence,
+                       effective_from)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (history_id) DO NOTHING""",
+                (digest, res["entity_kind"], res["entity_id"], res["field"], res["value"],
+                 res["state"], res["reason"], res["source"], res["observed_at"],
+                 res["confidence"], stamp),
+            )
+            written += 1
+        return written
 
     def _add_evidence(self, items: Iterable[Evidence]) -> None:
         rows = [e.to_row() for e in items]
@@ -2698,6 +3176,7 @@ class Store:
     def deployments(self, task: str | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """SELECT d.*, w.display_name, w.benchmark, w.family, w.params_b, w.arch,
+                      w.modalities, w.output_modalities,
                       w.resolved_id AS weights_id_resolved
                FROM deployments d JOIN weights_resolved w ON w.weights_id = d.weights_id"""
         ).fetchall()
@@ -2736,6 +3215,7 @@ class Store:
             """SELECT d.deploy_id, d.weights_id, d.provider, d.provider_model_id,
                       d.context_window, d.max_output, d.price_in, d.price_out,
                       d.zero_price, d.free_variant, d.subscription, d.trial_credits,
+                      d.caps, d.caps_state,
                       d.status, d.status_reason, d.uptime_1d, d.first_token_ms,
                       d.throughput, d.pricing_state,
                       w.display_name, w.family, w.params_b, w.arch, w.modalities,
@@ -2792,7 +3272,7 @@ class Store:
     def upsert_dossier(self, deploy_id: str, *, weights_id: str, display_name: str,
                        provider: str, price_out: float | None,
                        core_competency: str, summary: str,
-                       warrior: str = "", story: str = "",
+                       leaderboards: list[dict] | None = None,
                        strengths: list[str], weaknesses: list[str],
                        when_to_use: list[str], when_not_to_use: list[str],
                        best_for: list[str], search_sources: list[dict],
@@ -2800,15 +3280,15 @@ class Store:
         """Write one dossier row, replacing an older one for the same arm."""
         self.conn.execute(
             """INSERT INTO model_dossiers (deploy_id, weights_id, display_name, provider,
-                    price_out, core_competency, summary, warrior, story, strengths,
+                    price_out, core_competency, summary, leaderboards, strengths,
                     weaknesses, when_to_use, when_not_to_use, best_for, search_sources,
                     facts, confidence, generated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(deploy_id) DO UPDATE SET
                     weights_id=excluded.weights_id, display_name=excluded.display_name,
                     provider=excluded.provider, price_out=excluded.price_out,
                     core_competency=excluded.core_competency, summary=excluded.summary,
-                    warrior=excluded.warrior, story=excluded.story,
+                    leaderboards=excluded.leaderboards,
                     strengths=excluded.strengths, weaknesses=excluded.weaknesses,
                     when_to_use=excluded.when_to_use,
                     when_not_to_use=excluded.when_not_to_use,
@@ -2816,7 +3296,7 @@ class Store:
                     facts=excluded.facts, confidence=excluded.confidence,
                     generated_at=excluded.generated_at""",
             (deploy_id, weights_id, display_name, provider, price_out,
-             core_competency, summary, warrior, story,
+             core_competency, summary, json.dumps(leaderboards or []),
              json.dumps(strengths), json.dumps(weaknesses),
              json.dumps(when_to_use), json.dumps(when_not_to_use), json.dumps(best_for),
              json.dumps(search_sources), json.dumps(facts), confidence, generated_at),
@@ -2886,7 +3366,7 @@ class Store:
                    d.price_out, d.context_window, d.status, d.pricing_state,
                    d.zero_price, d.free_variant,
                    w.display_name, w.family, w.params_b, w.benchmark,
-                   m.core_competency, m.summary, m.warrior, m.story,
+                   m.core_competency, m.summary, m.leaderboards,
                    m.strengths, m.weaknesses,
                    m.when_to_use, m.when_not_to_use, m.best_for, m.search_sources,
                    m.confidence, m.generated_at
@@ -3183,6 +3663,13 @@ class Store:
 
         `true` only: a null capability is *unknown*, not supported, and counting
         it here would offer a filter that promises more than the registry knows.
+
+        Modalities are facets too, counted by the *value* they take (`image`,
+        `audio`, …) rather than under a `vision`/`audio` cap key. Those two keys
+        were projections of this list, so the chips lose nothing by being read from
+        the list itself — and they can no longer disagree with it. A modality is
+        counted when it appears in either direction, since the chip asks "which
+        arms deal in images", not which way the images flow.
         """
         cols = ", ".join(
             f"SUM(CASE WHEN caps LIKE ? THEN 1 ELSE 0 END) AS {k}"
@@ -3190,6 +3677,21 @@ class Store:
         args = tuple(f'%"{k}": true%' for k in CAP_KEYS)
         row = self.conn.execute(f"SELECT {cols} FROM deployments", args).fetchone()
         return {k: int(row[k] or 0) for k in CAP_KEYS}
+
+    def _modality_facets(self) -> dict[str, int]:
+        """How many deployments can handle each content type, either direction."""
+        counts: dict[str, int] = {}
+        for r in self.conn.execute(
+                "SELECT modalities, output_modalities FROM weights").fetchall():
+            seen = set()
+            for col in ("modalities", "output_modalities"):
+                try:
+                    seen.update(json.loads(r[col] or "[]"))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            for modality in seen:
+                counts[modality] = counts.get(modality, 0) + 1
+        return counts
 
     def explore_models(
         self, *, q: str | None = None, provider: str | None = None,
@@ -3215,6 +3717,16 @@ class Store:
         if capability and capability in CAP_KEYS:
             where.append("d.caps LIKE ?")
             args.append(f'%"{capability}": true%')
+        elif capability and capability in self._modality_facets():
+            # A content type rather than a behaviour: the chip row is flat, and
+            # `image`/`audio` are facets of a modality. Restricted to the modality
+            # vocabulary the registry actually carries, so an unknown key keeps its
+            # existing contract — ignored, not silently narrowed to nothing.
+            where.append("EXISTS (SELECT 1 FROM weights mw JOIN deployments md"
+                         " ON md.weights_id = mw.weights_id"
+                         " WHERE md.deploy_id = d.deploy_id"
+                         " AND (mw.modalities LIKE ? OR mw.output_modalities LIKE ?))")
+            args += [f'%"{capability}"%', f'%"{capability}"%']
         if untried_only:
             where.append("(d.zero_price=1 OR d.free_variant=1 OR d.trial_credits=1) AND COALESCE(s.n, 0) = 0")
         elif free_only:
@@ -3303,6 +3815,10 @@ class Store:
                 "count": len(models), "models": models,
                 "providers": providers,
                 "capabilities": self._capability_facets(),
+                # Kept separate rather than merged into `capabilities`: a modality
+                # is a content type, not a behaviour, and the chip row words them
+                # differently ("deployments confirm" is wrong for `image`).
+                "modalities": self._modality_facets(),
                 "sort": sort if sort in order else "name"}
 
     def recent_decisions(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -3398,11 +3914,30 @@ class Store:
         view — it silently attaches one model's benchmarks and outcomes to
         another — so a disagreement on parameter count refuses the merge and
         records why, instead of trusting the caller.
+
+        **Preserving, not deciding.** The merge deletes the alias's `weights` row,
+        so its facts have to be captured first — `unmerge_variant` cannot bring
+        them back, because it recreates the row from three columns and a
+        *deployment's* display name. Two things happen before the delete:
+
+        * the alias's fact columns **fill the canonical's gaps** (`COALESCE`, the
+          same rule `upsert_weights` already uses) — a present value is never
+          overwritten, so this is a preservation rule, not a resolution rule;
+        * weights-scoped `evidence` **follows the id**, because 2,058 rows in the
+          live registry key `entity_id` on a `weights_id` and would otherwise be
+          left pointing at a row that no longer exists.
+
+        Choosing between two *present* values is deliberately not done here. That
+        is the fact resolver's job (per-field, confidence-then-newest), and a
+        second rule here would compete with it.
         """
         if alias_id == canonical_id:
             return 0
+        cols = ("display_name, hf_repo, hf_revision, family, params_b, arch, license,"
+                " released_at, modalities, output_modalities, aliases, benchmark,"
+                " benchmark_source")
         a = self.conn.execute(
-            "SELECT display_name, params_b FROM weights WHERE weights_id=?", (alias_id,)
+            f"SELECT {cols} FROM weights WHERE weights_id=?", (alias_id,)
         ).fetchone()
         b = self.conn.execute(
             "SELECT display_name, params_b FROM weights WHERE weights_id=?", (canonical_id,)
@@ -3420,6 +3955,13 @@ class Store:
                  f"vs {b['display_name']!r}"),
             )
             return 0
+
+        self._absorb_weights_facts(a, canonical_id)
+        # Before the row goes: evidence keyed on the old id must follow it.
+        self.conn.execute(
+            "UPDATE evidence SET entity_id=? WHERE entity_kind='weights' AND entity_id=?",
+            (canonical_id, alias_id),
+        )
         cur = self.conn.execute(
             "UPDATE deployments SET weights_id=? WHERE weights_id=?", (canonical_id, alias_id))
         moved = cur.rowcount
@@ -3433,6 +3975,40 @@ class Store:
         )
         self.conn.execute("DELETE FROM weights WHERE weights_id=?", (alias_id,))
         return moved
+
+    #: Scalar weights columns carried over only when the canonical has none.
+    _ABSORB_SCALARS = ("hf_repo", "hf_revision", "family", "params_b", "arch",
+                       "license", "released_at", "benchmark_source")
+    #: JSON weights columns, empty when `[]` / `{}`. Compared as text, matching
+    #: the `CASE WHEN excluded.modalities != '[]'` rule in `upsert_weights`.
+    _ABSORB_LISTS = (("modalities", "[]"), ("output_modalities", "[]"),
+                     ("aliases", "[]"), ("benchmark", "{}"))
+
+    def _absorb_weights_facts(self, alias_row, canonical_id: str) -> None:
+        """Fill the canonical's empty weights columns from the alias being deleted.
+
+        Called before the alias row is removed. Never overwrites a value the
+        canonical already has — see `merge_weights` for why that distinction
+        matters. Takes the already-fetched alias row rather than re-reading it.
+        """
+        sets: list[str] = []
+        args: list = []
+        for col in self._ABSORB_SCALARS:
+            if alias_row[col] is not None:
+                sets.append(f"{col} = COALESCE({col}, ?)")
+                args.append(alias_row[col])
+        for col, empty in self._ABSORB_LISTS:
+            value = alias_row[col]
+            if value and value not in (empty, "null"):
+                sets.append(f"{col} = CASE WHEN {col} IS NULL OR {col} IN ('{empty}', 'null')"
+                            f" THEN ? ELSE {col} END")
+                args.append(value)
+        if not sets:
+            return
+        args.append(canonical_id)
+        self.conn.execute(
+            f"UPDATE weights SET {', '.join(sets)} WHERE weights_id = ?", args)
+
 
     def merged_ok(self, alias_id: str) -> bool:
         """True if `alias_id` was merged (or no longer exists as a live row)."""

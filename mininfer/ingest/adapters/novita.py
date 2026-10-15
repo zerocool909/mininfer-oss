@@ -23,7 +23,12 @@ def ingest_novita(snap: Snapshot) -> Run:
         price = read_prices_for("novita", m, snap)
         pin, pout = price.price_in, price.price_out
         ctx = m.get("context_size") or m.get("context_length")
-        w = weights_for(mid, mid if "/" in mid else None)
+        # Novita publishes both halves and a `features` list; the adapter read none
+        # of them, which is why every Novita arm measured all-null caps.
+        mods = m.get("input_modalities") or []
+        outs = m.get("output_modalities") or []
+        w = weights_for(mid, mid if "/" in mid else None,
+                        modalities=mods, output_modalities=outs)
         # No `pin`/`pout`: the deployment does not decide its own price, the store
         # does, from the observations on the bundle.
         d = make_deploy("novita", mid, w.weights_id, source=snap.source, source_url=snap.url,
@@ -35,6 +40,6 @@ def ingest_novita(snap: Snapshot) -> Run:
                                    {"in": pin, "out": pout}, reason))
         ev = evidence("deployment", d.deploy_id, {"price_in": pin, "price_out": pout,
                                                    "context_window": ctx},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

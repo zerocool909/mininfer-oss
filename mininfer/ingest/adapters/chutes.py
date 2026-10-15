@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from ..shared import (
-    caps_from_modalities,
     make_deploy,
     evidence,
     opt,
@@ -22,16 +21,17 @@ def ingest_chutes(snap: Snapshot) -> Run:
         price = read_prices_for("chutes", m, snap)
         pin, pout, pcache = price.price_in, price.price_out, price.price_cached_in
         mods = m.get("input_modalities") or []
+        outs = m.get("output_modalities") or []
         repo = m.get("root") or mid
-        w = weights_for(mid, repo if "/" in repo else None, modalities=mods)
+        w = weights_for(mid, repo if "/" in repo else None, modalities=mods,
+                        output_modalities=outs)
         d = make_deploy("chutes", mid, w.weights_id, source=snap.source, source_url=snap.url,
                     ctx=m.get("context_length") or m.get("max_model_len"),
                     maxout=m.get("max_output_length"), quant=m.get("quantization"),
-                    caps={"tools": opt(m.get("supports_tools")),
-                          **caps_from_modalities(mods)})
+                    caps={"tools": opt(m.get("supports_tools"))})
         ev = evidence("deployment", d.deploy_id,
                        {"price_in": pin, "price_out": pout, "quantization": d.quantization,
                         "context_window": d.context_window},
-                       snap.source, snap.url, snap.fetched_at, "provider_api")
+                       snap.source, snap.url, snap.fetched_at, snap.observed_via)
         run.add(Bundle(w, d, ev, prices=price))
     return run

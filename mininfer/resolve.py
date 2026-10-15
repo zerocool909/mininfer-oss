@@ -62,8 +62,14 @@ class Proposal:
     reason: str
 
 
-def propose(store: Store, *, auto: bool = True, near_window: int = 20) -> tuple[list[Proposal], list[Proposal]]:
-    """Returns (merged, needs_review). Only exact matches are merged when auto."""
+def propose(store: Store, *, auto: bool = True, near_window: int = 20,
+            dry_run: bool = False) -> tuple[list[Proposal], list[Proposal]]:
+    """Returns (merged, needs_review). Only exact matches are merged when auto.
+
+    `dry_run` reports what `auto` *would* merge without writing it. It exists
+    because the merge is a delete: `merge_weights` removes the alias's `weights`
+    row, so a caller asking to look before it leaps must not be handed a commit.
+    """
     rows = store.unstaged_weights()
     merged: list[Proposal] = []
     review: list[Proposal] = []
@@ -105,15 +111,20 @@ def propose(store: Store, *, auto: bool = True, near_window: int = 20) -> tuple[
 
         p = Proposal(wid, canonical, r["display_name"], name_for[k], 1.0,
                      f"normalised name identical ({k})")
-        if auto:
+        if not auto:
+            review.append(p)
+        elif dry_run:
+            # Report it as mergeable, write nothing. The row stays live, so a
+            # later duplicate of the same key is still compared against the same
+            # canonical — which is exactly what the real pass would do.
+            merged.append(p)
+        else:
             moved = store.merge_weights(wid, canonical, p.reason, 1.0)
             if moved or store.merged_ok(wid):
                 merged.append(p)
             else:
                 p.reason = "REFUSED by merge guard — see quarantine"
                 review.append(p)
-        else:
-            review.append(p)
 
     # Near matches are proposed only, and never auto-merged.
     #

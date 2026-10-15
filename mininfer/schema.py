@@ -62,12 +62,15 @@ SOURCE_CONFIDENCE: dict[str, float] = {
     "manual": 1.0,
 }
 
-# The capability vocabulary every ingest path normalises to, and the explorer
-# filters on. One definition: it had been spelled out in `agent_ingest` (for
-# extraction) and again in `store` (for the explorer's facet counts), which is
-# two lists to update for one provider field. `true` means confirmed, `null`
+# The **behaviour** vocabulary every ingest path normalises to, and the explorer
+# filters on. `true` means confirmed, `false` means a source denied it, `null`
 # means unknown — a distinction the router depends on.
-CAP_KEYS = ("tools", "structured", "vision", "reasoning", "caching", "audio")
+#
+# `vision` and `audio` are deliberately absent. They are *projections of
+# `input_modalities`*, not behaviours: a model accepting an image is a fact about
+# its content types, and keeping a second copy here is what let `caps["audio"]`
+# mean "accepts audio" while the `tts`/`music` roles meant "emits it".
+CAP_KEYS = ("tools", "structured", "reasoning", "caching")
 
 
 @dataclass(slots=True)
@@ -112,7 +115,12 @@ class Weights:
     arch: str | None = None  # dense | moe | unknown
     license: str | None = None
     released_at: str | None = None
+    #: Modality is directional and these are the two halves. `modalities` is the
+    #: *input* list and always was; `output_modalities` is what the model can
+    #: produce. Keeping only the first made an image generator and a
+    #: vision-capable text model indistinguishable in the registry.
     modalities: tuple[str, ...] = ()
+    output_modalities: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     benchmark: dict[str, float] = field(default_factory=dict)
     benchmark_source: str | None = None
@@ -120,6 +128,7 @@ class Weights:
     def to_row(self) -> dict[str, Any]:
         d = asdict(self)
         d["modalities"] = json.dumps(list(self.modalities))
+        d["output_modalities"] = json.dumps(list(self.output_modalities))
         d["aliases"] = json.dumps(list(self.aliases))
         d["benchmark"] = json.dumps(self.benchmark)
         return d
@@ -217,6 +226,12 @@ class TaskProfile:
     # the top pick for every one of those tasks unchanged. So the capability being
     # gated decides the answer, not a house style.
     on_unverified_capability: str | None = None
+    # Content types this task requires the model to accept / produce. Separate from
+    # `require` because a modality is not a behaviour: `require: {vision: true}`
+    # asked whether a model *supports a capability*, when what it meant was "accepts
+    # an image".
+    require_input_modalities: tuple[str, ...] = ()
+    require_output_modalities: tuple[str, ...] = ()
     #: Model *roles* this task will accept. Empty (the default) means
     #: "general-purpose text generators only": a safety classifier, an embedding
     #: model, a TTS/ASR or an image/music generator is excluded. A task that

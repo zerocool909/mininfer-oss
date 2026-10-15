@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from ..shared import (
-    caps_from_modalities,
     make_deploy,
     evidence,
     f,
@@ -19,7 +18,8 @@ def ingest_hf_router(snap: Snapshot) -> Run:
         repo = m.get("id", "")
         arch = m.get("architecture") or {}
         mods = arch.get("input_modalities") or []
-        w = weights_for(repo, repo, modalities=mods)
+        outs = arch.get("output_modalities") or []
+        w = weights_for(repo, repo, modalities=mods, output_modalities=outs)
         for p in m.get("providers", []):
             prov = p.get("provider") or "unknown"
             # Each provider block carries its own `pricing.*`, in USD/Mtok per
@@ -33,8 +33,7 @@ def ingest_hf_router(snap: Snapshot) -> Run:
                 ctx=p.get("context_length"),
                 free_variant=is_free,
                 caps={"tools": opt(p.get("supports_tools")),
-                      "structured": opt(p.get("supports_structured_output")),
-                      **caps_from_modalities(mods)},
+                      "structured": opt(p.get("supports_structured_output"))},
                 uptime=None, ftl=f(p.get("first_token_latency_ms")),
                 tput=f(p.get("throughput")),
                 status=p.get("status") or "live",
@@ -43,6 +42,6 @@ def ingest_hf_router(snap: Snapshot) -> Run:
                            {"price_in": pin, "price_out": pout, "is_free": is_free,
                             "first_token_ms": d.first_token_ms, "throughput": d.throughput,
                             "caps": d.caps, "context_window": d.context_window},
-                           snap.source, snap.url, snap.fetched_at, "provider_reported_probe")
+                           snap.source, snap.url, snap.fetched_at, snap.observed_via)
             run.add(Bundle(w, d, ev, prices=price))
     return run

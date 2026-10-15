@@ -20,6 +20,12 @@ create table if not exists weights (
   license          text,
   released_at      text,
   modalities       text default '[]',
+  -- The output half of modality; `modalities` is the input list and always was.
+  -- Declared here as well as in `_ADDED_COLUMNS` so a fresh schema never needs an
+  -- ALTER: the views below are `select d.*` and so *positional*, and adding a column
+  -- to a base table shifts the star expansion, which Postgres refuses with "cannot
+  -- change name of view column <x> to <y>".
+  output_modalities text default '[]',
   aliases          text default '[]',
   benchmark        text default '{}',
   benchmark_source text,
@@ -54,6 +60,10 @@ create table if not exists deployments (
   status_changed_at text,
   status_source     text default 'source',
   pricing_state     text,
+  -- How much to trust `caps`: only the entries that are not `canonical`, as
+  -- `{"tools": "disputed"}`. See `output_modalities` above for why this is declared
+  -- here rather than left to the migration.
+  caps_state        text default '{}',
   source            text,
   source_url        text,
   first_seen        text default (now()::text),
@@ -177,6 +187,55 @@ create table if not exists price_history (
   effective_from text not null
 );
 create index if not exists idx_ph_deploy on price_history(deploy_id, kind, effective_from);
+
+-- The fact resolver's decision, per entity and field — the capability/modality
+-- counterpart of `price_resolution`. Derived from `evidence` and re-derivable at
+-- will, but stored rather than computed by a view because the algorithm is not
+-- expressible in SQL: it pools weights-scoped evidence across every deployment of an
+-- artifact, ranks by source confidence and then freshness, and distinguishes "nobody
+-- reported it" from "a source denied it".
+--
+-- `value` is the resolved three-valued answer: `true`, `false`, or NULL for
+-- unverified. NULL is the *absence of a resolution*, not a third value. `state` is
+-- one of canonical | disputed | stale | pinned. No surrogate id: `sync` drops those,
+-- so the key is the identity.
+create table if not exists fact_resolution (
+  entity_kind   text not null,
+  entity_id     text not null,
+  field         text not null,
+  value         text,
+  state         text not null,
+  reason        text,
+  source        text,
+  observed_at   text,
+  confidence    double precision,
+  -- Upstreams that voted, not sources: an adapter serving several gateways must not
+  -- let them confirm each other into one vote.
+  voters        integer not null default 0,
+  reconciled_at text not null,
+  primary key (entity_kind, entity_id, field)
+);
+create index if not exists idx_fr_state on fact_resolution(state);
+
+-- The fact layer's belief history, the counterpart of `price_history`. Append-only
+-- and change-only, recording the value *and* the state: the same value moving from
+-- `canonical` to `disputed` is a different belief. `history_id` is content-derived
+-- text, not a rowid, because `sync` drops surrogate ids.
+create table if not exists fact_history (
+  history_id     text primary key,
+  entity_kind    text not null,
+  entity_id      text not null,
+  field          text not null,
+  value          text,
+  state          text not null,
+  reason         text,
+  source         text,
+  observed_at    text,
+  confidence     double precision,
+  effective_from text not null
+);
+create index if not exists idx_fh_entity
+  on fact_history(entity_kind, entity_id, field, effective_from);
 
 -- The session spend ledger. Also the per-tenant budget that `auth.py` scopes,
 -- which is why it is mirrored: a tenant's spend has to survive the instance that
@@ -326,6 +385,7 @@ create table if not exists weight_aliases (
   created_at   text default (now()::text)
 );
 
+drop view if exists weights_resolved;
 create or replace view weights_resolved as
 select w.*, coalesce(a.canonical_id, w.weights_id) as resolved_id
 from weights w left join weight_aliases a on a.alias_id = w.weights_id;
@@ -334,6 +394,7 @@ from weights w left join weight_aliases a on a.alias_id = w.weights_id;
 -- provenance of its price. The price is `deployments.price_*`, materialized by
 -- `reconcile_prices`; this view answers *why* — source, time, confidence, and
 -- whether the reconciler trusts it.
+drop view if exists deployments_priced;
 create or replace view deployments_priced as
 select d.*,
        pin.usd_per_mtok  as price_in_canonical,
