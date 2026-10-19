@@ -3,519 +3,1903 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>min(Infer) — minimum sufficient inference</title>
-<meta name="description" content="min(Infer): An open-source model intelligence registry and economic constraint router. Find the cheapest capable model for every task. Prefer free. Pay only when necessary.">
+<title>min(Infer) | The Economic Model Registry &amp; Constraint Router</title>
+<meta name="description" content="min(Infer) is an open-source model intelligence registry and economic constraint router. Routes every LLM request to the cheapest capable deployment that clears the task quality floor. Prefer free. Pay only when necessary.">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme:light)">
+<meta name="theme-color" content="#0b0d11" media="(prefers-color-scheme:dark)">
 <meta property="og:type" content="website">
-<meta property="og:title" content="min(Infer) — minimum sufficient inference">
-<meta property="og:description" content="An open-source model intelligence registry and economic constraint router. Routes each request to the cheapest deployment that clears the bar for that task. Prefer free; pay only when necessary.">
+<meta property="og:title" content="min(Infer) | The Economic Model Registry &amp; Constraint Router">
+<meta property="og:description" content="The cheapest capable model for every task. Prefer free. Pay only when necessary. Open-source, drop-in OpenAI-compatible proxy.">
 <meta property="og:url" content="https://zerocool909.github.io/mininfer-oss/">
 <meta property="og:image" content="https://zerocool909.github.io/mininfer-oss/assets/reel-og.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The min(Infer) console: a prompt routed to a free model, showing the chosen arm, first-token latency and token count.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://zerocool909.github.io/mininfer-oss/assets/reel-og.jpg">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <style>
-  :root{
-    --paper:#fbfaf7; --ink:#14171A; --mute:#5f6670; --rule:#e3e0d8; --wash:#f2efe8;
-    --teal:#1D9E75; --teal-ink:#0e6b4d; --warn:#b4531a;
-    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
-    --sans:Inter,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  }
-  @media (prefers-color-scheme:dark){
-    :root{--paper:#0f1214;--ink:#f1f2f4;--mute:#9aa2ad;--rule:#232930;--wash:#161b1f;--teal:#2bc08f;--teal-ink:#5fd8b0;--warn:#e08a4f}
-  }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
-  a{color:inherit}
-  ::selection{background:var(--teal);color:#fff}
-  .col{max-width:1080px;margin:0 auto;padding:0 28px}
-
-  /* masthead */
-  .mast{display:flex;align-items:center;justify-content:space-between;padding:22px 0;border-bottom:1px solid var(--rule)}
-  .mast img{height:64px;width:auto;display:block}
-  .mast nav{display:flex;gap:26px;font-size:14px}
-  .mast nav a{text-decoration:none;color:var(--mute)}
-  .mast nav a:hover{color:var(--ink)}
-  .mast nav a.gh{color:var(--ink);border-bottom:1px solid var(--teal)}
-
-  /* hero */
-  .hero{display:grid;grid-template-columns:1.08fr 0.92fr;gap:48px;align-items:center;padding:72px 0 72px}
-  .hero-visual{display:flex;justify-content:center;align-items:center;width:100%;max-width:440px;justify-self:end}
-  .eyebrow{font:500 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--teal-ink);margin:0 0 26px}
-  h1{font:400 clamp(36px,5.2vw,60px)/1.06 var(--serif);letter-spacing:-.02em;margin:0 0 26px}
-  h1 em{font-style:italic;color:var(--teal-ink)}
-  .dek{font-size:19px;color:var(--mute);max-width:34em;margin:0 0 32px}
-  .cta{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
-  .btn{font:500 15px/1 var(--sans);padding:14px 20px;border-radius:6px;text-decoration:none;background:var(--ink);color:var(--paper);border:1px solid var(--ink)}
-  .btn:hover{background:var(--teal-ink);border-color:var(--teal-ink)}
-  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
-  .btn.ghost:hover{border-color:var(--ink);background:transparent}
-  /* The hero mark tells the routing story on a 6.4s loop: candidates rank in by
-     cost, the task's capability threshold wipes in, a scan walks the ranked list
-     cheapest-first and stops at the first deployment that clears the bar, and the
-     pick then holds on top of that bar. Every beat shares one cycle so they stay
-     in sync; the scan is what *causes* the pick, not a decoration. */
-  .ledger-art{width:100%;height:auto;max-height:360px;display:block}
-  .ledger-art .thresh-clip{transform-box:fill-box;transform-origin:left;transform:scaleX(0);animation:heroWipe 6.4s cubic-bezier(.3,.7,.2,1) infinite}
-  /* One animation per element: growth and the dimming verdict have to live in a
-     single keyframe set per role, because a second `animation` declaration on the
-     same element replaces the first — which left the losing bars at scaleY(0). */
-  .ledger-art .bar-grow{transform-box:fill-box;transform-origin:bottom;transform:scaleY(0);animation:heroRank 6.4s cubic-bezier(.16,1,.3,1) infinite}
-  .ledger-art .bar1{animation-name:heroRankLose;animation-delay:.05s}
-  .ledger-art .bar2{animation-delay:.15s}
-  .ledger-art .bar3{animation-name:heroRankRest;animation-delay:.25s}
-  .ledger-art .bar4{animation-name:heroRankRest;animation-delay:.35s}
-  .ledger-art .win-callout{opacity:0;animation:heroPick 6.4s ease-out infinite}
-  .ledger-art .labels{opacity:0;animation:heroLabels 6.4s ease-out infinite}
-  .ledger-art .halo{animation:heroHalo 6.4s ease-out infinite}
-  .ledger-art .sweep{opacity:0;animation:heroSweep 6.4s cubic-bezier(.4,0,.2,1) infinite}
-  .ledger-art .ripple{transform-box:fill-box;transform-origin:center;opacity:0;animation:heroRipple 6.4s ease-out infinite}
-  /* the selected orb stays on top of its bar and beats twice, in place */
-  .ledger-art .win-dot{transform-box:fill-box;transform-origin:center;animation:heroDot 6.4s ease-in-out infinite}
-
-  @keyframes heroWipe{0%,18%{transform:scaleX(0)}34%,88%{transform:scaleX(1)}96%,100%{transform:scaleX(0)}}
-  @keyframes heroRank{0%{transform:scaleY(0)}16%,84%{transform:scaleY(1)}96%,100%{transform:scaleY(0)}}
-  @keyframes heroRankLose{0%{transform:scaleY(0)}16%,46%{transform:scaleY(1);opacity:1}56%,88%{transform:scaleY(1);opacity:.3}96%,100%{transform:scaleY(0);opacity:1}}
-  @keyframes heroRankRest{0%{transform:scaleY(0)}16%,50%{transform:scaleY(1);opacity:1}62%,88%{transform:scaleY(1);opacity:.45}96%,100%{transform:scaleY(0);opacity:1}}
-  @keyframes heroLabels{0%,24%{opacity:0}36%,84%{opacity:1}94%,100%{opacity:0}}
-  @keyframes heroPick{0%,48%{opacity:0}58%,84%{opacity:1}94%,100%{opacity:0}}
-  @keyframes heroHalo{0%,50%{fill-opacity:.22}58%{fill-opacity:.55}74%,100%{fill-opacity:.22}}
-  @keyframes heroSweep{0%,34%{opacity:0;transform:translateX(0)}38%{opacity:.55}50%{opacity:.85;transform:translateX(52px)}58%{opacity:0;transform:translateX(52px)}100%{opacity:0;transform:translateX(52px)}}
-  @keyframes heroRipple{0%,51%{opacity:0;transform:scale(.5)}56%{opacity:.65}76%{opacity:0;transform:scale(3.1)}100%{opacity:0;transform:scale(3.1)}}
-  @keyframes heroDot{0%,52%{transform:scale(1)}60%{transform:scale(1.4)}70%{transform:scale(1)}79%{transform:scale(1.3)}88%,100%{transform:scale(1)}}
-  @media (prefers-reduced-motion:reduce){
-    .ledger-art *{animation:none!important}
-    .ledger-art .thresh-clip{transform:scaleX(1)}
-    .ledger-art .bar-grow{transform:none}
-    .ledger-art .win-callout,.ledger-art .labels{opacity:1}
-    .ledger-art .halo{fill-opacity:.22}
-    .ledger-art .sweep,.ledger-art .ripple{display:none}
+  :root {
+    --bg: #ffffff;
+    --surface: #f6f7f9;
+    --elevated: #ffffff;
+    --code-bg: #0d1117;
+    --code-fg: #d7dde4;
+    --text: #111418;
+    --text-2: #3e454f;
+    --muted: #656f7d;
+    --border: #d7dbe0;
+    --border-muted: #e6e9ed;
+    --accent: #1D9E75;
+    --accent-strong: #0e6b4d;
+    --accent-soft: rgba(29, 158, 117, 0.12);
+    --accent-glow: rgba(29, 158, 117, 0.25);
+    --win: rgba(29, 158, 117, 0.10);
+    --danger: #b4531a;
+    --danger-soft: rgba(180, 83, 26, 0.12);
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --maxw: 1140px;
+    --contentw: 960px;
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 16px 36px -18px rgba(0,0,0,0.12);
+    --shadow-lg: 0 28px 64px -28px rgba(0,0,0,0.20);
   }
 
-  /* heartbeat — the warm-tier provider probe */
-  .pulse{border:1px solid var(--rule);background:var(--wash);border-radius:8px;padding:14px 20px;margin:26px 0 18px}
-  .pulse svg{display:block;width:100%;height:76px}
-  .pulse .line{stroke-dasharray:110 820;stroke-dashoffset:930;animation:beat 3.2s linear infinite}
-  @keyframes beat{to{stroke-dashoffset:0}}
-  @media (prefers-reduced-motion:reduce){.pulse .line{stroke-dasharray:none;stroke-dashoffset:0;animation:none}}
-  .health{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}
-  .chip{display:inline-flex;align-items:center;gap:8px;font:13px/1 var(--mono);padding:8px 12px;border:1px solid var(--rule);border-radius:999px;color:var(--mute)}
-  .chip i{width:8px;height:8px;border-radius:50%;background:var(--mute);flex:none}
-  .chip.ok{color:var(--ink)} .chip.ok i{background:var(--teal)}
-  .chip.bad{color:var(--warn);border-color:var(--warn)} .chip.bad i{background:var(--warn)}
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d11;
+      --surface: #13171e;
+      --elevated: #1a2029;
+      --code-bg: #080a0d;
+      --code-fg: #e2e8f0;
+      --text: #f8fafc;
+      --text-2: #cbd5e1;
+      --muted: #8e9bb0;
+      --border: #262f3d;
+      --border-muted: #1c2430;
+      --accent: #2bc08f;
+      --accent-strong: #5fd8b0;
+      --accent-soft: rgba(43, 192, 143, 0.14);
+      --accent-glow: rgba(43, 192, 143, 0.30);
+      --win: rgba(43, 192, 143, 0.12);
+      --danger: #e08a4f;
+      --danger-soft: rgba(224, 138, 79, 0.15);
+      --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
+      --shadow-md: 0 16px 40px -18px rgba(0,0,0,0.55);
+      --shadow-lg: 0 28px 70px -28px rgba(0,0,0,0.75);
+    }
+  }
 
-  /* sections */
-  section{padding:76px 0;border-top:1px solid var(--rule)}
-  .sec{display:grid;grid-template-columns:200px 1fr;gap:56px}
-  .sec>aside{font:500 12px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);padding-top:10px}
-  .sec>aside b{display:block;color:var(--teal-ink);font-weight:500;margin-bottom:4px}
-  h2{font:400 clamp(28px,3.4vw,40px)/1.15 var(--serif);letter-spacing:-.015em;margin:0 0 22px}
-  p{margin:0 0 18px}
-  .lede{font-size:19px;max-width:38em}
-  .mut{color:var(--mute)}
-  code,.mono{font-family:var(--mono);font-size:.88em}
-  p code{background:var(--wash);padding:2px 6px;border-radius:4px}
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: inherit; text-decoration: none; }
+  [hidden] { display: none !important; }
+  img, video { max-width: 100%; display: block; }
+  ::selection { background: var(--accent); color: #fff; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; position: relative; }
+  .wrap-narrow { max-width: var(--contentw); margin: 0 auto; position: relative; }
 
-  /* ledger table */
-  .ledger{width:100%;border-collapse:collapse;margin:26px 0 12px;font-variant-numeric:tabular-nums}
-  .ledger th{font:500 11px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);text-align:right;padding:0 14px 10px;border-bottom:2px solid var(--ink)}
-  .ledger th:first-child,.ledger td:first-child{text-align:left;padding-left:0}
-  .ledger td{padding:14px;border-bottom:1px solid var(--rule);text-align:right;font:15px/1.4 var(--mono)}
-  .ledger td:first-child{font-family:var(--sans)}
-  .ledger td small{display:block;color:var(--mute);font:13px/1.4 var(--sans)}
-  .ledger tr.win td{background:linear-gradient(90deg,color-mix(in srgb,var(--teal) 12%,transparent),transparent)}
-  .ledger tr.win td:last-child{color:var(--teal-ink);font-weight:600}
-  .ledger tr.out td{color:var(--mute)}
-  .ledger tr.out td:last-child{color:var(--warn)}
-  .note{font-size:14px;color:var(--mute);max-width:46em}
+  /* Reading Progress */
+  .progress {
+    position: fixed; top: 0; left: 0; height: 3px; width: 100%;
+    transform: scaleX(0); transform-origin: 0 50%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+    z-index: 100; transition: transform .1s linear;
+  }
 
-  /* confidence instrument */
-  .gauge{border:1px solid var(--rule);background:var(--wash);border-radius:8px;padding:28px;margin:26px 0 8px}
-  .gauge .row{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:26px}
-  .gauge label{font:500 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);display:block;margin-bottom:10px}
-  .gauge input[type=number]{font:500 22px/1 var(--mono);width:120px;padding:10px 12px;background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:6px}
-  .gauge input:focus{outline:2px solid var(--teal);outline-offset:1px}
-  .bar{position:relative;height:14px;background:var(--rule);border-radius:7px;margin:34px 0 10px}
-  .bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:7px;background:var(--warn);transition:width .35s ease,background .35s}
-  .bar .fill.ok{background:var(--teal)}
-  .bar .naive{position:absolute;top:-6px;width:2px;height:26px;background:var(--ink);transition:left .35s ease}
-  .bar .floor{position:absolute;top:-10px;bottom:-10px;border-left:2px dashed var(--mute)}
-  .bar .tag{position:absolute;font:11px/1 var(--mono);color:var(--mute);white-space:nowrap}
-  .readout{display:flex;gap:34px;flex-wrap:wrap;font:14px/1.5 var(--mono);margin-top:22px}
-  .readout b{display:block;font:400 30px/1.1 var(--serif);letter-spacing:-.01em;margin-top:2px}
-  .verdict{margin-top:18px;font-size:15px}
-  .verdict strong{color:var(--teal-ink)}
-  .verdict.no strong{color:var(--warn)}
+  /* Reveal animations */
+  .rv {
+    opacity: 0; transform: translateY(16px);
+    transition: opacity .6s cubic-bezier(.22,.8,.28,1), transform .6s cubic-bezier(.22,.8,.28,1);
+  }
+  .rv.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { .rv { opacity: 1; transform: none; } }
 
-  /* trace */
-  .trace{background:#0f1214;color:#d7dde4;border-radius:8px;padding:24px 26px;font:13.5px/1.75 var(--mono);overflow-x:auto;margin:26px 0 0}
-  .trace .c{color:#6e7885}.trace .g{color:#4fd1a1}.trace .w{color:#e9a36b}.trace .b{color:#8fb7ff}
+  /* Header / Nav */
+  header.nav {
+    position: sticky; top: 0; z-index: 80;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: saturate(180%) blur(18px);
+    -webkit-backdrop-filter: saturate(180%) blur(18px);
+    border-bottom: 1px solid var(--border-muted);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; }
+  .brand img { height: 40px; width: auto; }
+  nav.links { display: flex; align-items: center; gap: 4px; font-size: 14px; }
+  nav.links a {
+    padding: 7px 11px; border-radius: var(--radius-sm);
+    color: var(--text-2); font-weight: 500; transition: color .15s, background .15s; position: relative;
+  }
+  nav.links a:hover { color: var(--text); background: var(--surface); }
+  nav.links a.on { color: var(--accent-strong); }
+  nav.links a.on::after {
+    content: ""; position: absolute; left: 11px; right: 11px; bottom: 2px; height: 2px;
+    border-radius: 2px; background: var(--accent);
+  }
+  .btn-nav-cta {
+    background: var(--text); color: var(--bg) !important;
+    font-weight: 600; padding: 7px 15px; border-radius: var(--radius-sm);
+    margin-left: 8px; transition: background .15s, transform .15s;
+  }
+  .btn-nav-cta:hover { background: var(--accent-strong); color: #fff !important; transform: translateY(-1px); }
+  .gh-link { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+  .gh-link svg { width: 16px; height: 16px; fill: currentColor; }
+  .menu-btn {
+    display: none; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; color: var(--text); font: 14px var(--sans); cursor: pointer;
+  }
 
-  /* the end-to-end run, rendered from a real captured trace (HyperFrames → MP4) */
-  .runloop{margin:30px 0 0}
-  .runloop img,.runloop video{display:block;width:100%;height:auto;border:1px solid var(--rule);border-radius:10px;background:#0f1214}
-  .runloop .still{display:none}
-  .runloop figcaption{margin-top:10px;font-size:13px;line-height:1.55;color:var(--mute)}
-  .runloop figcaption code{font:12px var(--mono)}
-  .runloop figcaption b{color:var(--ink);font-weight:600}
-  /* A looping clip cannot honour reduced-motion, so show the still instead. */
-  @media (prefers-reduced-motion:reduce){.runloop .motion{display:none}.runloop .still{display:block}}
-  ol.steps{list-style:none;padding:0;margin:30px 0 0;counter-reset:s}
-  ol.steps li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:6px;padding:20px 0;border-top:1px solid var(--rule)}
-  ol.steps li:first-child{border-top:0}
-  ol.steps li::before{content:counter(s,decimal-leading-zero);font:500 13px/2 var(--mono);color:var(--teal-ink)}
-  ol.steps h3{font:600 17px/1.4 var(--sans);margin:0 0 4px}
-  ol.steps p{margin:0;color:var(--mute);font-size:16px}
+  /* Badge Chip */
+  .badge-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    font: 600 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+    padding: 6px 14px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent-strong); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    margin-bottom: 20px;
+  }
+  .badge-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: inline-block; }
 
-  /* principles */
-  dl.pr{margin:30px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:0 48px}
-  dl.pr div{padding:22px 0;border-top:1px solid var(--rule)}
-  dl.pr dt{font:600 16px/1.4 var(--sans);margin-bottom:6px}
-  dl.pr dd{margin:0;color:var(--mute);font-size:15.5px}
-  dl.pr dd code{color:var(--ink)}
+  /* Hero Section */
+  .hero-v3 {
+    padding: 64px 0 76px;
+    position: relative;
+    border-bottom: 1px solid var(--border-muted);
+    background: radial-gradient(circle at 50% -20%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
+  }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 40px;
+    align-items: stretch;
+  }
+  .hero-left {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+  }
+  .hero-right {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .hero-v3 h1 {
+    font-size: clamp(34px, 4.2vw, 54px);
+    line-height: 1.08;
+    letter-spacing: -.03em;
+    font-weight: 700;
+    margin: 0 0 18px;
+  }
+  .hero-v3 h1 em {
+    font-style: italic;
+    color: transparent;
+    background: linear-gradient(110deg, var(--accent), var(--accent-strong) 80%);
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+  .hero-v3 p.lead-dek {
+    font-size: clamp(16.5px, 1.8vw, 19px);
+    line-height: 1.55;
+    color: var(--text-2);
+    margin: 0 0 24px;
+    max-width: 52ch;
+  }
+  .hero-v3 p.lead-dek b { color: var(--text); }
 
-  .pull{font:italic 400 clamp(24px,3vw,32px)/1.3 var(--serif);border-left:3px solid var(--teal);padding:4px 0 4px 26px;margin:34px 0;max-width:30em}
+  /* Quickstart Box inside Hero */
+  .quickstart-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--elevated);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+  }
+  .qs-tabs {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .qs-tab {
+    flex: 1; padding: 10px 14px; border: 0; background: transparent;
+    color: var(--muted); font: 600 13px var(--sans); cursor: pointer;
+    text-align: center; border-bottom: 2px solid transparent; transition: all .15s;
+  }
+  .qs-tab.active {
+    color: var(--text); background: var(--elevated); border-bottom-color: var(--accent);
+  }
+  .qs-content { padding: 14px 18px; }
+  .cmd-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: var(--code-bg); color: var(--code-fg); border-radius: var(--radius-sm);
+    padding: 10px 14px; font: 13.5px/1.4 var(--mono); margin-bottom: 8px;
+    border: 1px solid color-mix(in srgb, var(--border) 40%, transparent); min-width: 0;
+  }
+  .cmd-text {
+    display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow-x: auto;
+  }
+  .cmd-text code { color: #5fd8b0; white-space: nowrap; }
+  .cmd-text .prompt { color: #6e7885; user-select: none; flex: none; }
+  .copy-btn {
+    flex: none; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+    color: #e2e8f0; font: 500 11.5px var(--sans); padding: 5px 10px; border-radius: 6px;
+    cursor: pointer; transition: all .15s;
+  }
+  .copy-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .copy-btn.done { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .qs-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    font: 12.5px var(--mono); color: var(--muted); padding-top: 6px;
+  }
+  .qs-foot a { color: var(--accent-strong); font-weight: 500; }
+  .qs-foot a:hover { text-decoration: underline; }
 
-  /* code */
-  pre.cmd{background:var(--wash);border:1px solid var(--rule);border-radius:8px;padding:20px 22px;overflow-x:auto;font:14px/1.7 var(--mono);margin:18px 0}
-  pre.cmd .c{color:var(--mute)}
+  /* Hero Visual: The Animated Ledger Mark Card (Matching Hero Height) */
+  .ledger-visual-card {
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    position: relative;
+    overflow: hidden;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .lvc-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .lvc-title { font: 600 13px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-2); }
+  .lvc-pill { font: 500 11px var(--mono); background: var(--accent-soft); color: var(--accent-strong); padding: 3px 8px; border-radius: 999px; }
+  .lvc-body {
+    padding: 24px 20px; flex: 1; display: flex; align-items: center; justify-content: center;
+  }
+  .ledger-art { width: 100%; height: auto; max-height: 290px; display: block; margin: 0 auto; }
+  .ledger-art .thresh-clip { transform-box: fill-box; transform-origin: left; transform: scaleX(0); animation: heroWipe 6.4s cubic-bezier(.3,.7,.2,1) infinite; }
+  .ledger-art .bar-grow { transform-box: fill-box; transform-origin: bottom; transform: scaleY(0); animation: heroRank 6.4s cubic-bezier(.16,1,.3,1) infinite; }
+  .ledger-art .bar1 { animation-name: heroRankLose; animation-delay: .05s; }
+  .ledger-art .bar2 { animation-delay: .15s; }
+  .ledger-art .bar3 { animation-name: heroRankRest; animation-delay: .25s; }
+  .ledger-art .bar4 { animation-name: heroRankRest; animation-delay: .35s; }
+  .ledger-art .win-callout { opacity: 0; animation: heroPick 6.4s ease-out infinite; }
+  .ledger-art .labels { opacity: 0; animation: heroLabels 6.4s ease-out infinite; }
+  .ledger-art .halo { animation: heroHalo 6.4s ease-out infinite; }
+  .ledger-art .sweep { opacity: 0; animation: heroSweep 6.4s cubic-bezier(.4,0,.2,1) infinite; }
+  .ledger-art .ripple { transform-box: fill-box; transform-origin: center; opacity: 0; animation: heroRipple 6.4s ease-out infinite; }
+  .ledger-art .win-dot { transform-box: fill-box; transform-origin: center; animation: heroDot 6.4s ease-in-out infinite; }
 
-  footer{border-top:1px solid var(--rule);padding:34px 0 60px;color:var(--mute);font-size:14px}
-  footer .col{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
-  footer a{text-decoration:none;border-bottom:1px solid var(--rule)}
-  footer a:hover{border-color:var(--teal)}
+  @keyframes heroWipe { 0%,18%{transform:scaleX(0)} 34%,88%{transform:scaleX(1)} 96%,100%{transform:scaleX(0)} }
+  @keyframes heroRank { 0%{transform:scaleY(0)} 16%,84%{transform:scaleY(1)} 96%,100%{transform:scaleY(0)} }
+  @keyframes heroRankLose { 0%{transform:scaleY(0)} 16%,46%{transform:scaleY(1);opacity:1} 56%,88%{transform:scaleY(1);opacity:.3} 96%,100%{transform:scaleY(0);opacity:1} }
+  @keyframes heroRankRest { 0%{transform:scaleY(0)} 16%,50%{transform:scaleY(1);opacity:1} 62%,88%{transform:scaleY(1);opacity:.45} 96%,100%{transform:scaleY(0);opacity:1} }
+  @keyframes heroLabels { 0%,24%{opacity:0} 36%,84%{opacity:1} 94%,100%{opacity:0} }
+  @keyframes heroPick { 0%,48%{opacity:0} 58%,84%{opacity:1} 94%,100%{opacity:0} }
+  @keyframes heroHalo { 0%,50%{fill-opacity:.22} 58%{fill-opacity:.55} 74%,100%{fill-opacity:.22} }
+  @keyframes heroSweep { 0%,34%{opacity:0;transform:translateX(0)} 38%{opacity:.55} 50%{opacity:.85;transform:translateX(52px)} 58%{opacity:0;transform:translateX(52px)} 100%{opacity:0;transform:translateX(52px)} }
+  @keyframes heroRipple { 0%,51%{opacity:0;transform:scale(.5)} 56%{opacity:.65} 76%{opacity:0;transform:scale(3.1)} 100%{opacity:0;transform:scale(3.1)} }
+  @keyframes heroDot { 0%,52%{transform:scale(1)} 60%{transform:scale(1.4)} 70%{transform:scale(1)} 79%{transform:scale(1.3)} 88%,100%{transform:scale(1)} }
 
-  @media (max-width:860px){
-    .hero{grid-template-columns:1fr;gap:34px;padding:52px 0 48px}
-    .hero-visual{justify-self:center;max-width:380px}
-    .sec{grid-template-columns:1fr;gap:10px}
-    dl.pr{grid-template-columns:1fr}
-    .mast nav a:not(.gh){display:none}
-    .ledger th,.ledger td{padding-left:8px;padding-right:8px}
-    .ledger .hide-s{display:none}
+  @media (prefers-reduced-motion: reduce) {
+    .ledger-art * { animation: none !important; }
+    .ledger-art .thresh-clip { transform: scaleX(1); }
+    .ledger-art .bar-grow { transform: none; }
+    .ledger-art .win-callout, .ledger-art .labels { opacity: 1; }
+    .ledger-art .halo { fill-opacity: .22; }
+    .ledger-art .sweep, .ledger-art .ripple { display: none; }
+  }
+
+  .lvc-foot {
+    padding: 10px 18px; border-top: 1px solid var(--border-muted);
+    font-size: 12.5px; color: var(--muted); line-height: 1.45; background: var(--elevated);
+  }
+  .lvc-foot b { color: var(--text); }
+
+  /* Stats Band */
+  .stats-band {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border-muted);
+    padding: 52px 0;
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; text-align: center;
+  }
+  .stat-card {
+    padding: 8px 12px;
+  }
+  .stat-card .num {
+    font: 700 clamp(36px, 4vw, 48px)/1 var(--sans);
+    letter-spacing: -.02em;
+    background: linear-gradient(180deg, var(--text) 50%, color-mix(in srgb, var(--accent) 65%, var(--text)));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .stat-card .lbl { margin-top: 8px; font: 13px var(--mono); color: var(--muted); }
+  .stat-card .lbl b { display: block; color: var(--text); font: 600 14px var(--sans); margin-bottom: 2px; }
+
+  /* Section Spacing & Headers */
+  section.block { padding: 84px 0; border-bottom: 1px solid var(--border-muted); }
+  .sec-header { text-align: center; max-width: 68ch; margin: 0 auto 48px; }
+  .sec-header .eyebrow {
+    font: 600 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent-strong); display: inline-block; margin-bottom: 12px;
+  }
+  .sec-header h2 {
+    font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; letter-spacing: -.02em;
+    font-weight: 700; margin: 0 0 16px;
+  }
+  .sec-header p { font-size: clamp(16px, 1.8vw, 18.5px); color: var(--text-2); margin: 0; line-height: 1.55; }
+
+  /* Feature Grid (8 cards) */
+  .feat-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;
+  }
+  .feat-card {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 24px 20px; transition: transform .25s, border-color .25s, box-shadow .25s;
+    display: flex; flex-direction: column;
+  }
+  .feat-card:hover {
+    transform: translateY(-4px); border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+    box-shadow: var(--shadow-md);
+  }
+  .feat-card .icon-wrap {
+    width: 38px; height: 38px; border-radius: 10px; background: var(--accent-soft);
+    color: var(--accent-strong); display: grid; place-items: center; margin-bottom: 16px; flex: none;
+  }
+  .feat-card .icon-wrap svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .feat-card h3 { font: 600 16.5px/1.3 var(--sans); margin: 0 0 8px; }
+  .feat-card p { font-size: 14.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+
+  /* 3 Pillars */
+  .tri-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .tri-card {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px 22px; text-align: left; display: flex; flex-direction: column;
+  }
+  .tri-card .tag { font: 600 12px var(--mono); color: var(--accent-strong); text-transform: uppercase; letter-spacing: .08em; }
+  .tri-card h3 { font: 600 19px/1.3 var(--sans); margin: 10px 0 8px; }
+  .tri-card p { font-size: 15px; color: var(--muted); margin: 0; line-height: 1.55; }
+
+  /* Tables: Geometric Column Alignments */
+  .ledger-box {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow-x: auto; box-shadow: var(--shadow-md); margin: 28px 0 16px;
+  }
+  table.ledger-tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.ledger-tbl th {
+    background: var(--surface); font: 600 11.5px/1.3 var(--mono); letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  table.ledger-tbl td {
+    padding: 15px 18px; border-top: 1px solid var(--border-muted); font: 14px var(--mono); color: var(--text-2);
+  }
+  table.ledger-tbl tr:first-child td { border-top: 0; }
+  table.ledger-tbl td:first-child { font-family: var(--sans); font-weight: 600; color: var(--text); }
+  table.ledger-tbl td small { display: block; color: var(--muted); font: 400 12.5px var(--sans); margin-top: 2px; }
+  
+  /* Alignment by role */
+  table.ledger-tbl th.text-left, table.ledger-tbl td.text-left { text-align: left; }
+  table.ledger-tbl th.text-right, table.ledger-tbl td.text-right { text-align: right; }
+  table.ledger-tbl th.text-center, table.ledger-tbl td.text-center { text-align: center; }
+
+  table.ledger-tbl tr.win td { background: var(--win); }
+  table.ledger-tbl tr.win td:first-child { box-shadow: inset 3px 0 0 var(--accent); color: var(--text); }
+  table.ledger-tbl tr.win td:last-child { color: var(--accent-strong); font-weight: 700; }
+  table.ledger-tbl tr.out td:last-child { color: var(--danger); }
+  .table-note { font-size: 13.5px; color: var(--muted); text-align: center; max-width: 64ch; margin: 12px auto 0; }
+
+  /* Status Badges */
+  .badge-status {
+    display: inline-block; padding: 3px 9px; border-radius: 999px;
+    font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .05em;
+  }
+  .badge-status.selected { background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--accent); }
+  .badge-status.rejected { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+  .badge-status.fallback { background: var(--surface); color: var(--text-2); border: 1px solid var(--border); }
+
+  /* Interactive ROI / Cost Calculator */
+  .calc-container {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow-lg); padding: 36px;
+  }
+  .calc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: stretch; }
+  .calc-controls-col { display: flex; flex-direction: column; justify-content: space-between; }
+  .calc-control { margin-bottom: 20px; }
+  .calc-control:last-child { margin-bottom: 0; }
+  .calc-control label {
+    display: flex; justify-content: space-between; font: 600 12.5px var(--mono); text-transform: uppercase;
+    color: var(--text-2); margin-bottom: 8px;
+  }
+  .calc-control label span.val { color: var(--accent-strong); font-size: 15px; }
+  .calc-slider {
+    width: 100%; height: 8px; border-radius: 4px; background: var(--border);
+    outline: none; -webkit-appearance: none; accent-color: var(--accent); cursor: pointer;
+  }
+  .calc-select {
+    width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--text); font: 14px var(--sans); outline: none;
+  }
+  .calc-result-box {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px; text-align: center; display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .calc-save-num {
+    font: 750 clamp(36px, 4.2vw, 50px)/1 var(--sans); color: var(--accent-strong); letter-spacing: -.02em;
+    margin: 8px 0;
+  }
+  .calc-breakdown-bar {
+    height: 14px; border-radius: 7px; background: #e08a4f; margin: 20px 0 10px;
+    display: flex; overflow: hidden;
+  }
+  .cbb-free { background: var(--accent); height: 100%; transition: width .3s ease; }
+  .cbb-paid { background: #b4531a; height: 100%; transition: width .3s ease; }
+  .cbb-legend { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--muted); }
+  .cbb-legend span i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .cbb-legend .leg-free i { background: var(--accent); }
+  .cbb-legend .leg-paid i { background: #b4531a; }
+
+  /* Interactive Simulator */
+  .sim-box {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow-lg); overflow: hidden;
+  }
+  .sim-head {
+    background: var(--surface); padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .sim-selector { display: flex; align-items: center; gap: 12px; }
+  .sim-selector label { font: 600 12.5px var(--mono); text-transform: uppercase; color: var(--muted); }
+  .sim-select {
+    padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--elevated); color: var(--text); font: 500 14px var(--sans); outline: none;
+  }
+  .sim-run-btn {
+    background: var(--accent); color: #fff; border: 0; font: 600 13px var(--sans);
+    padding: 8px 18px; border-radius: 6px; cursor: pointer; transition: all .18s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .sim-run-btn:hover { background: var(--accent-strong); transform: translateY(-1px); }
+  .sim-run-btn:active { transform: translateY(0); }
+  .sim-run-btn:disabled {
+    opacity: 0.75; cursor: not-allowed; transform: none; background: var(--muted);
+  }
+  .sim-prompt-banner {
+    background: var(--surface); border-bottom: 1px solid var(--border-muted);
+    padding: 10px 20px; font: 13px/1.5 var(--mono); color: var(--text-2);
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .sim-prompt-lbl {
+    font-weight: 600; color: var(--accent-strong); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .06em; flex: none;
+  }
+  .sim-prompt-txt {
+    color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sim-body { padding: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: stretch; }
+  .sim-terminal {
+    background: var(--code-bg); color: var(--code-fg); border-radius: var(--radius-sm);
+    padding: 16px 18px; font: 13px/1.65 var(--mono); min-height: 220px; border: 1px solid var(--border-muted);
+    white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+  }
+  .sim-terminal .b { color: #8fb7ff; }
+  .sim-terminal .g { color: #4fd1a1; font-weight: 600; }
+  .sim-terminal .w { color: #e9a36b; }
+  .sim-terminal .c { color: #6e7885; }
+  .sim-outcome {
+    background: var(--surface); border: 1px solid var(--border-muted); border-radius: var(--radius-sm);
+    padding: 18px 20px; display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .sim-metric { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-muted); padding: 10px 0; font-size: 14px; }
+  .sim-metric:last-child { border-bottom: 0; }
+  .sim-metric .val { font-family: var(--mono); font-weight: 600; color: var(--text); transition: color .2s, transform .2s; }
+  .sim-metric .val.win { color: var(--accent-strong); font-size: 15px; }
+  .sim-metric .val.highlight { animation: simPop .45s cubic-bezier(.22,.8,.28,1); }
+  @keyframes simPop {
+    0% { transform: scale(1.15); color: var(--accent); }
+    100% { transform: scale(1); }
+  }
+
+  /* Interactive Wilson Gauge */
+  .gauge-wrap {
+    border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius);
+    padding: 32px 28px;
+  }
+  .gauge-inputs { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+  .gauge-input-box { display: flex; flex-direction: column; align-items: center; }
+  .gauge-input-box label { font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .gauge-input-box input {
+    font: 600 20px var(--mono); width: 110px; padding: 8px 12px; background: var(--elevated);
+    color: var(--text); border: 1px solid var(--border); border-radius: 8px; text-align: center;
+  }
+  .gauge-bar-frame { position: relative; height: 14px; background: var(--border); border-radius: 7px; margin: 32px 0 10px; }
+  .gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 7px; background: var(--danger); transition: width .3s, background .3s; }
+  .gauge-fill.ok { background: var(--accent); }
+  .gauge-naive { position: absolute; top: -6px; width: 2px; height: 26px; background: var(--text); transition: left .3s ease; }
+  .gauge-floor { position: absolute; top: -10px; bottom: -10px; border-left: 2px dashed var(--muted); }
+  .gauge-legend {
+    display: flex; justify-content: center; gap: 20px; font: 12px var(--mono); color: var(--muted); margin-bottom: 8px;
+  }
+  .gauge-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .gauge-legend .dot-raw { width: 8px; height: 8px; background: var(--text); }
+  .gauge-legend .dot-bound { width: 8px; height: 8px; background: var(--accent); border-radius: 2px; }
+  .gauge-legend .dot-floor { width: 8px; height: 2px; border-top: 2px dashed var(--muted); }
+  .gauge-readout { display: flex; gap: 36px; justify-content: center; text-align: center; font: 14px var(--mono); color: var(--muted); margin-top: 18px; }
+  .gauge-readout b { display: block; font: 650 30px/1.1 var(--sans); color: var(--text); margin-top: 4px; }
+  .gauge-verdict { margin: 18px auto 0; font-size: 15px; text-align: center; max-width: 60ch; }
+  .gauge-verdict strong { color: var(--accent-strong); }
+  .gauge-verdict.no strong { color: var(--danger); }
+
+  /* Heartbeat / Probe */
+  .pulse-box {
+    border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius);
+    padding: 24px 28px; margin: 28px 0 20px;
+  }
+  .pulse-svg { display: block; width: 100%; height: 76px; }
+  .pulse-svg .pulse-line { stroke-dasharray: 110 820; stroke-dashoffset: 930; animation: ecgBeat 3.2s linear infinite; }
+  @keyframes ecgBeat { to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) { .pulse-svg .pulse-line { stroke-dasharray: none; animation: none; } }
+  .health-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  .health-chip {
+    display: inline-flex; align-items: center; gap: 8px; font: 13px/1 var(--mono);
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); background: var(--elevated);
+  }
+  .health-chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .health-chip.ok i { background: var(--accent); }
+  .health-chip.bad i { background: var(--danger); }
+  .health-chip.bad { border-color: var(--danger); color: var(--danger); }
+
+  /* 5-Stage Pipeline Sequence */
+  ol.steps-flow {
+    list-style: none; padding: 0; margin: 36px auto 0; counter-reset: sf;
+    display: grid; grid-template-columns: repeat(5, 1fr); border-top: 2px solid var(--text);
+    border-bottom: 1px solid var(--border-muted); text-align: center;
+  }
+  ol.steps-flow li {
+    counter-increment: sf; position: relative; padding: 0 10px 28px;
+    display: flex; flex-direction: column; align-items: center; border-right: 1px solid var(--border-muted);
+  }
+  ol.steps-flow li:last-child { border-right: 0; }
+  ol.steps-flow li::before {
+    content: ""; position: absolute; left: 0; right: 0; top: -2px; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+    transform: scaleX(0); transform-origin: 0 50%;
+    transition: transform .65s cubic-bezier(.22,.8,.28,1);
+  }
+  ol.steps-flow li.in::before { transform: scaleX(1); }
+  /* Directional Arrow between steps */
+  ol.steps-flow li:not(:last-child)::after {
+    content: "\2192"; position: absolute; right: -8px; top: 40px; width: 16px; height: 16px;
+    display: grid; place-items: center; font: 14px/1 var(--sans); color: var(--muted);
+    background: var(--bg); z-index: 2;
+  }
+  ol.steps-flow li > div {
+    display: flex; flex-direction: column; align-items: center; margin-top: 22px; width: 100%;
+  }
+  ol.steps-flow li > div::before {
+    content: counter(sf, decimal-leading-zero); display: grid; place-items: center;
+    width: 36px; height: 36px; margin-bottom: 12px; border-radius: 50%;
+    background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+    color: var(--accent-strong); font: 700 13px/1 var(--mono);
+  }
+  ol.steps-flow h3 { font: 600 15.5px/1.3 var(--sans); margin: 0 0 6px; }
+  ol.steps-flow p { font-size: 13.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+
+  /* Principles Grid */
+  .principles-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .principle-card {
+    background: var(--elevated); border: 1px solid var(--border-muted); border-radius: var(--radius);
+    padding: 24px; text-align: left; display: flex; flex-direction: column;
+  }
+  .principle-card h3 { font: 600 16.5px/1.3 var(--sans); margin: 0 0 8px; color: var(--text); }
+  .principle-card p { font-size: 14.5px; color: var(--muted); margin: 0; line-height: 1.55; }
+
+  /* Code Tabs Box */
+  .code-tabs-box {
+    background: var(--elevated); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; box-shadow: var(--shadow-lg); margin-top: 28px;
+  }
+  .ct-header {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--surface); border-bottom: 1px solid var(--border); padding-right: 12px;
+  }
+  .ct-nav { display: flex; }
+  .ct-btn {
+    padding: 12px 18px; border: 0; background: transparent; font: 600 13px var(--sans);
+    color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s;
+  }
+  .ct-btn.active { color: var(--text); background: var(--elevated); border-bottom-color: var(--accent); }
+  .ct-copy-btn {
+    background: var(--elevated); border: 1px solid var(--border); color: var(--text-2);
+    font: 500 12px var(--sans); padding: 5px 10px; border-radius: 6px; cursor: pointer; transition: all .15s;
+  }
+  .ct-copy-btn:hover { border-color: var(--accent); color: var(--accent-strong); }
+  .ct-body {
+    background: var(--code-bg); color: var(--code-fg); padding: 22px 24px;
+    font: 13.5px/1.7 var(--mono); overflow-x: auto; margin: 0;
+  }
+  .ct-body .c { color: #6e7885; }
+  .ct-body .g { color: #4fd1a1; }
+  .ct-body .k { color: #c9a2ff; }
+
+  /* Video Tour section */
+  .tour-card {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; box-shadow: var(--shadow-lg);
+  }
+  .tour-card video { width: 100%; height: auto; display: block; aspect-ratio: 16 / 9; }
+  .tour-caption { padding: 18px 24px; font-size: 13.5px; color: #94a3b8; line-height: 1.5; border-top: 1px solid #1e293b; }
+  .tour-caption b { color: #f1f5f9; }
+
+  /* FAQ Accordion */
+  .faq-wrap { margin: 0 auto; }
+  details.faq-item { border-top: 1px solid var(--border-muted); padding: 2px 0; }
+  details.faq-item:last-of-type { border-bottom: 1px solid var(--border-muted); }
+  details.faq-item summary {
+    list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    padding: 20px 4px; font: 600 17.5px/1.4 var(--sans); color: var(--text);
+  }
+  details.faq-item summary::-webkit-details-marker { display: none; }
+  details.faq-item summary:hover { color: var(--accent-strong); }
+  details.faq-item .plus {
+    width: 16px; height: 16px; position: relative; flex: none;
+  }
+  details.faq-item .plus::before, details.faq-item .plus::after {
+    content: ""; position: absolute; background: var(--muted); border-radius: 2px; transition: transform .2s ease;
+  }
+  details.faq-item .plus::before { left: 0; top: 7px; width: 16px; height: 2px; }
+  details.faq-item .plus::after { left: 7px; top: 0; width: 2px; height: 16px; }
+  details.faq-item[open] .plus::after { transform: scaleY(0); }
+  details.faq-item[open] .plus::before { background: var(--accent); }
+  details.faq-item .ans {
+    padding: 0 4px 22px; color: var(--text-2); font-size: 15.5px; line-height: 1.6;
+  }
+
+  /* Final CTA */
+  .final-cta {
+    text-align: center; padding: 88px 0; background: var(--surface);
+    border-top: 1px solid var(--border-muted);
+  }
+  .final-cta h2 { font-size: clamp(30px, 3.8vw, 44px); font-weight: 700; margin: 0 0 16px; }
+  .final-cta p { font-size: 18.5px; color: var(--muted); max-width: 52ch; margin: 0 auto 32px; }
+  .btn-group { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn-primary {
+    background: var(--text); color: var(--bg); font: 600 15px var(--sans);
+    padding: 13px 24px; border-radius: var(--radius-sm); transition: all .15s;
+  }
+  .btn-primary:hover { background: var(--accent-strong); color: #fff; transform: translateY(-2px); }
+  .btn-ghost {
+    background: var(--elevated); color: var(--text); font: 600 15px var(--sans);
+    padding: 13px 24px; border-radius: var(--radius-sm); border: 1px solid var(--border); transition: all .15s;
+  }
+  .btn-ghost:hover { border-color: var(--text); transform: translateY(-2px); }
+
+  /* Footer */
+  footer {
+    background: var(--bg); border-top: 1px solid var(--border-muted); padding: 56px 0 68px;
+    font-size: 14px; color: var(--muted);
+  }
+  .foot-layout { display: flex; justify-content: space-between; gap: 36px; flex-wrap: wrap; }
+  .foot-brand img { height: 38px; margin-bottom: 12px; }
+  .foot-links { display: flex; gap: 48px; flex-wrap: wrap; }
+  .foot-col b { display: block; font: 600 12px var(--mono); text-transform: uppercase; color: var(--text); margin-bottom: 14px; }
+  .foot-col a { display: block; color: var(--text-2); margin-bottom: 8px; }
+  .foot-col a:hover { color: var(--accent-strong); }
+
+  /* Responsive breakpoints */
+  @media (max-width: 1040px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 36px; }
+    .feat-grid { grid-template-columns: repeat(2, 1fr); }
+    .tri-grid { grid-template-columns: 1fr; }
+    .principles-grid { grid-template-columns: 1fr 1fr; }
+    .calc-grid { grid-template-columns: 1fr; }
+    ol.steps-flow { grid-template-columns: 1fr; border-top: 0; }
+    ol.steps-flow li { border-right: 0; border-top: 1px solid var(--border-muted); padding: 0 6px 20px; }
+    ol.steps-flow li::before { display: none; }
+    ol.steps-flow li:not(:last-child)::after { display: none; }
+    .sim-body { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 768px) {
+    nav.links { display: none; }
+    nav.links.open {
+      display: flex; position: absolute; top: 64px; left: 0; right: 0; flex-direction: column;
+      background: var(--bg); padding: 16px 24px; border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow-lg); gap: 8px;
+    }
+    .menu-btn { display: inline-block; }
+    .stats-grid { grid-template-columns: 1fr 1fr; gap: 20px; }
+    .feat-grid { grid-template-columns: 1fr; }
+    .principles-grid { grid-template-columns: 1fr; }
+    .foot-layout { flex-direction: column; }
+    .hide-s { display: none; }
+  }
+  @media (max-width: 520px) {
+    .stats-grid { grid-template-columns: 1fr; }
+    .calc-container { padding: 20px 16px; }
+    .gauge-wrap { padding: 20px 16px; }
   }
 </style>
 </head>
-<body>
+<body id="top">
+<div class="progress" id="progress" aria-hidden="true"></div>
 
-<div class="col">
-  <header class="mast">
-    <a href="#top" aria-label="min(Infer)"><img src="assets/mininfer-logo.svg" alt="min(Infer)"></a>
-    <nav>
-      <a href="#idea">The idea</a>
-      <a href="#ledger">Ledger</a>
-      <a href="#trust">Trust</a>
+<!-- Sticky Nav with ScrollSpy -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="min(Infer) Home">
+      <img src="assets/mininfer-logo.svg" alt="min(Infer) Logo">
+    </a>
+    <nav class="links" id="navlinks" aria-label="Main Navigation">
+      <a href="#what">Capabilities</a>
+      <a href="#sim">Simulator</a>
+      <a href="#ledger">Economics</a>
+      <a href="#calculator">ROI Calc</a>
       <a href="#pulse">Heartbeat</a>
-      <a href="#route">Routing</a>
-      <a href="#tour">See it run</a>
-      <a href="#agents">For agents</a>
-      <a href="#run">Run it</a>
-      <a class="gh" href="https://github.com/zerocool909/mininfer-oss">GitHub</a>
+      <a href="#route">Pipeline</a>
+      <a href="#agents">For Agents</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn-nav-cta" href="#run">Run Local</a>
+      <a class="gh-link" href="https://github.com/zerocool909/mininfer-oss" target="_blank" rel="noreferrer" aria-label="GitHub Repository">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
     </nav>
-  </header>
+    <button class="menu-btn" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navlinks">Menu</button>
+  </div>
+</header>
 
-  <div class="hero" id="top">
-    <div>
-      <p class="eyebrow">Open-source · model intelligence registry</p>
-      <h1>Don’t ask which model is best. Ask which is <em>capable enough</em>, at the lowest effective cost.</h1>
-      <p class="dek">min(Infer) collects evidence from provider APIs, catalogs, pricing pages and benchmarks, then routes each request to the cheapest deployment that clears the bar for that task. Prefer free. Pay only when necessary.</p>
-      <div class="cta">
-        <a class="btn" href="#run">Run it locally</a>
-        <a class="btn ghost" href="#tour" aria-label="Watch the sixty second tour of the min(Infer) console">▶ Watch it run · 60 s</a>
-        <a class="btn ghost" href="https://github.com/zerocool909/mininfer-oss">Read the source</a>
+<main>
+  <!-- Hero Section with Quickstart + Animated Ledger Visual -->
+  <section class="hero-v3">
+    <div class="wrap">
+      <div class="hero-grid">
+        <!-- Left: Pitch + Immediate Quickstart -->
+        <div class="rv in">
+          <span class="badge-chip"><i></i> Open-Source Model Registry &amp; Router</span>
+          <h1>Don’t ask which model is best. Ask which is <em>capable enough</em>.</h1>
+          <p class="lead-dek">
+            <b>min(Infer)</b> is an economic constraint router. It aggregates provider health, live rate-limits, and quality thresholds to route every request to the <b>cheapest deployment that clears the bar</b>. Prefer free. Pay only when necessary.
+          </p>
+
+          <!-- Interactive Quickstart Box (Git vs Docker) -->
+          <div class="quickstart-card" role="region" aria-label="Quickstart Guide">
+            <div class="qs-tabs">
+              <button class="qs-tab active" id="tab-git" type="button" onclick="switchQs('git')">Python / Git</button>
+              <button class="qs-tab" id="tab-docker" type="button" onclick="switchQs('docker')">Docker Compose</button>
+            </div>
+            <div class="qs-content">
+              <div id="qs-git-panel">
+                <div class="cmd-row">
+                  <div class="cmd-text"><span class="prompt">$</span><code>git clone https://github.com/zerocool909/mininfer-oss.git &amp;&amp; cd mininfer-oss</code></div>
+                  <button class="copy-btn" data-copy="git clone https://github.com/zerocool909/mininfer-oss.git && cd mininfer-oss">Copy</button>
+                </div>
+                <div class="cmd-row">
+                  <div class="cmd-text"><span class="prompt">$</span><code>pip install -e '.[server]' &amp;&amp; mi proxy --port 8765</code></div>
+                  <button class="copy-btn" data-copy="pip install -e '.[server]' && mi proxy --port 8765">Copy</button>
+                </div>
+              </div>
+              <div id="qs-docker-panel" hidden>
+                <div class="cmd-row">
+                  <div class="cmd-text"><span class="prompt">$</span><code>docker compose up -d --build</code></div>
+                  <button class="copy-btn" data-copy="docker compose up -d --build">Copy</button>
+                </div>
+              </div>
+              <div class="qs-foot">
+                <span>Dashboard: <b>http://127.0.0.1:8765</b></span>
+                <a href="#run">View client SDKs &rarr;</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Animated Ledger Mark (Visual Metaphor from v1) -->
+        <div class="rv in">
+          <div class="ledger-visual-card">
+            <div class="lvc-head">
+              <span class="lvc-title">Minimum Sufficient Inference</span>
+              <span class="lvc-pill">Algorithmic Scan</span>
+            </div>
+            <!-- Animated SVG Metaphor -->
+            <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="Candidates ranked by cost against a task quality threshold, scanning cheapest-first to pick the winning arm">
+              <defs>
+                <clipPath id="hThreshClip"><rect class="thresh-clip" x="10" y="50" width="150" height="24"/></clipPath>
+                <linearGradient id="hScan" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stop-color="var(--accent)" stop-opacity="0"/>
+                  <stop offset=".5" stop-color="var(--accent)" stop-opacity=".6"/>
+                  <stop offset="1" stop-color="var(--accent)" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+
+              <!-- Dashed threshold line -->
+              <line class="thresh" clip-path="url(#hThreshClip)" x1="12" y1="62" x2="158" y2="62" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
+              <!-- Baseline -->
+              <line x1="12" y1="112" x2="158" y2="112" stroke="currentColor" stroke-opacity=".3" stroke-width="1.8" stroke-linecap="round"/>
+
+              <!-- Bar 1: Sub-threshold loser -->
+              <rect class="bar-grow bar1 loser" x="20" y="84" width="22" height="28" rx="4" fill="currentColor" fill-opacity=".2"/>
+
+              <!-- Bar 2: The Winner (Lowest cost that clears threshold) -->
+              <g class="bar-grow bar2">
+                <rect class="halo" x="52" y="50" width="24" height="62" rx="4" fill="var(--accent)" fill-opacity=".22"/>
+                <rect x="53" y="51" width="22" height="61" rx="3.5" fill="var(--accent)"/>
+              </g>
+              <g class="win-callout">
+                <circle cx="64" cy="41" r="7" fill="var(--accent)" fill-opacity=".22"/>
+                <circle class="win-dot" cx="64" cy="41" r="3.8" fill="var(--accent)"/>
+                <path d="M64 45.5V49" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round"/>
+              </g>
+
+              <!-- Bar 3: Larger generalist (Overkill) -->
+              <rect class="bar-grow bar3 rest" x="86" y="32" width="22" height="80" rx="4" fill="currentColor" fill-opacity=".26"/>
+
+              <!-- Bar 4: Frontier flagship (Expensive overkill) -->
+              <rect class="bar-grow bar4 rest" x="118" y="14" width="22" height="98" rx="4" fill="currentColor" fill-opacity=".18"/>
+
+              <!-- Scan band -->
+              <rect class="sweep" x="12" y="6" width="18" height="112" fill="url(#hScan)"/>
+              <circle class="ripple" cx="64" cy="41" r="7" fill="none" stroke="var(--accent)" stroke-width="1.2"/>
+
+              <!-- Text Labels -->
+              <g class="labels" font-family="var(--mono)" font-size="5" fill="currentColor" fill-opacity=".65">
+                <text x="158" y="58" text-anchor="end" font-weight="600">task threshold</text>
+                <text x="31" y="123" text-anchor="middle" font-size="4.4" fill-opacity=".45">sub-par</text>
+              </g>
+              <g class="win-callout" font-family="var(--mono)" font-size="5.2" font-weight="700" fill="var(--accent-strong)">
+                <text x="64" y="27" text-anchor="middle">cheapest capable</text>
+                <text x="64" y="124" text-anchor="middle" font-size="4.6">selected</text>
+              </g>
+              <g class="labels" font-family="var(--mono)" font-size="4.4" fill="currentColor" fill-opacity=".45">
+                <text x="97" y="123" text-anchor="middle">overkill</text>
+                <text x="129" y="123" text-anchor="middle">overkill</text>
+              </g>
+            </svg>
+            <div class="lvc-foot">
+              Candidate deployments rank cheapest-first. The scan stops at the first arm that clears the task quality floor. <b>Cost per success is minimized without quality regression.</b>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+  </section>
 
-    <div class="hero-visual">
-      <!-- The enhanced Ledger mark: candidate deployments ranked with quality threshold bar and cheapest-capable winner -->
-      <svg class="ledger-art" viewBox="0 0 170 145" role="img" aria-label="The min(Infer) Ledger mark, animating: candidate models ranked by cost, a dashed capability threshold, and a scan that walks the list cheapest-first until one clears the bar — the minimum sufficient inference choice — which the request is then dispatched to.">
-        <defs>
-          <!-- wipes the threshold in from the left, so the bar being *drawn* is what makes the winner winnable -->
-          <clipPath id="hThreshClip"><rect class="thresh-clip" x="10" y="50" width="150" height="24"/></clipPath>
-          <!-- the soft band that walks the ranked candidates, cheapest first -->
-          <linearGradient id="hScan" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stop-color="var(--teal)" stop-opacity="0"/>
-            <stop offset=".5" stop-color="var(--teal)" stop-opacity=".5"/>
-            <stop offset="1" stop-color="var(--teal)" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-
-        <!-- Capability threshold line -->
-        <line class="thresh" clip-path="url(#hThreshClip)" x1="12" y1="62" x2="158" y2="62" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
-        
-        <!-- Baseline -->
-        <line x1="12" y1="112" x2="158" y2="112" stroke="currentColor" stroke-opacity=".3" stroke-width="1.8" stroke-linecap="round"/>
-
-        <!-- Bar 1: sub-threshold — never reaches the line, so it is dimmed by the scan -->
-        <rect class="bar-grow bar1 loser" x="20" y="84" width="22" height="28" rx="4" fill="currentColor" fill-opacity=".2"/>
-
-        <!-- Bar 2: The Winner - Minimum Sufficient Model (y=50, h=62 -> bottom at 112) -->
-        <g class="bar-grow bar2">
-          <rect class="halo" x="52" y="50" width="24" height="62" rx="4" fill="var(--teal)" fill-opacity=".22"/>
-          <rect x="53" y="51" width="22" height="61" rx="3.5" fill="var(--teal)"/>
-        </g>
-        <!-- Winning accent indicator atop winner -->
-        <g class="win-callout">
-          <circle cx="64" cy="41" r="7" fill="var(--teal)" fill-opacity=".22"/>
-          <circle class="win-dot" cx="64" cy="41" r="3.8" fill="var(--teal)"/>
-          <path d="M64 45.5V49" stroke="var(--teal)" stroke-width="1.8" stroke-linecap="round"/>
-        </g>
-
-        <!-- Bar 3: larger generalist — capable, but more than this task needs -->
-        <rect class="bar-grow bar3 rest" x="86" y="32" width="22" height="80" rx="4" fill="currentColor" fill-opacity=".26"/>
-
-        <!-- Bar 4: Giant frontier flagship model (y=14, h=98 -> bottom at 112) -->
-        <rect class="bar-grow bar4 rest" x="118" y="14" width="22" height="98" rx="4" fill="currentColor" fill-opacity=".18"/>
-
-        <!-- the scan band walks the ranked list and lands on the winner -->
-        <rect class="sweep" x="12" y="6" width="18" height="112" fill="url(#hScan)"/>
-        <!-- the pick: a ring expands from the selected model, which itself stays put on its bar -->
-        <circle class="ripple" cx="64" cy="41" r="7" fill="none" stroke="var(--teal)" stroke-width="1.1"/>
-
-        <!-- Labels and indicators -->
-        <g class="labels" font-family="var(--mono)" font-size="5" fill="currentColor" fill-opacity=".65">
-          <text x="158" y="58" text-anchor="end" font-weight="500">task threshold</text>
-          <text x="31" y="123" text-anchor="middle" font-size="4.4" fill-opacity=".45">sub-par</text>
-        </g>
-        <g class="win-callout" font-family="var(--mono)" font-size="5.2" font-weight="600" fill="var(--teal-ink)">
-          <text x="64" y="27" text-anchor="middle">cheapest capable</text>
-          <text x="64" y="124" text-anchor="middle" font-size="4.6">selected</text>
-        </g>
-        <g class="labels" font-family="var(--mono)" font-size="4.4" fill="currentColor" fill-opacity=".45">
-          <text x="97" y="123" text-anchor="middle">overkill</text>
-          <text x="129" y="123" text-anchor="middle">overkill</text>
-        </g>
-      </svg>
-    </div>
-  </div>
-</div>
-
-<section id="idea"><div class="col sec">
-  <aside><b>01</b>The idea</aside>
-  <div>
-    <h2>A decision engine, not a load balancer.</h2>
-    <p class="lede">The LLM market moves weekly. Models launch, get retired, change price, hit rate limits, or appear on a new gateway with a free tier. The same weights can cost nothing on one provider and a lot on another.</p>
-    <p>So min(Infer) keeps three things apart that most routers blur together: <b>the model</b> (what it can do), <b>the deployment</b> (provider, price, limits, latency, availability), and <b>the task</b> (what has to be true for an answer to count). A request is routed by filtering deployments against the task, then picking the cheapest survivor.</p>
-    <p class="pull">The registry describes what exists. Live evidence determines what is usable.</p>
-  </div>
-</div></section>
-
-<section id="ledger"><div class="col sec">
-  <aside><b>02</b>The ledger</aside>
-  <div>
-    <h2>“Free” is not the same as cheap.</h2>
-    <p class="lede">Ranking runs on <b>cost per success</b>: expected spend divided by the lower-bound probability the model actually completes the task. A model that fails half the time costs more than its sticker price says.</p>
-
-    <table class="ledger">
-      <thead><tr>
-        <th>Deployment</th><th>List price</th><th>Success<br>lower bound</th><th class="hide-s">Cost per<br>success</th><th>Verdict</th>
-      </tr></thead>
-      <tbody>
-        <tr class="out"><td>Free tier A<small>no track record yet</small></td><td>$0.000</td><td>0.31</td><td class="hide-s">—</td><td>below floor</td></tr>
-        <tr class="win"><td>Free tier B<small>proven on this task</small></td><td>$0.000</td><td>0.88</td><td class="hide-s">$0.000</td><td>selected</td></tr>
-        <tr><td>Small paid model<small>fallback</small></td><td>$0.004</td><td>0.91</td><td class="hide-s">$0.0044</td><td>fallback 1</td></tr>
-        <tr><td>Frontier model<small>last resort</small></td><td>$0.060</td><td>0.97</td><td class="hide-s">$0.0619</td><td>fallback 2</td></tr>
-      </tbody>
-    </table>
-    <p class="note">Illustrative numbers. Free arms that clear the quality floor all tie at zero, so the router breaks ties with a small exploration bonus. The shortlist is <b>2&ndash;3 primaries plus 2 backups</b>, one backup reserved for an <b>untested</b> arm, and a <b>last resort</b> that is tried only when the chain is exhausted &mdash; so a request can run out of free arms but not out of an answer.</p>
-  </div>
-</div></section>
-
-<section id="trust"><div class="col sec">
-  <aside><b>03</b>Earning trust</aside>
-  <div>
-    <h2>Two wins out of two is not a track record.</h2>
-    <p class="lede">The router scores each model per task with the Wilson lower bound of its success rate, seeded with a benchmark prior so cold starts aren’t blind. Small samples get penalised until evidence accumulates. Try it:</p>
-
-    <div class="gauge" id="gauge">
-      <div class="row">
-        <div><label for="wins">Successes</label><input id="wins" type="number" min="0" value="2"></div>
-        <div><label for="trials">Trials</label><input id="trials" type="number" min="1" value="2"></div>
-        <div><label for="floor">Quality floor</label><input id="floor" type="number" min="0" max="1" step="0.05" value="0.7"></div>
+  <!-- Live Stats Counter Band -->
+  <section class="stats-band">
+    <div class="wrap">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="num"><span data-count="24000" data-prefix="~">~24,000</span></div>
+          <div class="lbl"><b>Deployments</b> in live registry</div>
+        </div>
+        <div class="stat-card">
+          <div class="num"><span data-count="200000" data-suffix="+">200k+</span></div>
+          <div class="lbl"><b>Evidence Records</b> time-stamped</div>
+        </div>
+        <div class="stat-card">
+          <div class="num"><span data-count="27">27</span></div>
+          <div class="lbl"><b>Active Providers</b> across 3 tiers</div>
+        </div>
+        <div class="stat-card">
+          <div class="num"><span data-count="8">8</span></div>
+          <div class="lbl"><b>Keyless Sources</b> cold start without keys</div>
+        </div>
       </div>
-      <div class="bar" aria-hidden="true">
-        <div class="fill" id="fill"></div>
-        <div class="naive" id="naive"></div>
-        <div class="floor" id="floorline"></div>
+    </div>
+  </section>
+
+  <!-- Interactive Routing Simulator (New Feature) -->
+  <section id="sim" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Interactive Demo</span>
+        <h2>Test the Routing Decision Engine</h2>
+        <p>Select a developer prompt to see how min(Infer) filters constraints, calculates cost-per-success, and dispatches to the winning arm in real time.</p>
       </div>
-      <div class="readout">
-        <div>raw success rate<b id="raw">100%</b></div>
-        <div>lower bound the router uses<b id="lb">—</b></div>
+
+      <div class="wrap-narrow rv">
+        <div class="sim-box">
+          <div class="sim-head">
+            <div class="sim-selector">
+              <label for="simTaskSelect">Workload Task:</label>
+              <select id="simTaskSelect" class="sim-select" onchange="runSimulation(true)">
+                <option value="summary">1. Routine Tool Output Summarization</option>
+                <option value="json">2. Strict Schema-Bound JSON Extraction</option>
+                <option value="agent">3. High-Frequency Agent Action Loop</option>
+                <option value="reasoning">4. Hard Multi-Step Architectural Planning</option>
+              </select>
+            </div>
+            <button class="sim-run-btn" id="simRunBtn" type="button" onclick="runSimulation(true)">Re-route Prompt &#9654;</button>
+          </div>
+          <div class="sim-prompt-banner">
+            <span class="sim-prompt-lbl">Incoming Prompt:</span>
+            <span class="sim-prompt-txt" id="simPromptTxt">"Summarize the latest 15 execution errors from crawler run #402 into bullet points."</span>
+          </div>
+
+          <div class="sim-body">
+            <div class="sim-terminal" id="simTerminal"></div>
+            <div class="sim-outcome">
+              <div class="sim-metric">
+                <span class="lbl">Selected Deployment</span>
+                <span class="val win" id="simWinner">openrouter:qwen/qwen3.8-27b:free</span>
+              </div>
+              <div class="sim-metric">
+                <span class="lbl">Effective Request Spend</span>
+                <span class="val" id="simCost">$0.000000</span>
+              </div>
+              <div class="sim-metric">
+                <span class="lbl">First-Byte Latency</span>
+                <span class="val" id="simLatency">298 ms</span>
+              </div>
+              <div class="sim-metric">
+                <span class="lbl">Savings vs. Frontier Call</span>
+                <span class="val win" id="simSavings">100% saved</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <p class="verdict" id="verdict"></p>
     </div>
-    <p class="note">Black tick: raw rate. Bar: lower bound at z = 1.96. Dashed line: the task’s quality floor.</p>
+  </section>
 
-    <p style="margin-top:34px">Untried free models get their evidence without risking users. A small slice of traffic is <b>duplicated in the background</b> to an untried arm after the real answer has already been sent. An LLM judge scores the shadow reply, the result is recorded as a <code>judge_trial</code> observation, and once the lower bound clears the floor the model graduates to real traffic. Nobody waits on it and nobody is billed for it.</p>
-  </div>
-</div></section>
+  <!-- What is min(Infer) — 8-Card Feature Grid -->
+  <section id="what" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Core Capabilities</span>
+        <h2>A Decision Engine, Not a Dumb Load Balancer</h2>
+        <p>min(Infer) separates the model (what it can do), the deployment (what it costs here), and the task (what has to be true). Here is what makes it unique.</p>
+      </div>
 
-<section id="pulse"><div class="col sec">
-  <aside><b>04</b>Heartbeat</aside>
-  <div>
-    <h2>A dead key should fail on a timer, not on your request.</h2>
-    <p class="lede">The registry says what exists. Only a live call says what still works. Left alone, the router finds a revoked key or an unreachable host the expensive way &mdash; by spending a request on it. The optional <b>warm tier</b> asks first, on a cadence, and keeps the answer warm.</p>
-
-    <div class="pulse">
-      <svg viewBox="0 0 560 90" preserveAspectRatio="none" role="img" aria-label="A provider health probe drawn as a heartbeat trace: the server checks each configured provider on a schedule.">
-        <path class="line" d="M0 62 H120 l12 -34 l12 54 l12 -28 l12 8 H300 l12 -34 l12 54 l12 -28 l12 8 H560"
-              fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      </svg>
+      <ul class="feat-grid rv" style="list-style:none;padding:0;margin:0;">
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><path d="M3 12V4h8l9 9-8 8-9-9Z"/><circle cx="7.6" cy="7.6" r="1.2"/></svg></div>
+          <h3>Prefer Free First</h3>
+          <p>Dispatches to verified free tiers as long as they clear the task's quality floor. Pays only when free capacity is insufficient.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg></div>
+          <h3>Evidence, Not Vibes</h3>
+          <p>Every pricing tier, token limit, and capability is an immutable, time-stamped record with traceable source provenance.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div>
+          <h3>Task-Aware Quality Floors</h3>
+          <p>Uses hard capability gates and Wilson score lower bounds, avoiding single blended benchmark averages that misroute.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a4 4 0 0 1 4 4M8 18h3a4 4 0 0 0 4-4"/></svg></div>
+          <h3>100% Explainable</h3>
+          <p>Every response names the winning author and records why every rejected candidate failed to make the cut.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/></svg></div>
+          <h3>Zero Data Retention</h3>
+          <p>Runs on your own provider credentials. Prompt and response bodies are never stored or logged by default.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/></svg></div>
+          <h3>Drop-in OpenAI API</h3>
+          <p>Point any client, LangChain, Cursor, or agent loop at <code>http://127.0.0.1:8765/v1</code> with <code>model: "auto"</code>.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg></div>
+          <h3>Dual Database Backends</h3>
+          <p>Local SQLite out of the box with zero setup; seamless Postgres connection via DSN for multi-tenant production teams.</p>
+        </li>
+        <li class="feat-card">
+          <div class="icon-wrap"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5Z"/><path d="M3 13l9 5 9-5"/></svg></div>
+          <h3>Failover Before First Byte</h3>
+          <p>Catches upstream 429s, DNS timeouts, or dropped connections and transparently reroutes before streaming commits.</p>
+        </li>
+      </ul>
     </div>
-    <div class="health" role="list">
-      <span class="chip ok" role="listitem"><i></i>groq&nbsp;·&nbsp;healthy&nbsp;·&nbsp;12 models&nbsp;·&nbsp;316 ms</span>
-      <span class="chip ok" role="listitem"><i></i>openrouter&nbsp;·&nbsp;healthy&nbsp;·&nbsp;464 models&nbsp;·&nbsp;449 ms</span>
-      <span class="chip bad" role="listitem"><i></i>a-provider&nbsp;·&nbsp;auth_error</span>
+  </section>
+
+  <!-- The Three Pillars (Model vs Deployment vs Task) -->
+  <section class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Conceptual Architecture</span>
+        <h2>Three Things Most Routers Blur Together</h2>
+        <p>A single model weight can cost nothing on one gateway and a fortune on another. min(Infer) manages them as distinct entities.</p>
+      </div>
+
+      <div class="tri-grid rv">
+        <div class="tri-card">
+          <span class="tag">01 · The Model</span>
+          <h3>What It Can Do</h3>
+          <p>Modalities (text, vision, tools), architecture parameter size, context capacity, and benchmark priors. The pure cognitive artifact, independent of provider host.</p>
+        </div>
+        <div class="tri-card">
+          <span class="tag">02 · The Deployment</span>
+          <h3>What It Costs Here</h3>
+          <p>Endpoint URL, pricing tier ($/token), rate-limit headroom, probe availability, and live DNS latency. Scored and tracked as an independent operational asset.</p>
+        </div>
+        <div class="tri-card">
+          <span class="tag">03 · The Task</span>
+          <h3>What Has To Be True</h3>
+          <p>The required capabilities (JSON schema, tool calling, 32k window) and the quality threshold an answer must clear to be counted as a success.</p>
+        </div>
+      </div>
     </div>
+  </section>
 
-    <p>Each check is a provider&rsquo;s own <code>GET /models</code>: cheap, and enough to prove reachability (DNS and TLS) and that the key is still accepted, without inventing a chat model to call. The verdict is recorded per provider &mdash; <code>ok</code>, <code>auth_error</code>, <code>network_error</code>, or the HTTP status &mdash; with latency and model count.</p>
+  <!-- Economics: Cost Per Success & Wilson Gauge -->
+  <section id="ledger" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">The Economic Ledger</span>
+        <h2>“Free” Is Not the Same as Cheap</h2>
+        <p>Ranking runs on <b>Cost per Success</b>: expected spend divided by the Wilson lower-bound probability of task success. A free model that fails half the time costs more than its sticker price says.</p>
+      </div>
 
-    <ol class="steps">
-      <li><div><h3>Off until you ask.</h3><p>The probe is opt-in, toggled from the dashboard&rsquo;s <b>Settings &rarr; Providers</b> card. A plain <code>docker compose up</code> makes no scheduled upstream calls it was not asked to make.</p></div></li>
-      <li><div><h3>Cheap, on a cadence.</h3><p>A key is checked every five minutes by default, down to 30 seconds. <b>Run now</b> probes every configured provider on demand.</p></div></li>
-      <li><div><h3>The router reads it.</h3><p>A provider whose most recent check failed is dropped from the candidate pool, so the next request skips it instead of spending itself on it. The verdict expires after 15 minutes &mdash; switching the probe off can never exclude a provider forever.</p></div></li>
-    </ol>
+      <!-- Restored Ledger Table from v1 with Balanced Proportions -->
+      <div class="wrap-narrow rv">
+        <div class="ledger-box">
+          <table class="ledger-tbl">
+            <thead>
+              <tr>
+                <th class="text-left" style="width:34%;">Deployment Candidate</th>
+                <th class="text-right" style="width:16%;">List Price</th>
+                <th class="text-right" style="width:18%;">Success Lower Bound</th>
+                <th class="text-right hide-s" style="width:16%;">Cost Per Success</th>
+                <th class="text-right" style="width:16%;">Routing Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="out">
+                <td class="text-left">Free Tier A<small>untested cold start on this task</small></td>
+                <td class="text-right">$0.000</td>
+                <td class="text-right">0.31</td>
+                <td class="text-right hide-s">—</td>
+                <td class="text-right"><span class="badge-status rejected">Below Floor</span></td>
+              </tr>
+              <tr class="win">
+                <td class="text-left">Free Tier B<small>proven track record for this task</small></td>
+                <td class="text-right">$0.000</td>
+                <td class="text-right">0.88</td>
+                <td class="text-right hide-s">$0.000</td>
+                <td class="text-right"><span class="badge-status selected">Selected</span></td>
+              </tr>
+              <tr>
+                <td class="text-left">Small Paid Specialist<small>fast low-latency fallback</small></td>
+                <td class="text-right">$0.004</td>
+                <td class="text-right">0.91</td>
+                <td class="text-right hide-s">$0.0044</td>
+                <td class="text-right"><span class="badge-status fallback">Fallback 1</span></td>
+              </tr>
+              <tr>
+                <td class="text-left">Frontier Flagship<small>reserved for true complex reasoning</small></td>
+                <td class="text-right">$0.060</td>
+                <td class="text-right">0.97</td>
+                <td class="text-right hide-s">$0.0619</td>
+                <td class="text-right"><span class="badge-status fallback">Last Resort</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-note">Free candidates that clear the quality floor tie at zero, so the router breaks ties with a small exploration bonus. Untested models are shadow-evaluated in the background without risking user responses.</p>
+
+        <!-- Interactive Wilson Lower Bound Gauge -->
+        <div class="gauge-wrap rv" style="margin-top: 40px;">
+          <h3 style="text-align:center;margin:0 0 6px;font-size:19px;">Live Wilson Confidence Instrument</h3>
+          <p style="text-align:center;color:var(--muted);margin:0 0 20px;font-size:14px;">How min(Infer) penalizes small sample sizes (z = 1.96) to prevent two lucky answers from passing as a track record:</p>
+          
+          <div class="gauge-inputs">
+            <div class="gauge-input-box">
+              <label for="wins">Successes</label>
+              <input id="wins" type="number" min="0" value="2">
+            </div>
+            <div class="gauge-input-box">
+              <label for="trials">Total Trials</label>
+              <input id="trials" type="number" min="1" value="2">
+            </div>
+            <div class="gauge-input-box">
+              <label for="floor">Quality Floor</label>
+              <input id="floor" type="number" min="0" max="1" step="0.05" value="0.7">
+            </div>
+          </div>
+
+          <div class="gauge-bar-frame" aria-hidden="true">
+            <div class="gauge-fill" id="fill"></div>
+            <div class="gauge-naive" id="naive"></div>
+            <div class="gauge-floor" id="floorline"></div>
+          </div>
+          
+          <div class="gauge-legend">
+            <span><i class="dot-raw"></i> Raw Rate</span>
+            <span><i class="dot-bound"></i> Wilson Lower Bound (z=1.96)</span>
+            <span><i class="dot-floor"></i> Task Floor</span>
+          </div>
+
+          <div class="gauge-readout">
+            <div>Raw Success Rate<b id="raw">100%</b></div>
+            <div>Router's Wilson Bound<b id="lb">—</b></div>
+          </div>
+          <p class="gauge-verdict" id="verdict"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Interactive ROI / Cost Calculator (New Feature) -->
+  <section id="calculator" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Interactive ROI Calculator</span>
+        <h2>Calculate Your Monthly Savings</h2>
+        <p>See how much your team or agent infrastructure saves by reserving frontier models for true reasoning calls and offloading the rest to qualified free tiers.</p>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="calc-container">
+          <div class="calc-grid">
+            <div class="calc-controls-col">
+              <div class="calc-control">
+                <label>Monthly Requests: <span class="val" id="calcReqVal">250,000</span></label>
+                <input type="range" class="calc-slider" id="calcReqSlider" min="10000" max="2000000" step="10000" value="250000" oninput="updateCalculator()">
+              </div>
+              <div class="calc-control">
+                <label>Current Default Model:</label>
+                <select id="calcModelSelect" class="calc-select" onchange="updateCalculator()">
+                  <option value="sonnet">Claude 3.5 Sonnet / GPT-4o ($6.00 / M tokens)</option>
+                  <option value="gpt4o">GPT-4o ($5.00 / M tokens)</option>
+                  <option value="mini">GPT-4o-mini ($0.60 / M tokens)</option>
+                </select>
+              </div>
+              <div class="calc-control">
+                <label>Workload Profile:</label>
+                <select id="calcWorkloadSelect" class="calc-select" onchange="updateCalculator()">
+                  <option value="agentic">Multi-Step Agent Loop (~75% routine calls, ~25% reasoning)</option>
+                  <option value="rag">RAG &amp; Extraction (~85% routine calls, ~15% synthesis)</option>
+                  <option value="balanced">Balanced Production Mix (~60% routine, ~40% reasoning)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="calc-result-box">
+              <span style="font:600 12.5px var(--mono);text-transform:uppercase;color:var(--muted);">Estimated Monthly Savings</span>
+              <div class="calc-save-num" id="calcSavingsDollar">$1,480</div>
+              <p style="color:var(--text-2);font-size:14px;margin:2px 0 14px;">
+                Direct spend reduced by <b id="calcPercent" style="color:var(--accent-strong);">81.2%</b>
+              </p>
+
+              <div class="calc-breakdown-bar">
+                <div class="cbb-free" id="cbbFree" style="width: 75%;"></div>
+                <div class="cbb-paid" id="cbbPaid" style="width: 25%;"></div>
+              </div>
+              <div class="cbb-legend">
+                <span class="leg-free"><i></i> Free/Micro-tier (<span id="legFreePct">75%</span>)</span>
+                <span class="leg-paid"><i></i> Frontier Calls (<span id="legPaidPct">25%</span>)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Heartbeat / Warm-Tier Probe Section (Restored from v1) -->
+  <section id="pulse" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Production Reliability</span>
+        <h2>A Dead Key Should Fail on a Timer, Not on Your Request</h2>
+        <p>The registry tracks what exists. Only live probes tell what still works. min(Infer)'s warm tier tests providers via lightweight <code>GET /models</code> before traffic hits them.</p>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="pulse-box">
+          <svg class="pulse-svg" viewBox="0 0 560 90" preserveAspectRatio="none" role="img" aria-label="ECG heartbeat trace representing live provider health probes">
+            <path class="pulse-line" d="M0 62 H120 l12 -34 l12 54 l12 -28 l12 8 H300 l12 -34 l12 54 l12 -28 l12 8 H560"
+                  fill="none" stroke="var(--accent)" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>
+          </svg>
+          <div class="health-chips">
+            <span class="health-chip ok"><i></i>groq &middot; healthy &middot; 12 models &middot; 284 ms</span>
+            <span class="health-chip ok"><i></i>openrouter &middot; healthy &middot; 464 models &middot; 412 ms</span>
+            <span class="health-chip ok"><i></i>novita &middot; healthy &middot; 48 models &middot; 330 ms</span>
+            <span class="health-chip bad"><i></i>provider-c &middot; 401 auth_error &middot; demoted</span>
+          </div>
+        </div>
+
+        <div class="tri-grid" style="margin-top:24px;">
+          <div class="tri-card">
+            <span class="tag">Opt-In &amp; Respectful</span>
+            <h3>Off Until Enabled</h3>
+            <p>The probe runs zero scheduled upstream calls until toggled on in <code>Settings &rarr; Providers</code>. Plain local starts touch nothing unasked.</p>
+          </div>
+          <div class="tri-card">
+            <span class="tag">Cadence Probing</span>
+            <h3>Fast &amp; Inexpensive</h3>
+            <p>Keys are checked every 5 minutes (down to 30s). Uses native catalogue list endpoints rather than burning paid token generation calls.</p>
+          </div>
+          <div class="tri-card">
+            <span class="tag">Active Isolation</span>
+            <h3>Automatic Demotion</h3>
+            <p>Providers failing auth or TLS are instantly removed from the candidate pool for 15 minutes, preserving your request SLAs.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Request Routing Pipeline (5-Stage Flow from v2) -->
+  <section id="route" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Request Lifecycle</span>
+        <h2>What Happens Between Prompt and First Token</h2>
+        <p>A look under the hood at the 5-stage decision pipeline executed on every incoming request.</p>
+      </div>
+
+      <ol class="steps-flow rv">
+        <li class="in">
+          <div>
+            <h3>1. Classify Locally</h3>
+            <p>Determines intent via heuristics &amp; fast local models. Never spends a paid upstream call to decide where to route.</p>
+          </div>
+        </li>
+        <li class="in">
+          <div>
+            <h3>2. Hard Filtering</h3>
+            <p>Eliminates models lacking context size, required tools, modality, or quota headroom based on live provider rate-limit headers.</p>
+          </div>
+        </li>
+        <li class="in">
+          <div>
+            <h3>3. Wilson Scoring</h3>
+            <p>Ranks surviving candidates by cost-per-success. Enforces a 60% traffic cap per arm so no single gateway becomes a monopoly.</p>
+          </div>
+        </li>
+        <li class="in">
+          <div>
+            <h3>4. Pre-Byte Failover</h3>
+            <p>If an arm encounters an unexpected 429 or network disconnect, it immediately falls over to candidate #2 before streaming begins.</p>
+          </div>
+        </li>
+        <li class="in">
+          <div>
+            <h3>5. Write Evidence</h3>
+            <p>Records prompt latency, token throughput, and success status into the local ledger to refine the next routing decision.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- For Agents: Why Most Steps Aren't Reasoning Calls -->
+  <section id="agents" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Autonomous Agent Architecture</span>
+        <h2>Most of an Agent’s Calls Aren’t Reasoning Calls</h2>
+        <p>Between the two agent steps that require true judgment sit dozens that don't: formatting JSON, tool selection, summarizing observation output, and branch retries. Stop paying flagship token rates for glue work.</p>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="ledger-box">
+          <table class="ledger-tbl">
+            <thead>
+              <tr>
+                <th class="text-left" style="width:36%;">Agent Execution Step</th>
+                <th class="text-left" style="width:28%;">Hard Constraints</th>
+                <th class="text-right" style="width:36%;">Routing Destination</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="text-left">Summarize tool output<small>runs dozens of times per turn</small></td>
+                <td class="text-left">short output, no tools</td>
+                <td class="text-right"><span class="badge-status selected">Free Tier ($0.00)</span></td>
+              </tr>
+              <tr>
+                <td class="text-left">Extract structured data into JSON<small>schema-bound parser</small></td>
+                <td class="text-left">strict <code>structured_outputs</code></td>
+                <td class="text-right"><span class="badge-status fallback">Cheapest Structured ($0.0002)</span></td>
+              </tr>
+              <tr>
+                <td class="text-left">Select next tool action<small>function calling loop</small></td>
+                <td class="text-left"><code>tools</code>, 32k context</td>
+                <td class="text-right"><span class="badge-status fallback">Fast Tool Arm ($0.0008)</span></td>
+              </tr>
+              <tr class="win">
+                <td class="text-left">Synthesize complex multi-file architectural plan<small>rare, critical</small></td>
+                <td class="text-left">deep reasoning, 64k+</td>
+                <td class="text-right"><span class="badge-status fallback">Frontier Flagship</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Engineering Principles (Restored from v1) -->
+  <section class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Design Philosophy</span>
+        <h2>Architectural Principles</h2>
+        <p>Built for platform engineers who need predictable, explainable, and cost-capped AI infrastructure.</p>
+      </div>
+
+      <div class="principles-grid rv">
+        <div class="principle-card">
+          <h3>Identity &ne; Economics</h3>
+          <p>Identical weights on different providers have drastically different uptime, latency, and pricing. They are evaluated as separate deployments.</p>
+        </div>
+        <div class="principle-card">
+          <h3>Budgets Are Reserved First</h3>
+          <p>Session caps reserve estimated token allowances before the request dispatches, ensuring hard limits are never exceeded by trailing requests.</p>
+        </div>
+        <div class="principle-card">
+          <h3>Prices Are Beliefs With History</h3>
+          <p>Every pricing tier is versioned with the date it was observed. Unannounced upstream price hikes raise immediate anomaly alerts.</p>
+        </div>
+        <div class="principle-card">
+          <h3>An Error Is Valuable Evidence</h3>
+          <p>When a provider sunsets a checkpoint, the resulting 404 permanently updates the registry without requiring manual config updates at 2 AM.</p>
+        </div>
+        <div class="principle-card">
+          <h3>Failures Are Attributed</h3>
+          <p>A 429 is attributed to the provider gateway, not the underlying model architecture, preventing unnecessary cascading invalidations.</p>
+        </div>
+        <div class="principle-card">
+          <h3>Anti-Concentration Caps</h3>
+          <p>No model may consume more than 60% of a task's traffic. Ensures exploration bonuses keep fallback arms warm and prevents vendor lock-in.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 60-Second Real Console Tour Video -->
+  <section class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Console Tour</span>
+        <h2>Sixty Seconds in the Real Dashboard</h2>
+        <p>No Figma mockups. See a headless browser drive min(Infer), stream responses, inspect candidate shortlists, and review decision logs.</p>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="tour-card">
+          <video controls poster="assets/reel-poster.webp" preload="metadata" playsinline>
+            <source src="assets/reel.webm" type="video/webm">
+            Your browser does not support the video tag.
+          </video>
+          <div class="tour-caption">
+            <b>5-Act Guided Tour:</b> Prompt dispatch &rarr; Real-time arm selection &rarr; Streaming token generation &rarr; Candidate elimination reasons &rarr; Model catalog and warm-tier health checks.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Integration & Drop-In Code Tabs (New Feature) -->
+  <section id="run" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Drop-In Integration</span>
+        <h2>Two Lines of Code to Switch Any Client</h2>
+        <p>min(Infer) implements the standard OpenAI chat completions spec. Change only the <code>base_url</code>.</p>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="code-tabs-box">
+          <div class="ct-header">
+            <div class="ct-nav">
+              <button class="ct-btn active" id="btn-py" type="button" onclick="switchCode('py')">Python (OpenAI)</button>
+              <button class="ct-btn" id="btn-ts" type="button" onclick="switchCode('ts')">TypeScript / Node</button>
+              <button class="ct-btn" id="btn-curl" type="button" onclick="switchCode('curl')">cURL</button>
+              <button class="ct-btn" id="btn-lc" type="button" onclick="switchCode('lc')">LangChain</button>
+            </div>
+            <button class="ct-copy-btn" type="button" onclick="copyCurrentCode()">Copy Snippet</button>
+          </div>
+          <pre class="ct-body" id="code-py"><code><span class="k">from</span> openai <span class="k">import</span> OpenAI
+
+<span class="c"># Point directly to your local or deployed min(Infer) gateway</span>
+client = OpenAI(
+    base_url=<span class="g">"http://127.0.0.1:8765/v1"</span>,
+    api_key=<span class="g">"mi-local"</span>  <span class="c"># or use your min(Infer) master token</span>
+)
+
+response = client.chat.completions.create(
+    model=<span class="g">"auto"</span>,  <span class="c"># min(Infer) analyzes the prompt &amp; picks the cheapest capable arm</span>
+    messages=[{<span class="g">"role"</span>: <span class="g">"user"</span>, <span class="g">"content"</span>: <span class="g">"Summarize this release note..."</span>}]
+)
+
+print(f<span class="g">"Routed to: {response.model}"</span>)
+print(response.choices[0].message.content)</code></pre>
+
+          <pre class="ct-body" id="code-ts" hidden><code><span class="k">import</span> OpenAI <span class="k">from</span> <span class="g">"openai"</span>;
+
+<span class="k">const</span> client = <span class="k">new</span> OpenAI({
+  baseURL: <span class="g">"http://127.0.0.1:8765/v1"</span>,
+  apiKey: <span class="g">"mi-local"</span>,
+});
+
+<span class="k">const</span> completion = <span class="k">await</span> client.chat.completions.create({
+  model: <span class="g">"auto"</span>,
+  messages: [{ role: <span class="g">"user"</span>, content: <span class="g">"Extract structured items from invoice"</span> }],
+});
+
+console.log(completion.model, completion.choices[0].message.content);</code></pre>
+
+          <pre class="ct-body" id="code-curl" hidden><code><span class="c"># Test routing straight from your terminal</span>
+curl http://127.0.0.1:8765/v1/chat/completions \
+  -H <span class="g">"Content-Type: application/json"</span> \
+  -d <span class="g">'{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Classify this support ticket"}]
+  }'</span></code></pre>
+
+          <pre class="ct-body" id="code-lc" hidden><code><span class="k">from</span> langchain_openai <span class="k">import</span> ChatOpenAI
+
+<span class="c"># Pass min(Infer) base_url into any LangChain agent or chain</span>
+llm = ChatOpenAI(
+    base_url=<span class="g">"http://127.0.0.1:8765/v1"</span>,
+    api_key=<span class="g">"mi-local"</span>,
+    model=<span class="g">"auto"</span>
+)
+
+res = llm.invoke(<span class="g">"Analyze system metrics for anomaly clusters."</span>)</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Section (Refined from v2) -->
+  <section id="faq" class="block">
+    <div class="wrap">
+      <div class="sec-header rv">
+        <span class="eyebrow">Frequently Asked Questions</span>
+        <h2>Clear Answers to Common Questions</h2>
+      </div>
+
+      <div class="wrap-narrow rv">
+        <div class="faq-wrap">
+          <details class="faq-item" open>
+            <summary>Do I need to provide my own API keys?<span class="plus"></span></summary>
+            <div class="ans">Yes. min(Infer) operates on user-supplied provider credentials stored locally in your <code>.env</code> file or passed per request via <code>X-User-API-Keys</code>. However, min(Infer) includes 8 keyless catalog sources, allowing you to bootstrap the registry and discover deployments without any keys upfront.</div>
+          </details>
+          <details class="faq-item">
+            <summary>How is this different from LiteLLM, OpenRouter, or Portkey?<span class="plus"></span></summary>
+            <div class="ans">Most proxies are either static aggregators or round-robin load balancers. min(Infer) is a <b>constraint-satisfaction decision engine</b>: it tracks live rate limits, tests model availability with active health probes, enforces task quality thresholds using statistical Wilson confidence bounds, and minimizes <i>cost-per-success</i> rather than simply forwarding traffic.</div>
+          </details>
+          <details class="faq-item">
+            <summary>Does min(Infer) store my prompts or responses?<span class="plus"></span></summary>
+            <div class="ans">No. By default, prompt and response payload bodies are never written to disk or transmitted to any third party. Only operational telemetry (latency, token count, upstream HTTP status, and winning model identity) is recorded in your local SQLite/Postgres database.</div>
+          </details>
+          <details class="faq-item">
+            <summary>What happens if a free model hits a 429 rate limit?<span class="plus"></span></summary>
+            <div class="ans">min(Infer) reads provider <code>x-ratelimit-*</code> response headers dynamically. If a model is close to saturation, or if an unexpected 429 occurs, min(Infer) catches it before first-byte streaming begins and transparently dispatches the prompt to candidate #2 on the shortlist.</div>
+          </details>
+          <details class="faq-item">
+            <summary>Can I pin specific models for sensitive workloads?<span class="plus"></span></summary>
+            <div class="ans">Yes. In addition to <code>model: "auto"</code>, you can request specific models directly (e.g. <code>model: "claude-3-5-sonnet"</code>) or pass explicit constraints like <code>task: "code"</code> or <code>quality_floor: 0.90</code>.</div>
+          </details>
+          <details class="faq-item">
+            <summary>What is the licensing model?<span class="plus"></span></summary>
+            <div class="ans">min(Infer) is 100% open-source under the permissive <b>MIT License</b>. You can run it locally, deploy it in private VPCs, or bundle it into commercial agent architectures without restriction.</div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="final-cta">
+    <div class="wrap rv">
+      <h2>Start Slashing Your Inference Spend Today</h2>
+      <p>Clone the open-source repository and point your OpenAI client at it in under 60 seconds.</p>
+      <div class="btn-group">
+        <a class="btn-primary" href="#run">Get Started in 60s</a>
+        <a class="btn-ghost" href="https://github.com/zerocool909/mininfer-oss" target="_blank" rel="noreferrer">View on GitHub &rarr;</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Footer -->
+<footer>
+  <div class="wrap foot-layout">
+    <div class="foot-brand">
+      <img src="assets/mininfer-logo.svg" alt="min(Infer)">
+      <p style="margin:0;max-width:34ch;">Minimum sufficient inference. Open-source model intelligence registry &amp; constraint router.</p>
+      <p style="margin:12px 0 0;font-size:12.5px;color:var(--muted);">MIT Licensed &middot; Python 3.11+</p>
+    </div>
+    <div class="foot-links">
+      <div class="foot-col">
+        <b>Architecture</b>
+        <a href="#what">Capabilities</a>
+        <a href="#sim">Routing Simulator</a>
+        <a href="#ledger">Economic Ledger</a>
+        <a href="#pulse">Health Probes</a>
+      </div>
+      <div class="foot-col">
+        <b>Developers</b>
+        <a href="#calculator">ROI Calculator</a>
+        <a href="#run">SDK Integration</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/zerocool909/mininfer-oss/blob/main/README.md" target="_blank">Documentation</a>
+      </div>
+      <div class="foot-col">
+        <b>Community</b>
+        <a href="https://github.com/zerocool909/mininfer-oss" target="_blank">GitHub Repo</a>
+        <a href="https://github.com/zerocool909/mininfer-oss/issues" target="_blank">Issues</a>
+        <a href="https://github.com/zerocool909/mininfer-oss/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
+        <a href="https://github.com/zerocool909/mininfer-oss/blob/main/LICENSE" target="_blank">MIT License</a>
+      </div>
+    </div>
   </div>
-</div></section>
-
-<section id="route"><div class="col sec">
-  <aside><b>05</b>One request</aside>
-  <div>
-    <h2>What happens between the prompt and the first token.</h2>
-
-    <div class="trace" aria-label="Example routing trace"><span class="c"># POST /v1/chat/completions  model=auto</span>
-<span class="b">classify</span>   intent=summarise  confidence=0.82   <span class="c">(local, no paid call)</span>
-<span class="b">filter</span>     214 deployments → 37   <span class="c">context · modality · auth · quota headroom · probe health</span>
-<span class="b">score</span>      cost ÷ p_lb per candidate, free-first
-<span class="b">cap</span>        no model above 60% of this task’s traffic
-<span class="b">dispatch</span>   <span class="g">openrouter:qwen/qwen3.8-27b:free</span>
-<span class="w">  429</span>        → exhausted for this minute, same request moves on
-<span class="b">dispatch</span>   <span class="g">vercel:poolside/laguna-s-2.1-free</span>   <span class="c">first byte in 412 ms</span>
-<span class="b">record</span>     evidence written · reputation updated · shadow trial queued (5%)</div>
-
-    <ol class="steps">
-      <li><div><h3>Classify locally.</h3><p>Intent comes from heuristics and a local model, so routing doesn’t burn a paid call to decide where to spend. Ambiguous prompts merge the profiles of the competing tasks and satisfy both.</p></div></li>
-      <li><div><h3>Filter on hard constraints.</h3><p>Context length, modality, credentials, quota headroom, and live health. Headroom is the minimum of the configured limit and what the provider’s live <code>x-ratelimit-*</code> headers last said; a provider whose last warm-tier probe failed is skipped until it recovers.</p></div></li>
-      <li><div><h3>Rank, then cap.</h3><p>Cost per success decides the order. No single model may take more than 60% of a task’s traffic, and manual pins expire after 24 hours, so the system can’t fixate.</p></div></li>
-      <li><div><h3>Fail over before the first byte.</h3><p>A 429, timeout or dropped connection moves the same request to the next ranked arm. Once streaming starts the router is committed, because a half-sent stream can’t be unsent.</p></div></li>
-      <li><div><h3>Write down what happened.</h3><p>Every outcome, including a 404 for a retired model, becomes evidence. The next decision is made against it.</p></div></li>
-    </ol>
-  </div>
-</div></section>
-
-<section id="tour"><div class="col sec">
-  <aside><b>06</b>Watch it run</aside>
-  <div>
-    <h2>Sixty seconds in the real console.</h2>
-    <p class="dek">No mockups. A headless browser drives the app, types a prompt, sends it, and waits for the answer — then the tour explains why that arm won and how to point a client at it.</p>
-
-    <figure class="runloop">
-      <video class="motion" src="assets/reel.webm" poster="assets/reel-poster.webp"
-             width="1024" height="576" autoplay muted loop playsinline preload="metadata"
-             aria-label="A five-act tour of the min(Infer) dashboard: an empty console, a prompt being typed and sent, the streamed answer, then why that arm was chosen, where the models come from, and how to run it — including a scroll down the free-model form guide."></video>
-      <img class="still" src="assets/reel-poster.webp" width="1024" height="576" loading="lazy" decoding="async"
-           alt="Still from the min(Infer) dashboard tour: the routed answer with the chosen arm, first-token time, and tokens." />
-      <figcaption>A guided tour in <b>five acts</b>, captured from the <b>real app</b> with a headless browser: an empty console, a prompt typed and sent, the streamed answer, why that arm was picked, the free-model form guide scrolled top to bottom, and how to point a client at it. Motion composed from the real screenshots (<code>app-reel</code> → HyperFrames → VP9/WebM); on-screen data is a moment in time.</figcaption>
-    </figure>
-  </div>
-</div></section>
-
-<section id="agents"><div class="col sec">
-  <aside><b>07</b>For agents</aside>
-  <div>
-    <h2>Most of an agent’s calls aren’t reasoning calls.</h2>
-    <p class="lede">Between the two steps that need judgement sit dozens that don’t: expand a tool result, classify a branch, pull fields out of a page, choose the next action, format arguments, summarise what came back, retry a 429. Multiply them by every run and the bill starts tracking the number of <b>steps</b>, not the difficulty of any one of them.</p>
-    <p>min(Infer) is the seam for that work. Point the whole agent at one OpenAI-compatible endpoint and let each step be routed on its own merits — the frontier model is not removed, it is <b>reserved</b> for the calls that need it.</p>
-
-    <table class="ledger">
-      <thead><tr><th>Agent step</th><th class="hide-s">What it needs</th><th>Where it lands</th></tr></thead>
-      <tbody>
-        <tr><td>Summarise a tool result<small>runs constantly</small></td><td class="hide-s">short output, no tools</td><td>the first free tier that clears</td></tr>
-        <tr><td>Extract fields into JSON<small>schema-bound</small></td><td class="hide-s"><code>structured</code></td><td>the cheapest structured arm</td></tr>
-        <tr><td>Choose the next action<small>tool-calling loop</small></td><td class="hide-s"><code>tools</code>, 32k</td><td>the cheapest tool-capable arm</td></tr>
-        <tr class="win"><td>Plan or synthesise a hard answer<small>rare, decisive</small></td><td class="hide-s">reasoning, 16k</td><td>the frontier arm — and only here</td></tr>
-      </tbody>
-    </table>
-    <p class="pull">The task decides which model runs — not the caller, and not a second, lesser endpoint.</p>
-    <p><b>The free factor is the mechanism, and it is measured.</b> Free-tier deployments win whenever they clear the task’s bar, and the router reads their quota headroom, so it steps to the next arm <i>before</i> the free one 429s. Ranking runs on cost per success, so a free model that fails half the time is priced as expensive as it is — what survives is what keeps completing the work. At agent scale that puts the bulk of the steps at zero marginal cost and keeps the paid tier for the few that earned it.</p>
-    <p class="note">Every step names its author: the response carries the model and provider that answered, and the decision log keeps the shortlist and the rejection reasons, so “why is the agent spending this?” has a per-call answer, not a per-invoice one.</p>
-  </div>
-</div></section>
-
-<section id="principles"><div class="col sec">
-  <aside><b>08</b>Principles</aside>
-  <div>
-    <h2>Why it behaves the way it does.</h2>
-    <dl class="pr">
-      <div><dt>Identity is separate from economics</dt><dd>The same weights are different deployments with different prices, limits and reliability. They are scored independently.</dd></div>
-      <div><dt>Prices are beliefs with a history</dt><dd>Each price is stored with when it was adopted, so a past decision is judged against what was known then. Silent price changes raise anomalies.</dd></div>
-      <div><dt>Budgets are reserved, not observed</dt><dd>A session cap reserves <code>prompt estimate + max_tokens</code> before the call, so a limit is a ceiling rather than a suggestion you overshoot by one request.</dd></div>
-      <div><dt>An error is evidence</dt><dd>When a provider retires a model, the 404 marks it uncallable and traffic reroutes. Nobody has to edit a config file at night.</dd></div>
-      <div><dt>Humans are a signal too</dt><dd>Compare mode streams two models over one connection. Your pick is recorded as a weak subjective observation alongside the automatic ones.</dd></div>
-      <div><dt>Every answer names its author</dt><dd>The reply shows which model and provider produced it, what else was shortlisted, and what it cost, speed and latency were.</dd></div>
-      <div><dt>A dead key fails on a timer</dt><dd>The optional warm-tier probe checks every configured provider on a cadence, so a revoked key or a down host leaves the candidate pool before a request spends itself on it.</dd></div>
-      <div><dt>Failures are attributed, not just counted</dt><dd>Every request is recorded whatever the outcome. A 429 or timeout is usually the provider, not the model, so the rollup demotes the gateway once instead of rediscovering the outage arm by arm &mdash; and a verdict needs a minimum sample before it is issued.</dd></div>
-      <div><dt>No model becomes the default</dt><dd>Traffic is capped per task, and the agents rotate across a free-first chain rather than pinning to whichever arm answered last. One free tier is never exhausted while the others sit idle.</dd></div>
-    </dl>
-  </div>
-</div></section>
-
-<section id="run"><div class="col sec">
-  <aside><b>09</b>Run it</aside>
-  <div>
-    <h2>Point any OpenAI-compatible client at it.</h2>
-<pre class="cmd"><span class="c"># clone and install</span>
-git clone https://github.com/zerocool909/mininfer-oss.git
-cd mininfer-oss
-python3 -m venv .venv &amp;&amp; source .venv/bin/activate
-pip install -e .
-
-<span class="c"># copy .env.example to .env, add the provider keys you have, then:</span>
-mi proxy --port 8765</pre>
-<pre class="cmd">curl http://127.0.0.1:8765/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Summarise this"}]}'</pre>
-    <p>Open <code>http://127.0.0.1:8765</code> for the dashboard: the model registry with untried, trialing and proven states, the chat playground, and the decision log. The <b>Settings &rarr; Providers</b> tab also carries the warm-tier toggle and a live health badge per provider. The README covers configuration, quotas and the full API contract.</p>
-  </div>
-</div></section>
-
-<footer><div class="col">
-  <span>min(Infer) · minimum sufficient inference · MIT licensed</span>
-  <span><a href="https://github.com/zerocool909/mininfer-oss">Source</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/README.md">README</a> &nbsp;·&nbsp; <a href="https://github.com/zerocool909/mininfer-oss/blob/main/CONTRIBUTING.md">Contribute</a></span>
-</div></footer>
+</footer>
 
 <script>
-  // Wilson lower bound — same formula as wilson_lb() in mininfer/router.py (z = 1.96)
-  function wilson(w, n, z){
-    if(n<=0) return 0;
-    const p=w/n, z2=z*z, d=1+z2/n;
-    const c=p+z2/(2*n), m=z*Math.sqrt((p*(1-p)+z2/(4*n))/n);
-    return Math.max(0,(c-m)/d);
+  // 1. Scroll Progress Bar
+  (function(){
+    var bar = document.getElementById('progress');
+    if(!bar) return;
+    function onScroll(){
+      var h = document.documentElement.scrollHeight - window.innerHeight;
+      bar.style.transform = 'scaleX(' + (h > 0 ? Math.min(1, window.scrollY / h) : 0) + ')';
+    }
+    window.addEventListener('scroll', onScroll, {passive: true});
+    window.addEventListener('resize', onScroll, {passive: true});
+  })();
+
+  // 2. Mobile Menu Toggle
+  (function(){
+    var btn = document.querySelector('.menu-btn');
+    var links = document.getElementById('navlinks');
+    if(!btn || !links) return;
+    btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      var open = links.classList.toggle('open');
+      btn.setAttribute('aria-expanded', String(open));
+      btn.textContent = open ? 'Close' : 'Menu';
+    });
+    document.addEventListener('click', function(){
+      if(links.classList.contains('open')){
+        links.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+        btn.textContent = 'Menu';
+      }
+    });
+  })();
+
+  // 3. Scroll Reveal via IntersectionObserver
+  (function(){
+    if(!('IntersectionObserver' in window)) return;
+    var rvs = document.querySelectorAll('.rv');
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          e.target.classList.add('in');
+          io.unobserve(e.target);
+        }
+      });
+    }, {threshold: 0.08, rootMargin: '0px 0px -40px 0px'});
+    rvs.forEach(function(el){ io.observe(el); });
+  })();
+
+  // 4. Count-Up Animated Statistics
+  (function(){
+    var nums = document.querySelectorAll('[data-count]');
+    if(!nums.length || !('IntersectionObserver' in window)) return;
+    function fmt(val, target, sfx){
+      if(target >= 100000) return (val/1000).toFixed(0) + 'k' + sfx;
+      if(target >= 1000) return Math.round(val).toLocaleString('en-US');
+      return String(Math.round(val)) + sfx;
+    }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(!e.isIntersecting) return;
+        io.unobserve(e.target);
+        var el = e.target, target = +el.dataset.count, pre = el.dataset.prefix || '', sfx = el.dataset.suffix || '';
+        var t0 = null, dur = 1300;
+        function step(ts){
+          if(!t0) t0 = ts;
+          var p = Math.min(1, (ts - t0) / dur);
+          var eased = 1 - Math.pow(1 - p, 4);
+          el.textContent = pre + fmt(target * eased, target, sfx);
+          if(p < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+      });
+    }, {threshold: 0.5});
+    nums.forEach(function(el){ io.observe(el); });
+  })();
+
+  // 5. Quickstart Tab Switcher (Git vs Docker)
+  function switchQs(type){
+    var isGit = type === 'git';
+    document.getElementById('tab-git').classList.toggle('active', isGit);
+    document.getElementById('tab-docker').classList.toggle('active', !isGit);
+    document.getElementById('qs-git-panel').hidden = !isGit;
+    document.getElementById('qs-docker-panel').hidden = isGit;
   }
-  const $=id=>document.getElementById(id);
-  function update(){
-    let n=Math.max(1,parseInt($('trials').value)||1);
-    let w=Math.min(n,Math.max(0,parseInt($('wins').value)||0));
-    let fl=Math.min(1,Math.max(0,parseFloat($('floor').value)||0));
-    const raw=w/n, lb=wilson(w,n,1.96), ok=lb>=fl;
-    $('raw').textContent=Math.round(raw*100)+'%';
-    $('lb').textContent=(lb*100).toFixed(1)+'%';
-    $('fill').style.width=(lb*100)+'%';
-    $('fill').classList.toggle('ok',ok);
-    $('naive').style.left=(raw*100)+'%';
-    $('floorline').style.left=(fl*100)+'%';
-    const v=$('verdict');
-    v.classList.toggle('no',!ok);
+
+  // 6. Code Tabs Switcher & Copy
+  var activeLang = 'py';
+  function switchCode(lang){
+    activeLang = lang;
+    ['py','ts','curl','lc'].forEach(function(k){
+      document.getElementById('btn-' + k).classList.toggle('active', k === lang);
+      document.getElementById('code-' + k).hidden = (k !== lang);
+    });
+  }
+
+  function copyCurrentCode(){
+    var el = document.getElementById('code-' + activeLang);
+    if(!el) return;
+    var text = el.innerText || el.textContent;
+    var btn = document.querySelector('.ct-copy-btn');
+    var orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(function(){ btn.textContent = orig; }, 1400);
+    if(navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(text);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); }catch(err){}
+      document.body.removeChild(ta);
+    }
+  }
+
+  // 7. Clipboard Copy Helper for Quickstart
+  document.addEventListener('click', function(e){
+    var btn = e.target.closest ? e.target.closest('[data-copy]') : null;
+    if(!btn) return;
+    var text = btn.getAttribute('data-copy');
+    if(!text) return;
+    function done(){
+      var orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      btn.classList.add('done');
+      setTimeout(function(){ btn.textContent = orig; btn.classList.remove('done'); }, 1500);
+    }
+    if(navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(text).then(done);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try{ document.execCommand('copy'); }catch(err){}
+      document.body.removeChild(ta); done();
+    }
+  });
+
+  // 8. Wilson Score Lower Bound Formula
+  function calcWilson(w, n, z){
+    if(n <= 0) return 0;
+    var p = w / n, z2 = z * z, d = 1 + z2 / n;
+    var c = p + z2 / (2 * n), m = z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n);
+    return Math.max(0, (c - m) / d);
+  }
+  function updateWilsonGauge(){
+    var n = Math.max(1, parseInt(document.getElementById('trials').value) || 1);
+    var w = Math.min(n, Math.max(0, parseInt(document.getElementById('wins').value) || 0));
+    var fl = Math.min(1, Math.max(0, parseFloat(document.getElementById('floor').value) || 0));
+    var raw = w / n, lb = calcWilson(w, n, 1.96), ok = lb >= fl;
+    document.getElementById('raw').textContent = Math.round(raw * 100) + '%';
+    document.getElementById('lb').textContent = (lb * 100).toFixed(1) + '%';
+    document.getElementById('fill').style.width = (lb * 100) + '%';
+    document.getElementById('fill').classList.toggle('ok', ok);
+    document.getElementById('naive').style.left = (raw * 100) + '%';
+    document.getElementById('floorline').style.left = (fl * 100) + '%';
+    var v = document.getElementById('verdict');
+    v.classList.toggle('no', !ok);
     v.innerHTML = ok
-      ? '<strong>Cleared the floor.</strong> '+n+' trials is enough evidence for this model to take real traffic on this task.'
-      : '<strong>Not yet.</strong> '+(raw>=fl?'The raw rate looks fine, but '+n+' trials can’t rule out luck. ':'The lower bound is under the floor. ')+'It stays in the shadow-trial lane until it earns more evidence.';
+      ? '<strong>Cleared the floor.</strong> ' + n + ' trials provides sufficient statistical certainty to dispatch live user traffic.'
+      : '<strong>Below floor.</strong> ' + (raw >= fl ? 'Raw rate is high, but ' + n + ' trials cannot rule out lucky variance. ' : 'Lower bound falls below threshold. ') + 'Candidate stays in the shadow trial lane.';
   }
-  ['wins','trials','floor'].forEach(id=>$(id).addEventListener('input',update));
-  update();
+  ['wins','trials','floor'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) el.addEventListener('input', updateWilsonGauge);
+  });
+  updateWilsonGauge();
+
+  // 9. Interactive ROI / Cost Calculator
+  function updateCalculator(){
+    var reqs = parseInt(document.getElementById('calcReqSlider').value);
+    document.getElementById('calcReqVal').textContent = reqs.toLocaleString('en-US');
+    
+    var modelRate = 6.0; // $/M
+    var m = document.getElementById('calcModelSelect').value;
+    if(m === 'gpt4o') modelRate = 5.0;
+    if(m === 'mini') modelRate = 0.60;
+
+    var workload = document.getElementById('calcWorkloadSelect').value;
+    var freePct = 0.75;
+    if(workload === 'rag') freePct = 0.85;
+    if(workload === 'balanced') freePct = 0.60;
+
+    var avgTokensPerReq = 1200; // prompt + completion
+    var totalTokensM = (reqs * avgTokensPerReq) / 1000000;
+    var unoptimizedBill = totalTokensM * modelRate;
+
+    var mininferBill = (totalTokensM * (1 - freePct)) * modelRate + (totalTokensM * freePct * 0.05);
+    var savings = Math.max(0, unoptimizedBill - mininferBill);
+    var pctSaved = (savings / unoptimizedBill) * 100;
+
+    document.getElementById('calcSavingsDollar').textContent = '$' + Math.round(savings).toLocaleString('en-US');
+    document.getElementById('calcPercent').textContent = pctSaved.toFixed(1) + '%';
+    document.getElementById('cbbFree').style.width = (freePct * 100) + '%';
+    document.getElementById('cbbPaid').style.width = ((1 - freePct) * 100) + '%';
+    document.getElementById('legFreePct').textContent = Math.round(freePct * 100) + '%';
+    document.getElementById('legPaidPct').textContent = Math.round((1 - freePct) * 100) + '%';
+  }
+  updateCalculator();
+
+  // 10. Interactive Routing Simulator
+  var SIM_PRESETS = {
+    summary: {
+      prompt: '"Summarize the latest 15 execution errors from crawler run #402 into bullet points."',
+      winner: 'openrouter:qwen/qwen3.8-27b:free',
+      cost: '$0.000000',
+      baseLatency: 284,
+      savings: '100% saved (Free Tier Cleared Floor)',
+      steps: [
+        '<span class="c"># POST /v1/chat/completions  model=auto</span>',
+        '<span class="b">classify</span>   intent=summarize  confidence=0.94  <span class="c">(local heuristic classifier)</span>',
+        '<span class="b">filter</span>     214 deployments \u2192 42 survivors  <span class="c">(context=4k, free_first=true)</span>',
+        '<span class="b">score</span>      cost / p_lb sorted cheapest-first  <span class="c">(lower-bound \u2265 0.70 floor)</span>',
+        '<span class="b">dispatch</span>   <span class="g">openrouter:qwen/qwen3.8-27b:free</span>  <span class="c">\u2192 HTTP 200 in 284ms</span>',
+        '<span class="g">complete</span>   348 tokens streamed \u00b7 $0.000000 billed  <span class="c">(evidence logged)</span>'
+      ]
+    },
+    json: {
+      prompt: '"Extract fields {vendor, invoice_number, items, total_usd} from scanned receipt text into JSON."',
+      winner: 'deepinfra:meta-llama/llama-3.3-70b-instruct',
+      cost: '$0.000210',
+      baseLatency: 320,
+      savings: '96.2% saved vs GPT-4o',
+      steps: [
+        '<span class="c"># POST /v1/chat/completions  model=auto</span>',
+        '<span class="b">classify</span>   schema_bound=true  modality=text  <span class="c">(gate: structured_outputs)</span>',
+        '<span class="b">filter</span>     214 deployments \u2192 18 survivors  <span class="c">(must support json_object mode)</span>',
+        '<span class="w">notice</span>     free-tier A failed schema gate \u2192 eliminated from candidate shortlist',
+        '<span class="b">dispatch</span>   <span class="g">deepinfra:meta-llama/llama-3.3-70b-instruct</span>  <span class="c">\u2192 HTTP 200 in 320ms</span>',
+        '<span class="g">complete</span>   valid JSON \u00b7 412 tokens \u00b7 $0.000210 billed  <span class="c">(reputation updated)</span>'
+      ]
+    },
+    agent: {
+      prompt: '"Evaluate system headroom, check provider rate-limit headers, and invoke query_provider_health()."',
+      winner: 'groq:llama-3.3-70b-versatile',
+      cost: '$0.000590',
+      baseLatency: 185,
+      savings: '91.5% saved vs Claude Sonnet',
+      steps: [
+        '<span class="c"># POST /v1/chat/completions  model=auto</span>',
+        '<span class="b">classify</span>   task=agent_action  tools=[query_health]  <span class="c">(context=32k required)</span>',
+        '<span class="b">filter</span>     214 deployments \u2192 24 tool-capable survivors',
+        '<span class="b">score</span>      optimizing for first-token latency &amp; function accuracy',
+        '<span class="b">dispatch</span>   <span class="g">groq:llama-3.3-70b-versatile</span>  <span class="c">\u2192 185ms first byte</span>',
+        '<span class="g">complete</span>   tool_calls emitted successfully \u00b7 $0.000590 billed'
+      ]
+    },
+    reasoning: {
+      prompt: '"Synthesize an active-active fault-tolerant multi-region failover architecture for database proxy."',
+      winner: 'anthropic:claude-3-5-sonnet-20241022',
+      cost: '$0.024000',
+      baseLatency: 780,
+      savings: 'Quality Floor Enforced (Frontier Required)',
+      steps: [
+        '<span class="c"># POST /v1/chat/completions  model=auto</span>',
+        '<span class="b">classify</span>   reasoning_depth=complex  floor=0.92  <span class="c">(high-difficulty tier)</span>',
+        '<span class="w">gate</span>       free &amp; micro tiers fail lower-bound (lb < 0.92) \u2192 bypassed',
+        '<span class="b">shortlist</span>  reserving frontier model flagship',
+        '<span class="b">dispatch</span>   <span class="g">anthropic:claude-3-5-sonnet-20241022</span>  <span class="c">\u2192 HTTP 200 in 780ms</span>',
+        '<span class="g">complete</span>   multi-stage architectural synthesis generated \u00b7 $0.024 billed'
+      ]
+    }
+  };
+
+  var simTimer = null;
+  var simRunning = false;
+  function runSimulation(animate){
+    if(simRunning) return;
+    var key = document.getElementById('simTaskSelect').value;
+    var data = SIM_PRESETS[key] || SIM_PRESETS.summary;
+
+    var promptEl = document.getElementById('simPromptTxt');
+    if(promptEl) promptEl.textContent = data.prompt;
+
+    var term = document.getElementById('simTerminal');
+    var btn = document.getElementById('simRunBtn');
+    var winEl = document.getElementById('simWinner');
+    var costEl = document.getElementById('simCost');
+    var latEl = document.getElementById('simLatency');
+    var savEl = document.getElementById('simSavings');
+
+    // Natural latency variance so every click feels live
+    var jitter = Math.floor(Math.random() * 24) - 12;
+    var currentLatency = Math.max(90, data.baseLatency + jitter) + ' ms';
+
+    if(!animate){
+      term.innerHTML = data.steps.join('\n');
+      winEl.textContent = data.winner;
+      costEl.textContent = data.cost;
+      latEl.textContent = currentLatency;
+      savEl.textContent = data.savings;
+      return;
+    }
+
+    simRunning = true;
+    if(btn){
+      btn.disabled = true;
+      btn.innerHTML = 'Routing\u2026';
+    }
+
+    // Evaluating indicator
+    winEl.innerHTML = '<span style="color:var(--muted);font-weight:400;">filtering\u2026</span>';
+    costEl.innerHTML = '<span style="color:var(--muted);font-weight:400;">calculating\u2026</span>';
+    latEl.innerHTML = '<span style="color:var(--muted);font-weight:400;">measuring\u2026</span>';
+    savEl.innerHTML = '<span style="color:var(--muted);font-weight:400;">comparing\u2026</span>';
+    term.innerHTML = '';
+
+    var idx = 0;
+    function printNextStep(){
+      if(idx < data.steps.length){
+        term.innerHTML += (idx > 0 ? '\n' : '') + data.steps[idx];
+        term.scrollTop = term.scrollHeight;
+        idx++;
+        simTimer = setTimeout(printNextStep, 130);
+      } else {
+        winEl.textContent = data.winner;
+        costEl.textContent = data.cost;
+        latEl.textContent = currentLatency;
+        savEl.textContent = data.savings;
+
+        [winEl, costEl, latEl, savEl].forEach(function(el){
+          el.classList.remove('highlight');
+          void el.offsetWidth;
+          el.classList.add('highlight');
+        });
+
+        if(btn){
+          btn.innerHTML = 'Routed \u2713';
+          setTimeout(function(){
+            btn.innerHTML = 'Re-route Prompt \u25b6';
+            btn.disabled = false;
+            simRunning = false;
+          }, 600);
+        } else {
+          simRunning = false;
+        }
+      }
+    }
+    printNextStep();
+  }
+  runSimulation(false);
+
+  // 11. Nav ScrollSpy
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.links a[href^="#"]'));
+    var targets = links.map(function(a){
+      return { a: a, el: document.querySelector(a.getAttribute('href')) };
+    }).filter(function(x){ return x.el; });
+    var cur = null;
+    window.addEventListener('scroll', function(){
+      var top = window.scrollY + 100;
+      var best = null;
+      targets.forEach(function(t){ if(t.el.offsetTop <= top) best = t; });
+      if(best !== cur){
+        if(cur) cur.a.classList.remove('on');
+        if(best){ best.a.classList.add('on'); cur = best; }
+      }
+    }, {passive: true});
+  })();
 </script>
 </body>
 </html>
