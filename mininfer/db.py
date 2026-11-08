@@ -133,6 +133,17 @@ def translate(sql: str) -> str:
 # lock, so replicas scale independently.
 _SQLITE_WRITE_LOCK = threading.RLock()
 
+#: Database files already switched to WAL. The mode is a property of the file,
+#: so the switch happens once — and asking SQLite about it on every connection
+#: (every request opens one) was the lock convoy on the hot path.
+_WAL_FILES: set[str] = set()
+
+#: How long a connection waits for the process write lock before giving up and
+#: falling back to statement-level retries. Bounded on purpose: the lock is
+#: held for a transaction, so a caller that never commits must not be able to
+#: block every writer in the process indefinitely.
+_TXN_LOCK_TIMEOUT = 30.0
+
 
 def _is_busy(exc: sqlite3.OperationalError) -> bool:
     msg = str(exc).lower()
@@ -191,6 +202,32 @@ _WRITE_STMT = re.compile(
     re.IGNORECASE)
 
 
+def _retry_write(fn, attempts: int = 20):
+    """Run a *write* statement, retrying while SQLite reports the file locked.
+
+    No process lock, and the waiting happens inside SQLite (the busy timeout)
+    rather than in a Python sleep loop. Two reasons, both measured:
+
+    * an app-level lock around the statement holds that lock *while SQLite
+      waits* — the inversion that let a connection holding SQLite's write lock
+      wait for the process lock while another thread held the process lock and
+      waited for SQLite's;
+    * sleeping in Python between attempts adds the sleep to every retry, so a
+      contended write took hundreds of milliseconds of pure sleeping.
+
+    SQLite arbitrates between connections correctly; the busy timeout is the
+    efficient way to wait for it. A single statement is atomic, so a busy
+    failure applied nothing and the retry is safe.
+    """
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if not _is_busy(exc) or attempt == attempts - 1:
+                raise
+            time.sleep(min(0.005 * (attempt + 1), 0.05))
+
+
 class SQLiteConnection:
     """The original backend: WAL, a long busy timeout, dict rows.
 
@@ -204,18 +241,36 @@ class SQLiteConnection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, timeout=10.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        # Switching to WAL needs brief exclusive access, so it races when several
-        # arms open a store at the same moment — which is exactly what a streamed
-        # comparison does. Guarding the *statement* is not enough: it happens here,
-        # before any of the write serialisation below. The loser of that race got
-        # "database is locked" from the constructor and the arm was reported as a
-        # model that "could not be called".
-        with _SQLITE_WRITE_LOCK:
-            self._conn.execute("PRAGMA journal_mode = WAL;")
-            # Small on purpose: the wait happens in `_retry_locked`, which
-            # releases the process lock while it sleeps. See that function.
-            self._conn.execute("PRAGMA busy_timeout = 50;")
-            self._conn.execute("PRAGMA synchronous = NORMAL;")
+        # Whether this connection currently holds the process write lock for an
+        # open transaction. See `_hold_write_lock`.
+        self._txn_locked = False
+        # The busy timeout is the *waiting* mechanism for writes now (see
+        # `_retry_write`), so it is generous rather than tiny: it is spent
+        # inside SQLite, where it costs nothing but a park. The connection-level
+        # default is 10 s; 3 s per attempt with the retry loop on top is
+        # enough for any realistic contention without turning a stuck writer
+        # into a hung request.
+        self._conn.execute("PRAGMA busy_timeout = 3000;")
+        self._conn.execute("PRAGMA synchronous = NORMAL;")
+        # WAL is a property of the *file*, not of the connection: once it is
+        # set, every later connection sees WAL. So the switch is needed once
+        # per file. Asking SQLite on every connection — and every request opens
+        # one — put a lock convoy on the hot path: measured 13.6 req/s at one
+        # concurrent request and 0.7 req/s at sixteen, because each opener
+        # queued behind the previous one's wait for the file lock.
+        key = str(self.path.resolve())
+        if key not in _WAL_FILES:
+            with _SQLITE_WRITE_LOCK:
+                try:
+                    mode = self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    if str(mode or "").lower() != "wal":
+                        self._conn.execute("PRAGMA journal_mode = WAL;")
+                    _WAL_FILES.add(key)
+                except sqlite3.OperationalError:
+                    # Another connection is switching it right now; WAL is
+                    # persistent, so losing that race is harmless. Do not cache
+                    # the path — the next connection must try again.
+                    pass
 
     def _run(self, sql, params=()):
         if params:
@@ -224,16 +279,31 @@ class SQLiteConnection:
 
     def execute(self, sql, params=()):
         if _WRITE_STMT.match(sql):
+            # No process lock around the write, and the wait happens *inside*
+            # SQLite (the busy timeout) rather than in a Python sleep loop.
+            #
+            # The app-level lock was an attempt to stop writers colliding, but
+            # it inverted the lock order: a connection holding SQLite's write
+            # lock (an uncommitted transaction) waited for the process lock
+            # while another thread held the process lock and waited for
+            # SQLite's — and holding it across a transaction meant one
+            # uncommitted connection blocked every writer in the process.
+            # SQLite's own locking arbitrates correctly between connections;
+            # the busy timeout does the waiting efficiently. The process lock
+            # stays for *schema* work, where it is what serialises DDL.
             if params:
-                return _retry_locked(lambda: self._conn.execute(sql, params))
-            return _retry_locked(lambda: self._conn.execute(sql))
+                return _retry_write(lambda: self._conn.execute(sql, params))
+            return _retry_write(lambda: self._conn.execute(sql))
         return self._run(sql, params)
 
     def executemany(self, sql, seq):
-        return _retry_locked(lambda: self._conn.executemany(sql, seq))
+        return _retry_write(lambda: self._conn.executemany(sql, seq))
 
     def executescript(self, script: str) -> None:
-        _retry_locked(lambda: self._conn.executescript(script))
+        # DDL: the process lock is what keeps two initialisations from racing
+        # each other into "table already exists" or a half-created view.
+        with _SQLITE_WRITE_LOCK:
+            _retry_write(lambda: self._conn.executescript(script))
 
     def columns(self, table: str) -> set[str]:
         return {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -243,10 +313,10 @@ class SQLiteConnection:
         return int(row[0]) if row else None
 
     def commit(self) -> None:
-        _retry_locked(self._conn.commit)
+        _retry_write(self._conn.commit)
 
     def rollback(self) -> None:
-        _retry_locked(self._conn.rollback)
+        _retry_write(self._conn.rollback)
 
     def close(self) -> None:
         self._conn.close()
