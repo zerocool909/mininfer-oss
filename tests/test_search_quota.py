@@ -6,6 +6,8 @@ provider's own allowance does.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi.testclient import TestClient
 
 from mininfer.store import Store
@@ -66,15 +68,22 @@ def _env(tmp_path, monkeypatch, *, daily: int = 0) -> TestClient:
 
 
 def test_daily_search_usage_accumulates_per_tenant_and_day(tmp_path):
+    # The day keys are derived from now, not pinned: the point of the test is
+    # that a day is its own bucket, and a pinned date makes that true only
+    # until the calendar moves past it.
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (dt.datetime.now(dt.timezone.utc)
+                 - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+
     s = Store(tmp_path / "q.db")
-    assert s.daily_search_usage("acme", "2026-10-09")["searches"] == 0
-    s.add_daily_search_usage("acme", "2026-10-09", searches=1, cost_usd=0.0)
-    s.add_daily_search_usage("acme", "2026-10-09", searches=1, cost_usd=0.008)
-    u = s.daily_search_usage("acme", "2026-10-09")
+    assert s.daily_search_usage("acme", yesterday)["searches"] == 0
+    s.add_daily_search_usage("acme", yesterday, searches=1, cost_usd=0.0)
+    s.add_daily_search_usage("acme", yesterday, searches=1, cost_usd=0.008)
+    u = s.daily_search_usage("acme", yesterday)
     assert u["searches"] == 2 and u["cost_usd"] == 0.008
     # A different tenant, and a different day, are their own buckets.
-    assert s.daily_search_usage("acme", "2026-10-10")["searches"] == 0
-    assert s.daily_search_usage("other", "2026-10-09")["searches"] == 0
+    assert s.daily_search_usage("acme", today)["searches"] == 0
+    assert s.daily_search_usage("other", yesterday)["searches"] == 0
     s.close()
 
 
