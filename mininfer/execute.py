@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import time
 from dataclasses import dataclass, field
@@ -25,6 +26,26 @@ from dataclasses import dataclass, field
 import httpx
 
 from .fetch import _verify as _tls_verify
+
+#: A reasoning model's visible thinking block. Several providers (Groq's qwen
+#: builds among them) put it *in the answer*, not in a separate field — so a
+#: caller who asked for "just the number" could receive a truncated think
+#: trace instead. The block is removed from the answer; if the block was the
+#: whole answer, what is left is empty and the arm is treated as having
+#: produced no usable content (so the chain falls through to another arm).
+_REASONING_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove a visible reasoning block from an answer.
+
+    Only the block is removed: a model that reasons and then answers keeps its
+    answer, and a model whose entire visible output was reasoning leaves
+    nothing — which is the honest outcome, and the caller's next arm is tried.
+    """
+    if not text or "<think" not in text.lower():
+        return text
+    return _REASONING_BLOCK.sub("", text)
 
 # base_url -> (api_key_env, extra headers). The `/chat/completions` path is
 # appended at call time. key_env=None means the endpoint is genuinely keyless.
@@ -441,7 +462,7 @@ def call_body(
         # A tool-call turn may omit `content` entirely, so read it defensively.
         choice = data["choices"][0]
         message = choice.get("message") or {}
-        text = message.get("content") or ""
+        text = strip_reasoning(message.get("content") or "")
         finish_reason = choice.get("finish_reason")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         return CallResult(deploy_id, error_class="bad_output", latency_ms=latency_ms,
