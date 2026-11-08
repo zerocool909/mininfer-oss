@@ -46,7 +46,7 @@ from . import env as env_mod
 from .env import load_env
 from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
                       open_stream, resolve_endpoint, ENDPOINTS, available_providers,
-                      _network_class, _TLS_HINT)
+                      _network_class, _TLS_HINT, strip_reasoning)
 from .fetch import utcnow, _verify as _tls_verify
 from .quota import classify_429, describe as quota_describe, record_from_headers
 from . import quota as quota_mod
@@ -192,9 +192,11 @@ app.add_middleware(
 @app.middleware("http")
 async def _guard(request: Request, call_next):
     cfg = auth_mod.load_config()
-    if not cfg.enabled:
-        return await call_next(request)
-
+    # The body cap applies whenever it is configured — *not* only when access
+    # control is on. It used to sit behind `cfg.enabled`, so an open
+    # deployment (no `MI_API_KEYS`, no admin token) accepted an arbitrarily
+    # large body: the cap is an abuse guard, and abuse does not require
+    # authentication.
     if cfg.max_body_bytes:
         try:
             declared = int(request.headers.get("content-length") or 0)
@@ -205,6 +207,8 @@ async def _guard(request: Request, call_next):
                 status_code=413,
                 content={"error": {"message": f"body exceeds {cfg.max_body_bytes} bytes",
                                    "type": "invalid_request_error", "code": "request_too_large"}})
+    if not cfg.enabled:
+        return await call_next(request)
 
     kind = auth_mod.classify(request.url.path)
     if kind == "public":
@@ -696,11 +700,22 @@ def try_fallbacks(
             res = CallResult(did, error_class="internal_error",
                              error_detail=f"{type(exc).__name__}: {exc}")
         # An HTTP 200 with no usable text and no tool call cannot serve the caller,
-        # so it is a failed attempt and must fall through like a 429 would.
-        if res.ok and not (res.text or "").strip() and not _has_tool_calls(res):
-            res = CallResult(did, error_class="empty_content",
-                             latency_ms=res.latency_ms, tokens_in=res.tokens_in,
-                             tokens_out=res.tokens_out, raw=res.raw)
+        # so it is a failed attempt and must fall through like a 429 would. A
+        # *visible reasoning block* counts as no usable text: it is the model's
+        # thinking, not the answer (and `execute` already strips it from the
+        # wire; this is the second gate, for a result built anywhere else).
+        if res.ok:
+            cleaned = strip_reasoning(res.text or "")
+            if cleaned != res.text:
+                res = CallResult(did, text=cleaned, ok=res.ok,
+                                 latency_ms=res.latency_ms, tokens_in=res.tokens_in,
+                                 tokens_out=res.tokens_out, raw=res.raw,
+                                 error_class=res.error_class,
+                                 error_detail=res.error_detail)
+            if not cleaned.strip() and not _has_tool_calls(res):
+                res = CallResult(did, error_class="empty_content",
+                                 latency_ms=res.latency_ms, tokens_in=res.tokens_in,
+                                 tokens_out=res.tokens_out, raw=res.raw)
         attempts.append(Attempt(did, res.ok, res.error_class, res.latency_ms,
                                 res.tokens_in, res.tokens_out, res.error_detail))
         if store is not None:
@@ -830,9 +845,13 @@ def _chat_response(
     finish = "stop"
     try:
         m = raw["choices"][0]["message"]
-        message = {"role": "assistant", "content": m.get("content") or ""}
-        # Tool calls (and reasoning side-channels) pass through untouched — pi is
-        # an agent and needs its tool_calls back verbatim.
+        # The content is the *cleaned* text (`res.text`), not the raw one: some
+        # providers put the model's reasoning inside `content` instead of the
+        # `reasoning` channel, and the caller asked a question, not for a
+        # think-trace. Tool calls and the reasoning side-channels still pass
+        # through untouched — pi is an agent and needs its tool_calls back
+        # verbatim.
+        message = {"role": "assistant", "content": res.text}
         for k in ("tool_calls", "function_call", "reasoning", "reasoning_content"):
             if m.get(k) is not None:
                 message[k] = m[k]
@@ -898,7 +917,10 @@ def _options_response(
         finish = "stop"
         try:
             m = raw["choices"][0]["message"]
-            message = {"role": "assistant", "content": m.get("content") or ""}
+            # The cleaned text, for the same reason as `_chat_response`: a
+            # provider that put its reasoning in `content` must not hand the
+            # caller a think-trace.
+            message = {"role": "assistant", "content": res.text}
             for k in ("tool_calls", "function_call", "reasoning", "reasoning_content"):
                 if m.get(k) is not None:
                     message[k] = m[k]
@@ -998,7 +1020,53 @@ def _all_failed(attempts: list[Attempt], res: CallResult, decision_id: int | Non
 
 @app.get("/healthz", tags=["operator"])
 def healthz() -> dict:
+    """Liveness: the process is up.
+
+    Deliberately says nothing about the registry — a liveness probe that fails
+    on a *dependency* restarts a process that cannot fix the dependency.
+    Whether this instance can actually serve a request is `/readyz`.
+    """
     return {"ok": True, "service": "mininfer"}
+
+
+@app.get("/readyz", tags=["operator"])
+def readyz():
+    """Readiness: can this instance actually serve a request?
+
+    The failure this exists for: the proxy booted while another process held
+    the registry, the schema initialisation was interrupted, and the server
+    answered `/healthz` with `{"ok": true}` while *every* routed request
+    returned 500 — a green health check on a service that cannot serve. An
+    orchestrator reading `/healthz` had no reason to restart the thing that
+    needed restarting.
+
+    Readiness asks the question that matters: is the registry structurally
+    sound and queryable? An empty registry is ready (it simply has not been
+    ingested yet); a registry missing the objects the router needs is not.
+    """
+    try:
+        store = _store()
+    except Exception as exc:  # noqa: BLE001 - an unreadable registry is not ready
+        return JSONResponse(
+            {"ok": False, "error": "registry_unreadable",
+             "detail": f"{type(exc).__name__}: {exc}"},
+            status_code=503)
+    try:
+        if not store.schema_complete():
+            return JSONResponse(
+                {"ok": False, "error": "registry_schema_incomplete",
+                 "detail": "the registry is missing objects the router needs; "
+                           "it will be repaired on the next write"},
+                status_code=503)
+        counts = store.counts()
+    except Exception as exc:  # noqa: BLE001 - a failed query is not ready
+        return JSONResponse(
+            {"ok": False, "error": "registry_unqueryable",
+             "detail": f"{type(exc).__name__}: {exc}"},
+            status_code=503)
+    finally:
+        store.close()
+    return {"ok": True, "service": "mininfer", "registry": counts}
 
 
 @app.get("/v1/models", tags=["catalog"])
@@ -4191,9 +4259,15 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
                         current = nxt
                         continue
                     break
-                if err_class is None and not parts and not tool_turn:
-                    # Relayed blank stream: record it as the failure it is.
-                    err_class = "empty_content"
+                if err_class is None and not tool_turn:
+                    # A stream whose only content was a visible reasoning block
+                    # is not an answer. The caller has seen the trace, but the
+                    # *arm* produced nothing usable, so it is recorded as the
+                    # failure it is — which is what demotes it next time.
+                    # (The non-streaming path strips the block before this
+                    # question is even asked; a stream cannot un-say it.)
+                    if not strip_reasoning("".join(parts)).strip():
+                        err_class = "empty_content"
                 ok = err_class is None
                 yield "data: [DONE]\n\n"
             finally:

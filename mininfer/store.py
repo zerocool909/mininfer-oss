@@ -21,6 +21,7 @@ import json
 import os
 import pathlib
 import threading
+import time
 from typing import Any, Iterable
 
 from . import db
@@ -995,6 +996,22 @@ _INIT_GUARD = threading.Lock()
 # AUTOINCREMENT).
 _PG_SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "supabase" / "schema.sql"
 
+#: The objects the router cannot work without. A registry missing one of these is
+#: not a registry with fewer models — it is a registry that cannot answer, and
+#: every request against it fails with `no such table`.
+_SCHEMA_OBJECTS = (
+    "deployments", "weights", "observations", "quota_buckets", "sessions",
+    "weights_resolved", "deployments_priced", "routing_stats",
+)
+
+#: How often a process re-checks that the schema is still complete. The check is
+#: a catalogue lookup, and the failure it catches — a half-initialised registry
+#: that answers `/healthz` and then 500s every request — is invisible without it.
+_SCHEMA_RECHECK_SECONDS = 60.0
+
+#: When each database was last verified complete, by resolved path.
+_SCHEMA_CHECKED: dict[str, float] = {}
+
 
 class Store:
     def __init__(self, path: str | pathlib.Path = "mininfer.db"):
@@ -1008,12 +1025,81 @@ class Store:
         if key not in _INITIALIZED_DBS:
             with _INIT_GUARD:
                 if key not in _INITIALIZED_DBS:
-                    ddl = (DDL if not db.is_postgres(path)
-                           else _PG_SCHEMA.read_text(encoding="utf-8"))
-                    self.conn.executescript(ddl)
-                    self._migrate()
-                    self.conn.commit()
+                    self._ensure_schema()
                     _INITIALIZED_DBS.add(key)
+                    _SCHEMA_CHECKED[key] = time.monotonic()
+            return
+        # The flag says "this process initialised that registry once". It does
+        # not say the schema is *still* there: a restored file, a registry
+        # written by an older release, or an init that was interrupted can all
+        # leave it without its views — and the symptom is a proxy that answers
+        # `/healthz` and then 500s every request. So the flag is a hint, not
+        # proof: verify on every open, and repair what is missing.
+        #
+        # The check is one catalogue lookup against an indexed view, which is
+        # cheaper than the routing query that follows it.
+        if self._missing_objects():
+            with _INIT_GUARD:
+                if self._missing_objects():
+                    self._ensure_schema()
+        _SCHEMA_CHECKED[key] = time.monotonic()
+
+    def _missing_objects(self) -> set[str] | None:
+        """The critical objects that are missing — or `None` if unknown.
+
+        "The catalogue could not be read" is not "the objects are missing", and
+        the difference matters: a catalogue read that fails because another
+        thread holds the write lock must not be read as a broken schema, or
+        every open would launch a DDL re-run and make the contention worse
+        than the problem it is checking for.
+        """
+        try:
+            if db.is_postgres(self.target):
+                rows = self.conn.execute(
+                    "SELECT table_name AS name FROM information_schema.tables "
+                    "WHERE table_schema='public'").fetchall()
+                have = {r["name"] for r in rows}
+            else:
+                rows = self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name IN (%s)"
+                    % ",".join("?" * len(_SCHEMA_OBJECTS)),
+                    _SCHEMA_OBJECTS).fetchall()
+                have = {r["name"] for r in rows}
+        except Exception:
+            return None
+        return set(_SCHEMA_OBJECTS) - have
+
+    def schema_complete(self) -> bool:
+        """Are the objects the router needs actually present?
+
+        `CREATE ... IF NOT EXISTS` makes the DDL idempotent, so a *partial* run
+        is repairable — but only if something notices. The process-wide
+        "already initialised" flag cannot: an init interrupted by a locked file
+        leaves a registry missing its views, and the flag (or the failed
+        constructor) is the only evidence of that.
+
+        A catalogue that cannot be read counts as *not* complete: readiness
+        must not claim a registry is sound when nobody could check.
+        """
+        return not self._missing_objects()
+
+    def _ensure_schema(self) -> None:
+        """Create or repair the schema. Idempotent by construction."""
+        ddl = (DDL if not db.is_postgres(self.target)
+               else _PG_SCHEMA.read_text(encoding="utf-8"))
+        try:
+            self.conn.executescript(ddl)
+            self._migrate()
+            self.conn.commit()
+        except Exception:
+            # A partial DDL run is not a broken registry: the statements are
+            # idempotent, so what matters is whether the objects the router
+            # needs are there. If they are, the failure was elsewhere and the
+            # store is usable; if they are not, the error is real and must
+            # surface rather than being swallowed into a server that answers
+            # `/healthz` and 500s every request.
+            if not self.schema_complete():
+                raise
 
     # Columns added after a table shipped. `CREATE TABLE IF NOT EXISTS` is a
     # no-op on an existing table, so a new column needs saying out loud or every

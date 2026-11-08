@@ -59,6 +59,7 @@ rather than a doc that quietly rots.
 
 ```text
 GET    /healthz                                    stable
+GET    /readyz                                     stable
 GET    /v1/models                                  stable
 GET    /v1/models/explore                          experimental
 POST   /v1/models/trial                            experimental
@@ -116,6 +117,27 @@ GET    /v1/agents/activity                         experimental
 ```
 
 `/assets/*` is a static mount for the dashboard bundle, not an API.
+
+## Liveness and readiness
+
+Two endpoints, because they answer different questions and are used by
+different machinery.
+
+| Endpoint | Question | 200 means | Non-200 means |
+|---|---|---|---|
+| `GET /healthz` | is the process alive? | the process is up | the process is gone |
+| `GET /readyz` | can this instance serve a request? | the registry is structurally sound and queryable | the registry is unreadable, incomplete, or unqueryable |
+
+`/healthz` deliberately says nothing about the registry: a liveness probe that
+fails on a *dependency* restarts a process that cannot fix the dependency.
+`/readyz` is the one to put in a readiness probe — it is what makes a
+half-initialised registry visible. The failure it exists for is a server that
+answers `/healthz` with `{"ok": true}` while every routed request returns 500.
+
+An empty registry is **ready**: it simply has not been ingested yet. Only a
+registry missing the objects the router needs, or one that cannot be queried,
+is not ready. The body names the reason (`registry_unreadable`,
+`registry_schema_incomplete`, `registry_unqueryable`).
 
 ## Error shape
 

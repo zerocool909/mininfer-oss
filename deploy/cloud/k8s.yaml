@@ -107,7 +107,12 @@ spec:
             httpGet: {path: /healthz, port: 8000}
             periodSeconds: 30
           readinessProbe:
-            httpGet: {path: /healthz, port: 8000}
+            # Readiness asks the question liveness cannot: can this pod actually
+            # serve a request? A pod whose registry is half-initialised answers
+            # /healthz with 200 and then 500s every request, so it must not be
+            # sent traffic — and it must not be restarted either, since the
+            # registry is what is broken, not the process.
+            httpGet: {path: /readyz, port: 8000}
             periodSeconds: 10
           resources:
             requests: {cpu: "250m", memory: "512Mi"}
