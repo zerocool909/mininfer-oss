@@ -64,6 +64,38 @@ def test_an_unchanged_registry_reports_no_drift(tmp_path, monkeypatch, capsys):
     assert "0 changed" in out and "0 free-status flips" in out
 
 
+def test_verify_fails_when_every_source_failed(tmp_path, monkeypatch, capsys):
+    """Total ingest failure must not read as "nothing changed".
+
+    The drift report compares before/after snapshots; when every source failed the
+    two are the *same* stale evidence, so a green 0-change run would hide the
+    catastrophe from the scheduler — the nightly cron's "refresh worked" was
+    unavailable exactly on the night the network broke.
+    """
+    db = _seed(tmp_path)
+
+    def fake_ingest(store, _args):
+        return {"sources": 3, "ok": 0, "failed": 3, "skipped": 0}
+
+    monkeypatch.setattr(cli, "_ingest_all", fake_ingest)
+    assert cli.cmd_verify(_args(db)) == 1
+    err = capsys.readouterr().err
+    assert "all 3 source(s) failed" in err
+    assert "stale evidence against itself" in err
+
+
+def test_refresh_propagates_a_total_source_failure(tmp_path, monkeypatch):
+    """`mi refresh` is the single entry point a scheduler runs, so its exit code
+    is the only channel a cron has: the verify failure must stop the pipeline."""
+    db = _seed(tmp_path)
+    monkeypatch.setattr(cli, "_ingest_all",
+                        lambda store, _args: {"sources": 2, "ok": 0, "failed": 2, "skipped": 0})
+    called = []
+    monkeypatch.setattr(cli, "cmd_reconcile", lambda _args: called.append("reconcile") or 0)
+    assert cli.cmd_refresh(_refresh_args(db=str(db))) == 1
+    assert not called, "reconcile ran on top of a failed verify"
+
+
 def test_a_price_change_is_reported_without_a_flip(tmp_path, monkeypatch, capsys):
     db = _seed(tmp_path)
 

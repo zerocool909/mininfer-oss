@@ -8,6 +8,12 @@
 # Registry DB and the raw evidence lake (re-derivable; large).
 *.db
 *.db-journal
+# SQLite's write-ahead-log sidecars. `*.db` does not match them — the name
+# continues past the extension (`mininfer.db-wal`), and `*.db.*` needs a
+# literal `.db.` — so a running proxy would leave two binary files that
+# `git add -A` happily sweeps into a commit.
+*.db-wal
+*.db-shm
 # Maintenance backups of the registry (e.g. mininfer.db.pre-featherless-<ts>).
 # `*.db` does not match them: the name continues past the extension.
 *.db.*

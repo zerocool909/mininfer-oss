@@ -32,7 +32,7 @@ import re
 
 from . import search as search_mod
 from .fetch import utcnow
-from .dossier_audit import build_pools, sound_best_for
+from .dossier_audit import build_pools, sound_best_for, sound_when_to_use
 from .leaderboards import describe
 from .store import Store
 
@@ -384,6 +384,15 @@ def scout_one(store: Store, deploy: dict, *, agent_model: str | None = None,
             dossier["best_for"] = kept
             if dropped:
                 facts["dropped_best_for"] = dropped
+            # The same gate on `when_to_use`: the scorer reads this prose field at
+            # half weight with substring matching, so an entry naming a task this
+            # arm cannot serve still moves the ranking if it is stored unchecked.
+            wt_kept, wt_dropped = sound_when_to_use(deploy["deploy_id"],
+                                                    dossier.get("when_to_use"),
+                                                    tasks, pools)
+            dossier["when_to_use"] = wt_kept
+            if wt_dropped:
+                facts["dropped_when_to_use"] = wt_dropped
     except Exception as exc:  # no key / bad agent output / search failure
         return {"deploy_id": deploy["deploy_id"], "error": str(exc)}
 

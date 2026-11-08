@@ -30,6 +30,29 @@ def test_next_reset_advances_utc():
     assert _next_reset("month", now).startswith("2026-10-01T00:00:00")
 
 
+def test_an_unrepresentable_reset_header_does_not_raise(tmp_path):
+    """A provider header we cannot represent is a header we ignore.
+
+    A reset timestamp far in the future overflowed `datetime` inside the
+    rate-limit bookkeeping, and the OverflowError propagated out of the request
+    path — so a provider's odd header turned a *successful* model answer into a
+    500. The limit and remaining counts are still worth recording.
+    """
+    s = Store(tmp_path / "t.db")
+    n = quota.record_from_headers(s, "p:m", {
+        "x-ratelimit-limit-requests": "20",
+        "x-ratelimit-remaining-requests": "3",
+        "x-ratelimit-reset-requests": "99999999999999s",
+    }, observed_at="2026-09-26T10:30:15+00:00")
+    assert n >= 1
+    row = s.conn.execute(
+        "SELECT observed_limit_n, observed_remaining_n, reset_at FROM quota_buckets "
+        "WHERE deploy_id='p:m'").fetchone()
+    assert row["observed_limit_n"] == 20 and row["observed_remaining_n"] == 3
+    assert row["reset_at"] is None, "an unrepresentable reset must be dropped, not guessed"
+    s.close()
+
+
 # --------------------------------------------------------------- limits/usage
 
 

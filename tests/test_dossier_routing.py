@@ -292,3 +292,39 @@ def test_a_stored_dossier_is_made_sound_rather_than_asked_to_be(tmp_path):
     assert {d["task"] for d in dropped} == {"extraction", "telepathy"}
     assert all(d["reason"] for d in dropped), "a drop must say why"
     s.close()
+
+
+def test_a_when_to_use_entry_naming_an_unservable_task_is_dropped(tmp_path):
+    """`when_to_use` must pass the same eligibility gate as `best_for`.
+
+    The scorer reads `when_to_use` at half weight — with substring matching — so
+    a hallucinated entry ("great for structured output") still moves the ranking
+    when it is stored unchecked. Entries are prose, so they are judged per
+    sentence: one naming a task the arm cannot serve is dropped, while free prose
+    that references no policy task stays.
+    """
+    from mininfer.dossier_audit import build_pools, sound_when_to_use
+    from mininfer.schema import Deployment, Weights
+    from mininfer.store import Store
+
+    s = Store(tmp_path / "sound.db")
+    s.upsert_weights(Weights("hf:a/m", "m"))
+    s.upsert_deployment(Deployment("p:x", "hf:a/m", "p", "x", zero_price=True,
+                                   context_window=32000, caps={"structured": False}))
+    s.commit()
+
+    _, tasks, pools = build_pools(s)
+    kept, dropped = sound_when_to_use(
+        "p:x",
+        ["quick summaries of a tool result",
+         "great for sql_generation work",
+         "extraction into JSON"],
+        tasks, pools)
+
+    # The two entries that name ineligible tasks are dropped; the prose that
+    # references no task stays (it shifts nothing, so it risks nothing).
+    assert kept == ["quick summaries of a tool result"], f"kept: {kept}"
+    assert any("sql_generation" in d["reason"] for d in dropped)
+    assert any("extraction" in d["reason"] for d in dropped)
+    assert all(d["entry"] for d in dropped), "a drop must say which entry"
+    s.close()

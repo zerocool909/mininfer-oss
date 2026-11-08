@@ -2524,7 +2524,16 @@ class Store:
         return len(rows)
 
     def reset_expired(self, now: dt.datetime | None = None) -> int:
-        """Roll over every expired window in the registry. Returns rows reset."""
+        """Roll over every expired window in the registry. Returns rows reset.
+
+        Commits before returning. This runs on the *routing* read path
+        (`headroom_all`), and python's sqlite3 holds the writer lock from the
+        first UPDATE until commit — so an uncommitted rollover rode into the
+        caller's model call, holding SQLite's single writer lock for the whole
+        upstream round trip and starving every other request's writes into
+        `database is locked`. The rollover is state other requests need to see
+        anyway, so committing it here is both correct and the fix.
+        """
         now = now or dt.datetime.now(dt.timezone.utc)
         stamp = now.isoformat(timespec="seconds")
         rows = self.conn.execute(
@@ -2538,6 +2547,8 @@ class Store:
                 (_next_reset(r["window"], now), r["deploy_id"], r["window"],
                  r["api_key_alias"]),
             )
+        if rows:
+            self.conn.commit()
         return len(rows)
 
     def record_usage(
@@ -3066,8 +3077,13 @@ class Store:
             self.conn.execute(
                 "DELETE FROM pushed_models WHERE ts IS NOT NULL AND ts < ?", (cutoff,))
             self.conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:  # a purge failure must not fail the read — but it
+            # must not be silent either: hiding it here is exactly how the Postgres
+            # `InFailedSqlTransaction` incident reached every routed request before
+            # anyone saw a log line. Naming it costs nothing.
+            import logging
+            logging.getLogger("mininfer.store").warning(
+                f"pushed_models purge failed: {type(exc).__name__}: {exc}")
 
         if task:
             q = "SELECT deploy_id FROM pushed_models WHERE task = ? OR task = '' OR task IS NULL ORDER BY ts DESC"

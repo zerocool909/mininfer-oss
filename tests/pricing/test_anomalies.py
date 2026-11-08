@@ -27,8 +27,11 @@ from mininfer.pricing.providers import read_prices
 from mininfer.schema import Deployment, Weights
 from mininfer.store import Store
 
-T0 = "2026-10-01T00:00:00+00:00"
-T1 = "2026-10-02T00:00:00+00:00"
+# Relative to now — see the note in test_reconciler.py on calendar time bombs.
+T0 = (dt.datetime.now(dt.timezone.utc)
+      - dt.timedelta(days=2)).isoformat(timespec="seconds")
+T1 = (dt.datetime.now(dt.timezone.utc)
+      - dt.timedelta(days=1)).isoformat(timespec="seconds")
 
 
 def _add(s: Store, deploy_id: str, *, price_in: float, source: str,
@@ -144,7 +147,9 @@ def test_an_anomaly_closes_when_the_price_returns_to_canonical(tmp_path):
     s.commit()
     assert len(_anomalies(s)) == 2
 
-    _add(s, "novita:ling", price_in=0.075, source="novita", observed_at="2026-10-03T00:00:00+00:00")
+    _add(s, "novita:ling", price_in=0.075, source="novita",
+         observed_at=(dt.datetime.now(dt.timezone.utc)
+                      - dt.timedelta(hours=1)).isoformat(timespec="seconds"))
     s.commit()
     rep = s.reconcile_prices()
     s.commit()

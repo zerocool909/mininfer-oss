@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import pathlib
 import re
@@ -685,7 +686,15 @@ def try_fallbacks(
     attempts: list[Attempt] = []
     last = CallResult("", error_class="no_candidates")
     for did in deploy_ids:
-        res = runner(did, messages, max_tokens=max_tokens, temperature=temperature)
+        try:
+            res = runner(did, messages, max_tokens=max_tokens, temperature=temperature)
+        except Exception as exc:
+            # An unexpected error of our own (a DB hiccup, a plugin fault) must not
+            # blow the request away with a 500 — and it must not discard the
+            # observations already recorded for earlier attempts in this chain.
+            # Classify it like any other failed attempt and move to the next arm.
+            res = CallResult(did, error_class="internal_error",
+                             error_detail=f"{type(exc).__name__}: {exc}")
         # An HTTP 200 with no usable text and no tool call cannot serve the caller,
         # so it is a failed attempt and must fall through like a 429 would.
         if res.ok and not (res.text or "").strip() and not _has_tool_calls(res):
@@ -722,6 +731,14 @@ def try_fallbacks(
         if res.ok:
             store.commit() if store is not None else None
             return did, res, attempts
+        # A failed arm's bookkeeping must be committed *now*, before the next
+        # (slow) upstream call: python's sqlite3 opens the write transaction at
+        # the first statement and holds SQLite's writer lock until commit, so a
+        # txn carried across a 30-60 s model call stars every concurrent write
+        # into `database is locked` retries — the failure mode this proxy 500s
+        # on hardest. Failed-attempt evidence is too valuable for that wait.
+        if store is not None:
+            store.commit()
     if store is not None:
         store.commit()
     return None, last, attempts
@@ -736,8 +753,14 @@ def _retire_if_uncallable(store, deploy_id: str, *, error_class: str | None,
     next ingest puts it straight back and every request pays an attempt to
     rediscover that it cannot be called. `Store.retire_deployment` records
     `status_source='runtime'`, which is what survives the re-ingest.
+
+    `http_404` counts as un-callable for the same reason: the model route no
+    longer exists upstream, so nothing will make the next attempt succeed. This
+    mirrors the dashboard's connectivity test, which already retired dead 404
+    arms — the *serving* path just never did, so a dead arm stayed in the
+    candidate list and every real request paid one wasted attempt to rediscover it.
     """
-    if store is None or error_class != "not_api_callable":
+    if store is None or error_class not in ("not_api_callable", "http_404"):
         return False
     reason = (error_detail or "not callable via the API").strip().splitlines()[0][:200]
     return store.retire_deployment(deploy_id, reason)
@@ -755,9 +778,21 @@ def _record_rate_limits(store, deploy_id: str, *, headers, error_class: str | No
     if store is None:
         return None
     if headers:
-        record_from_headers(store, deploy_id, headers, observed_at=utcnow())
+        try:
+            record_from_headers(store, deploy_id, headers, observed_at=utcnow())
+        except Exception as exc:  # noqa: BLE001 - a header quirk is not a request failure
+            # Recording a limit is bookkeeping. A provider header we cannot parse
+            # must not turn a *successful* answer into a 500 — this is the second
+            # time that path has cost a request (the first was an unparseable
+            # reset timestamp overflowing `datetime`).
+            logging.getLogger("mininfer.proxy").warning(
+                f"rate-limit header bookkeeping failed for {deploy_id}: "
+                f"{type(exc).__name__}: {exc}")
     if error_class == "429":
-        return classify_429(headers, error_detail)
+        try:
+            return classify_429(headers, error_detail)
+        except Exception:  # noqa: BLE001 - naming a 429 must not fail the request
+            return None
     return None
 
 
@@ -945,7 +980,12 @@ def _all_failed(attempts: list[Attempt], res: CallResult, decision_id: int | Non
         return _error(503, last_err,
                       f"no API key for {ids[0]}: {_no_key_hint(ids)}",
                       decision_id=decision_id)
-    return _error(429 if last_err == "429" else 502, last_err,
+    # 504 vs 502: OpenAI-compatible clients treat 502 as "gateway misconfigured"
+    # and 504 as "upstream did not answer in time — retry". A chain that died on
+    # timeouts is the second thing, and the client's own retry policy is what
+    # should decide whether to try again.
+    status = {"429": 429, "timeout": 504, "tls_error": 502, "network_error": 502}.get(last_err, 502)
+    return _error(status, last_err,
                   f"all {len(attempts)} candidate(s) failed (last: {last_err}"
                   + (f": {res.error_detail}" if res.error_detail else "")
                   + ")", decision_id=decision_id)
@@ -2541,6 +2581,11 @@ async def _run_shadow_trial(
             store.record_usage(did)
             _retire_if_uncallable(store, did, error_class=trial_res.error_class,
                                   error_detail=trial_res.error_detail)
+            # Commit now: the usage write would otherwise hold SQLite's writer
+            # lock across the *next* arm's call and the whole judge call —
+            # dozens of seconds during which the per-request accounting paths
+            # starve into `database is locked`.
+            store.commit()
             trial_results.append((did, trial_res))
 
         # One judging call for the whole batch, labelled A, B, C… and mapped back.
@@ -3156,6 +3201,10 @@ async def _handle(payload: dict, *, force_route: bool,
         for did in opts:
             if len(results) >= n_options:
                 break
+            # Same rule as the single-arm path: flush the routing path's writes
+            # before an upstream call, so no write transaction rides into the
+            # round trip holding SQLite's writer lock.
+            store.commit()
             sel, res, _ = await asyncio.to_thread(
                 try_fallbacks, [did], messages, runner,
                 task_name=task_name, store=store, session_id=session_id,
@@ -3201,6 +3250,12 @@ async def _handle(payload: dict, *, force_route: bool,
                              verify=_should_verify(policy, tasks.get(task_name), payload))
 
     runner = Runner(extra_body=_extra(payload), user_keys=user_keys, local_endpoints=local_endpoints)
+    # Flush any write the routing path made (quota-window rollover, snapshot
+    # rows) *before* the upstream call. python's sqlite3 holds the writer lock
+    # from the first statement until commit, so an unflushed write would keep
+    # SQLite's single writer lock for the whole round trip and starve every
+    # concurrent request's bookkeeping into `database is locked`.
+    store.commit()
     selected, res, attempts = await asyncio.to_thread(
         try_fallbacks,
         deploy_ids, messages, runner, task_name=task_name, store=store,
@@ -3210,25 +3265,32 @@ async def _handle(payload: dict, *, force_route: bool,
         effort=comp.level if comp is not None else None)
 
     # Complexity escalation check:
-    # If the chosen model was routed as low complexity, but failed validation (bad_output, empty_content)
-    # or all low-complexity arms failed, escalate once to reasoning tier if configured.
+    # If the chosen model was routed as low complexity, but failed validation (bad_output, empty_content),
+    # or all the arms on the chain failed, escalate once to reasoning tier if configured.
+    # `all-arms-failed` escalates at *any* difficulty: a medium route whose whole
+    # chain is dead has no better option than retrying at the reasoning tier, and
+    # the session-budget re-check below is what makes that second call affordable.
     escalation_cfg = (getattr(policy, "complexity", None) or {}).get("escalation", {})
     can_escalate = (
         escalation_cfg.get("enabled", False)
         and routed
         and comp is not None
-        and comp.level == "low"
-        and (selected is None or getattr(res, "error_class", None) in ("bad_output", "empty_content"))
+        and (comp.level == "low" and (selected is None or getattr(res, "error_class", None) in ("bad_output", "empty_content"))
+             or selected is None)
     )
     if can_escalate:
+        failed_label = ("all_failed" if selected is None
+                        else f"low_failed:{res.error_class}")
         escalated_comp = comp_mod.Complexity(
             level="high",
             needs_reasoning=True,
             confidence=1.0,
             score=comp.score,
-            signals=(*comp.signals, "escalation:low_failed"),
+            signals=(*comp.signals, f"escalation:{failed_label}"),
             source="escalation",
-            reason="low-complexity route failed validation; escalated to reasoning tier",
+            reason="low-complexity route failed validation; escalated to reasoning tier"
+                   if selected is not None else
+                   "every arm on the chain failed; escalated to reasoning tier",
         )
         floor_delta = float((getattr(policy, "complexity", None) or {}).get("floor_delta", 0.08))
         escalated_profile = comp_mod.adapt_task_for_complexity(
@@ -3873,7 +3935,13 @@ def _stream_escalation(*, policy, base_task, complexity, reason, failed,
     cfg = (getattr(policy, "complexity", None) or {}).get("escalation", {})
     if not cfg.get("enabled", False):
         return None
-    if complexity is None or complexity.level != "low" or base_task is None:
+    if complexity is None or base_task is None:
+        return None
+    if complexity.level != "low" and not failed:
+        # `failed` empty means the pre-open loop never even tried an arm, so there
+        # is nothing to widen. Allowing any difficulty when every arm failed keeps
+        # the streaming twin in lock-step with the non-streaming escalation, which
+        # escalates on an all-arms-failed route regardless of level.
         return None
 
     blocked = _session_block(policy, store, session_id, messages=messages,
@@ -3890,7 +3958,9 @@ def _stream_escalation(*, policy, base_task, complexity, reason, failed,
         score=complexity.score,
         signals=(*complexity.signals, "escalation:low_failed"),
         source="escalation",
-        reason="low-complexity route failed validation; escalated to reasoning tier",
+        reason="low-complexity route failed validation; escalated to reasoning tier"
+               if complexity.level == "low" else
+               "every arm on the chain failed; escalated to reasoning tier",
     )
     floor_delta = float((getattr(policy, "complexity", None) or {}).get("floor_delta", 0.08))
     profile = comp_mod.adapt_task_for_complexity(base_task, escalated_comp,
@@ -3944,7 +4014,15 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
         if idx >= len(deploy_ids):
             if escalated or escalate is None:
                 break
-            more = escalate(failed)
+            # An escalation failure (a route error, a DB hiccup) must not kill the
+            # whole stream after every arm already failed — break to the graceful
+            # all-failed exit below instead.
+            try:
+                more = escalate(failed)
+            except Exception as exc:  # noqa: BLE001 - escalation best-effort
+                logging.getLogger("mininfer.proxy").warning(
+                    f"stream escalation failed: {exc}")
+                break
             if not more:
                 break
             deploy_ids = list(deploy_ids) + list(more)
@@ -3971,6 +4049,10 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             continue
 
         body = {"max_tokens": 2048, **extra, "model": ep.model, "messages": payload["messages"]}
+        # Same rule as the non-streaming path: no write transaction may ride
+        # into the upstream call (it would hold SQLite's writer lock for the
+        # whole round trip and starve concurrent requests).
+        store.commit()
         sess = await asyncio.to_thread(open_stream, ep, body, deploy_id=did)
         if sess.status_code != 200:
             store.record_usage(did)
@@ -4117,35 +4199,52 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
             finally:
                 current.close()
                 tin, tout, cost = _usage_tokens(_merge_usage(total_usage, usage))
-                # Fresh connection: the request-scoped store is already closed.
-                s = _store()
-                s.observe(did, task_name, ok=ok, ts=utcnow(),
-                          error_class=err_class,
-                          signal_kind="provider_reported",
-                          signal_value=1.0 if ok else 0.0,
-                          tokens_in=tin, tokens_out=tout, cost_usd=cost,
-                          session_id=session_id, tenant_id=tenant_id,
-                          effort=effort)
-                if session_id:
-                    s.add_session_usage(session_id, tokens_in=tin,
-                                        tokens_out=tout, cost_usd=cost,
-                                        tenant_id=tenant_id)
-                    # The answer the caller actually received, assembled from the
-                    # deltas that were relayed — not a re-request. An aborted
-                    # stream keeps the partial text, matching what was shown.
-                    if parts:
-                        s.record_messages(session_id, _turn(payload.get("messages"),
-                                                           "".join(parts)),
-                                          task=task_name, deploy_id=did)
-                if parts and ok:
-                    last_prompt = intent_mod.last_user_text(payload.get("messages") or [])
-                    _launch_shadow_trial(
-                        payload.get("messages") or [], last_prompt, did, "".join(parts), task_name,
-                        user_keys=user_keys, local_endpoints=local_endpoints,
-                        extra_body=_extra(payload), tenant_id=tenant_id,
-                    )
-                s.commit()
-                s.close()
+                # A DB hiccup must not become an exception *after* [DONE] — the
+                # multiplex worker wraps this very block in try/except for exactly
+                # that reason. The caller already has whatever answer it got.
+                try:
+                    # Fresh connection: the request-scoped store is already closed.
+                    s = _store()
+                    s.observe(did, task_name, ok=ok, ts=utcnow(),
+                              error_class=err_class,
+                              signal_kind="provider_reported",
+                              signal_value=1.0 if ok else 0.0,
+                              tokens_in=tin, tokens_out=tout, cost_usd=cost,
+                              session_id=session_id, tenant_id=tenant_id,
+                              effort=effort)
+                    if not ok:
+                        # Learn the same lessons mid-stream that the pre-open path
+                        # learns: a mid-stream 429 drains its minute bucket so
+                        # tomorrow's route demotes this arm *before* the retry,
+                        # and a mid-stream "not callable"/404 retires the arm
+                        # instead of costing one dead attempt per request forever.
+                        if err_class == "429":
+                            s.exhaust(did, window="minute")
+                        _retire_if_uncallable(s, did, error_class=err_class,
+                                              error_detail=None)
+                    if session_id:
+                        s.add_session_usage(session_id, tokens_in=tin,
+                                            tokens_out=tout, cost_usd=cost,
+                                            tenant_id=tenant_id)
+                        # The answer the caller actually received, assembled from the
+                        # deltas that were relayed — not a re-request. An aborted
+                        # stream keeps the partial text, matching what was shown.
+                        if parts:
+                            s.record_messages(session_id, _turn(payload.get("messages"),
+                                                                "".join(parts)),
+                                              task=task_name, deploy_id=did)
+                    if parts and ok:
+                        last_prompt = intent_mod.last_user_text(payload.get("messages") or [])
+                        _launch_shadow_trial(
+                            payload.get("messages") or [], last_prompt, did, "".join(parts), task_name,
+                            user_keys=user_keys, local_endpoints=local_endpoints,
+                            extra_body=_extra(payload), tenant_id=tenant_id,
+                        )
+                    s.commit()
+                    s.close()
+                except Exception as exc:  # noqa: BLE001 - outcome log is best-effort
+                    logging.getLogger("mininfer.proxy").warning(
+                        f"stream outcome recording failed for {did}: {exc}")
 
         headers = {
             "X-MI-Deploy": did,
@@ -4170,7 +4269,11 @@ async def _stream(deploy_ids, payload, *, task_name, store, policy, reason, alte
         ids = [d for d, _e in attempts]
         store.close()
         return _error(503, "no_api_key", f"no API key for {ids[0]}: {_no_key_hint(ids)}")
+    # Same status semantics as `_all_failed`: an all-timeouts chain is 504, not
+    # 502, so a client's retry policy can tell "upstream slow" from "broken".
+    err_classes = {e for _d, e in attempts}
+    timeout_chain = (not err_classes or err_classes <= {"timeout"})
     store.close()
-    return _error(502, "all_failed",
+    return _error(504 if timeout_chain else 502, "all_failed",
                   f"all candidates failed: {attempts}"
                   + (f" — {last_detail}" if last_detail else ""))

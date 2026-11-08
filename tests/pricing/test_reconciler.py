@@ -22,8 +22,13 @@ from mininfer.pricing.providers import read_prices
 from mininfer.schema import Deployment, Weights
 from mininfer.store import Store
 
-T0 = "2026-10-01T00:00:00+00:00"
-T1 = "2026-10-02T00:00:00+00:00"
+# Dates are derived from *now*, not calendar constants. A price's freshness is
+# measured in days-from-now, so a test pinned to October dates expires the moment
+# the calendar moves past T1 + PRICE_FRESHNESS_DAYS and fails every run after.
+T0 = (dt.datetime.now(dt.timezone.utc)
+      - dt.timedelta(days=2)).isoformat(timespec="seconds")
+T1 = (dt.datetime.now(dt.timezone.utc)
+      - dt.timedelta(days=1)).isoformat(timespec="seconds")
 
 
 def _add(s: Store, deploy_id: str, *, price_in: float, price_out: float | None = None,

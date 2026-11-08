@@ -11,6 +11,8 @@ rather than merging two payloads.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,7 +23,9 @@ from mininfer.store import Store
 
 
 def _add(s: Store, deploy_id: str, price: float, source: str, *,
-         weights: str = "w", observed_at: str = "2026-10-02T00:00:00+00:00") -> None:
+         weights: str = "w",
+         observed_at: str = (dt.datetime.now(dt.timezone.utc)
+                             - dt.timedelta(days=1)).isoformat(timespec="seconds")) -> None:
     provider, model = deploy_id.split(":", 1)
     s.upsert_weights(Weights(weights, weights))
     s.upsert_deployment(

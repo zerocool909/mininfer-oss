@@ -365,8 +365,18 @@ def cmd_verify(args) -> int:
     """
     store = _open(args)
     before = _price_snapshot(store)
-    _ingest_all(store, args)
+    summary = _ingest_all(store, args) or {}
     after = _price_snapshot(store)
+
+    # A refresh whose sources all failed must not read as "nothing changed" —
+    # the diff below compares stale evidence against the same stale evidence and
+    # would report a green 0-change run while the whole catalogue silently aged
+    # one more day. Total failure here is precisely what the scheduler must see.
+    if summary.get("ok", 1) == 0 and summary.get("failed", 0) > 0:
+        print(f"\n  all {summary['failed']} source(s) failed — the drift report "
+              f"below compares stale evidence against itself.",
+              file=sys.stderr)
+        return 1
 
     appeared: list[str] = []
     changed: list[tuple[str, tuple, tuple]] = []

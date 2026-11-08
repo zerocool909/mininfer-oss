@@ -1241,3 +1241,89 @@ def test_stream_verify_skips_an_arm_that_answers_with_prose(tmp_path, monkeypatc
 def _chunks(blob: bytes) -> list[bytes]:
     """Split an SSE blob into frames so the fake session looks like a real one."""
     return [b"data: " + part for part in blob.split(b"data: ")[1:]]
+
+# ------------------------------------------------- internal faults, retirement
+
+
+def test_an_internal_error_is_a_recorded_attempt_not_a_500(tmp_path):
+    """A fault of our own (a DB hiccup mid-chain) must be a classified attempt.
+
+    Before this, an unexpected exception out of `runner` propagated out of
+    `try_fallbacks`: the caller got a 500, and every observation accumulated for
+    the earlier attempts of the chain was rolled back with it. A request should
+    lose an arm, not the whole chain plus its evidence.
+    """
+    store = Store(tmp_path / "p.db")
+    calls: list[str] = []
+
+    def runner(deploy_id, messages, **kw):
+        calls.append(deploy_id)
+        if deploy_id == "a:1":
+            raise RuntimeError("store commit failed")
+        return CallResult("b:2", text="ok", ok=True, tokens_in=5, tokens_out=3)
+
+    selected, res, attempts = try_fallbacks(
+        ["a:1", "b:2"], [{"role": "user", "content": "hi"}], runner,
+        task_name="sql_generation", store=store)
+
+    assert selected == "b:2" and res.text == "ok"
+    assert calls == ["a:1", "b:2"]                     # the chain kept going
+    assert attempts[0].error_class == "internal_error"
+    rows = store.conn.execute(
+        "SELECT deploy_id, ok, error_class FROM observations ORDER BY id").fetchall()
+    assert [(r["deploy_id"], r["ok"], r["error_class"]) for r in rows] == [
+        ("a:1", 0, "internal_error"), ("b:2", 1, None)]
+    store.close()
+
+
+def test_a_dead_404_arm_is_retired_on_the_serving_path(tmp_path):
+    """A mid-chain 404 retires the arm like `not_api_callable` does.
+
+    The dashboard's connectivity test already retired dead 404 arms; the serving
+    path never did, so a dead arm stayed in the candidate list and every real
+    request paid one wasted attempt to rediscover it.
+    """
+    AGENTIC = "openrouter:gone:free"
+    store = Store(tmp_path / "p.db")
+    store.upsert_weights(Weights("w", "gone:free"))
+    store.upsert_deployment(Deployment(AGENTIC, "w", "openrouter", "gone:free"))
+    store.commit()
+
+    runner = _queue_runner([
+        CallResult(AGENTIC, error_class="http_404",
+                   error_detail="404 no longer available"),
+    ])()
+    selected, res, _ = try_fallbacks(
+        [AGENTIC], [{"role": "user", "content": "hi"}], runner,
+        task_name="sql_generation", store=store)
+    assert selected is None
+    row = dict(store.conn.execute(
+        "SELECT status, status_source FROM deployments WHERE deploy_id=?",
+        (AGENTIC,)).fetchone())
+    assert row["status"] == "deprecated" and row["status_source"] == "runtime"
+    store.close()
+
+
+# --------------------------------------------------- the all-failed status code
+
+
+def _all_failed_response(error_class: str) -> "httpx.Response":
+    from mininfer.proxy import _all_failed, Attempt
+    res = CallResult("a:1", error_class=error_class, error_detail="timed out")
+    return _all_failed([Attempt("a:1", False, error_class, 1.0, 0, 0)], res)
+
+
+def test_an_all_timeouts_chain_answers_504_not_502():
+    """504, not 502, when every candidate timed out.
+
+    OpenAI-compatible clients treat 502 as "gateway misconfigured" and 504 as
+    "upstream did not answer in time — retry". A chain that died on timeouts is
+    the second failure, and the client's own retry policy is what should decide
+    whether to try again.
+    """
+    assert _all_failed_response("timeout").status_code == 504
+
+
+def test_other_failures_stay_502_and_429_stays_429():
+    assert _all_failed_response("http_500").status_code == 502
+    assert _all_failed_response("429").status_code == 429

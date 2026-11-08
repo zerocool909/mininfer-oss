@@ -262,7 +262,16 @@ def record_from_headers(store: Store, deploy_id: str, headers, *,
     for obs in observations:
         reset_at = None
         if obs.reset_s is not None:
-            reset_at = (base + dt.timedelta(seconds=obs.reset_s)).isoformat(timespec="seconds")
+            # A provider's header can be absurd — a reset "in 100000 years"
+            # overflows `datetime`, and the OverflowError used to propagate out
+            # of the rate-limit bookkeeping and turn a *successful* model answer
+            # into a 500. A header we cannot represent is a header we ignore;
+            # the limit and remaining counts are still worth recording.
+            try:
+                reset_at = (base + dt.timedelta(seconds=obs.reset_s)).isoformat(
+                    timespec="seconds")
+            except (OverflowError, OSError, ValueError):
+                reset_at = None
         store.record_rate_limit(
             deploy_id,
             window=window_for_reset(obs.reset_s),

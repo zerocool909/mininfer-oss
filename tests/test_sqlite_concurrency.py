@@ -93,3 +93,87 @@ def test_every_concurrent_charge_lands(tmp_path):
     rows = check.execute("SELECT COUNT(*) AS c FROM t").fetchone()
     check.close()
     assert rows["c"] == n
+
+
+def test_a_write_transaction_does_not_survive_a_routing_read(tmp_path):
+    """The routing path must not hold SQLite's writer lock between requests.
+
+    `reset_expired` runs on the routing read path (it rolls over expired quota
+    windows), and python's sqlite3 opens the write transaction at the first
+    UPDATE and holds the file's writer lock until commit. Uncommitted, that
+    transaction rode into the caller's model call — so a *read* on the routing
+    path locked every other request's bookkeeping out for the length of an
+    upstream round trip, and those requests died with `database is locked`
+    instead of answering.
+
+    So: after the rollover, another connection can write immediately.
+    """
+    from mininfer.store import Store
+
+    path = tmp_path / "r.db"
+    reader = Store(path)
+    writer = Store(path)
+
+    # An expired window, so the rollover actually writes.
+    writer.conn.execute(
+        "INSERT INTO quota_buckets (deploy_id, api_key_alias, \"window\", used_n, "
+        "limit_n, reset_at) VALUES ('p:m', 'default', 'minute', 5, 10, "
+        "'2000-01-01T00:00:00+00:00')")
+    writer.commit()
+
+    reader.reset_expired()
+
+    # No retry, no sleep: the other connection must not have to wait at all.
+    writer.conn.execute("INSERT INTO observations (deploy_id, task, ok, ts) "
+                        "VALUES ('p:m', 'general_chat', 1, "
+                        "'2026-01-01T00:00:00+00:00')")
+    writer.commit()
+    n = writer.conn.execute("SELECT COUNT(*) AS c FROM observations").fetchone()["c"]
+    assert n == 1
+
+    reader.close()
+    writer.close()
+
+
+def test_a_failed_attempt_is_committed_before_the_next_call(tmp_path):
+    """A fallback chain must not carry a write transaction into the next call.
+
+    The failed arm's evidence is written before the next (slow) upstream call.
+    Left uncommitted, that write holds the writer lock across the whole
+    round trip — the same starvation as the routing rollover, one layer down.
+    """
+    from mininfer.execute import CallResult
+    from mininfer.proxy import try_fallbacks
+    from mininfer.store import Store
+
+    path = tmp_path / "f.db"
+    store = Store(path)
+    other = Store(path)   # a second connection, standing in for a concurrent request
+
+    results = iter([CallResult("a:1", error_class="429"),
+                    CallResult("b:2", text="ok", ok=True)])
+    lock_held_during_second_call: list[bool] = []
+
+    def runner(deploy_id, messages, **kw):
+        if deploy_id == "b:2":
+            # During the *second* call, a concurrent writer must not be blocked.
+            try:
+                other.conn.execute("INSERT INTO observations (deploy_id, task, ok, ts) "
+                                   "VALUES ('x:1', 'general_chat', 1, "
+                                   "'2026-01-01T00:00:00+00:00')")
+                other.conn.commit()
+                lock_held_during_second_call.append(False)
+            except Exception:
+                lock_held_during_second_call.append(True)
+                raise
+        return next(results)
+
+    selected, _res, _attempts = try_fallbacks(
+        ["a:1", "b:2"], [{"role": "user", "content": "hi"}], runner,
+        task_name="general_chat", store=store)
+    assert selected == "b:2"
+    assert lock_held_during_second_call == [False], \
+        "the failed attempt's write transaction was still open during the next call"
+
+    store.close()
+    other.close()

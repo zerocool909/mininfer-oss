@@ -436,6 +436,10 @@ def search(
             # INSERT OR IGNORE on sha256, so a cache hit re-recording its own row
             # is a no-op rather than a duplicate.
             store.record_snapshot(snap)
+            # Commit before anything else happens: a write txn left open here
+            # rides into the caller's routing and model call, holding SQLite's
+            # writer lock across it and starving every concurrent write.
+            store.commit()
         try:
             rows = PARSERS[name](snap.payload, limit)
         except ProviderBlocked as exc:

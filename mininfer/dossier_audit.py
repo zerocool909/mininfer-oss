@@ -139,3 +139,45 @@ def sound_best_for(deploy_id: str, best_for: Any, tasks, pools) -> tuple[list[st
             continue
         kept.append(task_name)
     return kept, dropped
+
+
+def _mentioned_tasks(entry: str, tasks) -> list[str]:
+    """Task names a `when_to_use` sentence references, in the router's semantics.
+
+    Mirrors `router._mentions` exactly: exact match, containment either way. A
+    guard that disagreed with the ranking's matching rule would filter a different
+    set of entries than the ones that actually shift it.
+    """
+    t = (entry or "").strip().lower()
+    if not t:
+        return []
+    return [name for name in tasks
+            if t == name.lower() or name.lower() in t or t in name.lower()]
+
+
+def sound_when_to_use(deploy_id: str, when_to_use: Any, tasks, pools) -> tuple[list, list[dict]]:
+    """Drop every `when_to_use` entry that promotes the arm into a task it cannot serve.
+
+    `when_to_use` is prose ("use this for quick summaries"), so entries are kept
+    or dropped one *sentence* at a time, not one task at a time. The rule is the
+    same as `sound_best_for`: an entry that references a task whose pool refuses
+    this arm — or where the arm is not in the pool at all — is a prediction the
+    router will contradict, and the scorer reads this field at half weight, so a
+    hallucinated entry still moves the ranking if it is stored unchecked.
+    """
+    kept: list[str] = []
+    dropped: list[dict] = []
+    for entry in _as_list(when_to_use):
+        problems: list[str] = []
+        for task_name in _mentioned_tasks(str(entry), tasks):
+            pool = pools.get(task_name, {})
+            refusal = pool.get(deploy_id)
+            if refusal is None and deploy_id not in pool:
+                problems.append(f"{task_name}: not in this task's candidate pool")
+            elif refusal:
+                problems.append(f"{task_name}: {refusal}")
+        if problems:
+            dropped.append({"entry": str(entry), "reason": "; ".join(problems)})
+            continue
+        kept.append(str(entry))
+    return kept, dropped
