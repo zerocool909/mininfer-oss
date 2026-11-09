@@ -1,0 +1,166 @@
+[
+  {
+    "id": "chat_capital",
+    "family": "general_chat",
+    "task": "general_chat",
+    "prompt": "What is the capital of Portugal? Answer with the city name only.",
+    "max_tokens": 96,
+    "check": {
+      "type": "contains_any",
+      "values": [
+        "lisbon",
+        "lisboa",
+        "لشبونة"
+      ]
+    }
+  },
+  {
+    "id": "instruction_exact",
+    "family": "instruction_following",
+    "task": "general_chat",
+    "prompt": "Reply with exactly one word and nothing else: BANANA",
+    "max_tokens": 96,
+    "check": {
+      "type": "exact",
+      "value": "banana"
+    }
+  },
+  {
+    "id": "math_arithmetic",
+    "family": "reasoning",
+    "task": "hard_reasoning",
+    "prompt": "What is 17 * 23? Reply with the number only.",
+    "max_tokens": 160,
+    "check": {
+      "type": "number",
+      "value": 391
+    }
+  },
+  {
+    "id": "math_word_problem",
+    "family": "reasoning",
+    "task": "hard_reasoning",
+    "prompt": "A shop sells pens at $3 each. I buy 7 pens and pay with a $50 note. How much change do I get? Reply with the number only.",
+    "max_tokens": 256,
+    "check": {
+      "type": "number",
+      "value": 29
+    }
+  },
+  {
+    "id": "summarise",
+    "family": "summarise",
+    "task": "summarise",
+    "prompt": "Summarise the passage in one sentence of at most 25 words. It must mention evaporation and condensation.\n\nPassage: The water cycle begins when the sun heats lakes and oceans, turning liquid water into vapour that rises into the atmosphere. As the vapour climbs it cools, and tiny droplets form clouds. When those droplets grow heavy enough they fall as rain or snow, returning to the ground and eventually to the sea.",
+    "max_tokens": 200,
+    "check": {
+      "type": "contains_all",
+      "values": [
+        "evaporation",
+        "condensation"
+      ],
+      "max_words": 35
+    }
+  },
+  {
+    "id": "extraction_json",
+    "family": "extraction",
+    "task": "extraction",
+    "prompt": "Extract the fields into a JSON object with exactly the keys name, date, amount. Return JSON only, no prose.\n\nText: On 12 March 1843, Ada Lovelace paid 250 pounds for the analytical engine notes.",
+    "max_tokens": 200,
+    "check": {
+      "type": "json_object",
+      "keys": {
+        "name": "ada lovelace",
+        "date": "1843",
+        "amount": "250"
+      }
+    }
+  },
+  {
+    "id": "sql_generation",
+    "family": "sql",
+    "task": "sql_generation",
+    "prompt": "Write a single SQLite query that returns the name column from users where age is greater than 30, ordered alphabetically by name. Return SQL only.",
+    "max_tokens": 200,
+    "check": {
+      "type": "regex_all",
+      "values": [
+        "select\\s+name",
+        "from\\s+users",
+        "age\\s*>\\s*30",
+        "order\\s+by\\s+name"
+      ]
+    }
+  },
+  {
+    "id": "code_gen",
+    "family": "code",
+    "task": "code_edit",
+    "prompt": "Write a Python function add(a, b) that returns a + b. Return code only.",
+    "max_tokens": 300,
+    "check": {
+      "type": "python_function",
+      "name": "add"
+    }
+  },
+  {
+    "id": "code_debug",
+    "family": "code",
+    "task": "code_edit",
+    "prompt": "In Python, why does this raise IndexError? `for i in range(len(a) + 1): print(a[i])` Answer in one sentence.",
+    "max_tokens": 200,
+    "check": {
+      "type": "contains_all",
+      "values": [
+        "index"
+      ],
+      "any_of": [
+        "range",
+        "len",
+        "off-by-one",
+        "past the end",
+        "one past"
+      ]
+    }
+  },
+  {
+    "id": "long_context_needle",
+    "family": "long_context",
+    "task": "general_chat",
+    "prompt": "Read the text and answer the question with the number only.\n\nText: The museum opened in 1892. The east wing was renovated in 1954 and again in 1978. The curator's office moved twice. In 2003 a new archive was built. The vault code is 7734 and it changes every quarter. Visitor numbers peaked in 2011. The cafe closed in 2019.\n\nQuestion: What is the vault code?",
+    "max_tokens": 160,
+    "check": {
+      "type": "number",
+      "value": 7734
+    }
+  },
+  {
+    "id": "structured_json_list",
+    "family": "structured",
+    "task": "extraction",
+    "prompt": "Return a JSON array of the three integers 5, 3 and 9 in descending order. Return JSON only.",
+    "max_tokens": 160,
+    "check": {
+      "type": "json_array",
+      "value": [
+        9,
+        5,
+        3
+      ]
+    }
+  },
+  {
+    "id": "translation",
+    "family": "general_chat",
+    "task": "general_chat",
+    "prompt": "Translate 'good morning' into French. Reply with the translation only.",
+    "max_tokens": 96,
+    "check": {
+      "type": "contains_any",
+      "values": [
+        "bonjour"
+      ]
+    }
+  }
+]
