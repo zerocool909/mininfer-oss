@@ -97,6 +97,9 @@ POST   /v1/local/register                          experimental
 GET    /v1/probe                                   experimental
 POST   /v1/probe/config                            experimental
 POST   /v1/probe/run                               experimental
+GET    /v1/canary                                  experimental
+POST   /v1/canary/config                           experimental
+POST   /v1/canary/run                              experimental
 GET    /                                            internal
 GET    /legacy                                     internal
 GET    /favicon.svg                                internal
@@ -189,6 +192,21 @@ default; when on, the server checks each configured provider's `GET /models` on
 a cadence and records the verdict, so a revoked key or an unreachable host is
 known *before* a request fails on it. A failed verdict excludes that provider
 from routing until it recovers or the result expires (`ttl_seconds`).
+
+**Known-answer canary (`/v1/canary`, `/v1/canary/config`, `/v1/canary/run`).**
+The deeper check the probe cannot make: `GET /models` can return 200 while a
+model 404s, returns empty content, or has quietly started charging. Once a day
+the server refreshes the keyed catalogues, then sends a rotating slice of
+known-answer prompts (instruction following, arithmetic, JSON extraction,
+summarisation, code shape, long-context needle) to every **zero-marginal** arm
+whose provider has a key, grades them deterministically, and records the result
+as evidence (`observations.signal_kind='canary'`). It never calls a paid arm, so
+a scheduled run cannot produce a bill. The scheduled run is idle-gated (no
+served request for 15 minutes), skips arms with a drained free bucket, and stops
+the affected gateway on the first `429`; `POST /v1/canary/run` is not
+idle-gated because it is an explicit operator action. Enabled by default when at least one provider key is
+configured; `MI_CANARY=0` disables it, and the cadence floor is one hour.
+`GET` returns the config, the last report and a bounded history.
 
 **`POST /v1/local/probe`** fetches an arbitrary URL in order to test a local
 Ollama or llama.cpp endpoint. It is admin-only by design and is an SSRF surface;

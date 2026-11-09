@@ -577,6 +577,22 @@ export const api = {
     }),
   runProbe: () =>
     req<ProbeRunResult>('/v1/probe/run', { method: 'POST' }),
+  /**
+   * Daily known-answer canary. The probe proves a provider is reachable; this
+   * proves a *model* still answers, and is the only surface that can see an arm
+   * that 404s or returns empty content while `/models` says 200.
+   */
+  canaryStatus: () => req<CanaryStatus>('/v1/canary'),
+  setCanaryConfig: (cfg: { enabled?: boolean; interval_seconds?: number }) =>
+    req<CanaryStatus>('/v1/canary/config', {
+      method: 'POST',
+      body: JSON.stringify(cfg),
+    }),
+  runCanary: (max_arms?: number) =>
+    req<CanaryReport>('/v1/canary/run', {
+      method: 'POST',
+      body: JSON.stringify(max_arms ? { max_arms } : {}),
+    }),
   /** The model form guide: an agent-written dossier per free arm. */
   dossiers: (q?: string, limit?: number) => {
     const params = new URLSearchParams()
@@ -626,6 +642,57 @@ export interface ProbeRunResult {
   checked: number
   results: ProbeHealth[]
   last_run: string | null
+}
+
+export interface CanaryModelResult {
+  model: string
+  provider: string
+  pricing_state: string
+  status: 'ok' | 'degraded' | 'unreachable'
+  calls: number
+  measured: number
+  answered: number
+  correct: number
+  accuracy_pct: number
+  p50_ms: number | null
+  errors: Record<string, number>
+}
+
+export interface CanaryReport {
+  ran: boolean
+  ran_at: string
+  verdict: 'ok' | 'degraded' | 'failed' | 'no_data'
+  arms: number
+  prompts: number
+  calls: number
+  answered: number
+  correct: number
+  unmeasured: number
+  accuracy_pct: number
+  duration_s: number
+  truncated?: boolean
+  reason?: string
+  models: CanaryModelResult[]
+}
+
+export interface CanaryStatus {
+  config: {
+    enabled: boolean
+    interval_seconds: number
+    startup_delay: number
+    last_run: string | null
+    source: string
+  }
+  last_report: CanaryReport | null
+  history: {
+    ran_at: string
+    verdict: string
+    arms: number
+    calls: number
+    correct: number
+    accuracy_pct: number
+  }[]
+  dataset: { id: string; task: string }[]
 }
 
 /**

@@ -17,7 +17,7 @@ import {
   Play,
   Activity,
 } from 'lucide-react'
-import { api, type ProviderInfo, type ProviderModel, type LocalProbeResult, type ProbeStatus } from '@/lib/api'
+import { api, type ProviderInfo, type ProviderModel, type LocalProbeResult, type ProbeStatus, type CanaryStatus } from '@/lib/api'
 import { getUserKeys, setUserKey, removeUserKey, clearAllUserKeys, getLocalEndpoints, setLocalEndpoints } from '@/lib/keys'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -44,6 +44,10 @@ export function SettingsTab() {
   const [probe, setProbe] = useState<ProbeStatus | null>(null)
   const [probeSaving, setProbeSaving] = useState(false)
   const [probeRunning, setProbeRunning] = useState(false)
+  // Daily known-answer canary — the deeper check the probe cannot make.
+  const [canary, setCanary] = useState<CanaryStatus | null>(null)
+  const [canarySaving, setCanarySaving] = useState(false)
+  const [canaryRunning, setCanaryRunning] = useState(false)
   const [registeredSuccess, setRegisteredSuccess] = useState<string | null>(null)
 
   // Model Explorer Search & Filter State
@@ -152,6 +156,42 @@ export function SettingsTab() {
     }
   }
 
+  // Canary handlers — same shape as the probe handlers: the server's fresh view
+  // is the only source of truth, never an optimistic local guess.
+  const handleCanaryToggle = async (enabled: boolean) => {
+    setCanarySaving(true)
+    try {
+      setCanary(await api.setCanaryConfig({ enabled }))
+    } catch (e) {
+      console.error('Failed to update canary:', e)
+    } finally {
+      setCanarySaving(false)
+    }
+  }
+
+  const handleCanaryInterval = async (interval_seconds: number) => {
+    setCanarySaving(true)
+    try {
+      setCanary(await api.setCanaryConfig({ interval_seconds }))
+    } catch (e) {
+      console.error('Failed to update canary interval:', e)
+    } finally {
+      setCanarySaving(false)
+    }
+  }
+
+  const handleRunCanary = async () => {
+    setCanaryRunning(true)
+    try {
+      await api.runCanary()
+      setCanary(await api.canaryStatus())
+    } catch (e) {
+      console.error('Failed to run canary:', e)
+    } finally {
+      setCanaryRunning(false)
+    }
+  }
+
   // Load providers and keys
   const loadData = async () => {
     setLoading(true)
@@ -174,6 +214,11 @@ export function SettingsTab() {
         setProbe(await api.probeStatus())
       } catch (e) {
         console.error('Failed to load probe status:', e)
+      }
+      try {
+        setCanary(await api.canaryStatus())
+      } catch (e) {
+        console.error('Failed to load canary status:', e)
       }
     } catch (e) {
       console.error('Failed to load providers:', e)
@@ -624,6 +669,150 @@ export function SettingsTab() {
               )
             })}
           </div>
+        )}
+      </div>
+
+      {/* Daily canary — does every free arm still answer a known question? */}
+      <div className="rounded-xl border border-border bg-card p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border/60 pb-3">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck
+              className={cn(
+                'h-5 w-5',
+                canary?.last_report?.verdict === 'ok'
+                  ? 'text-emerald-500'
+                  : canary?.last_report
+                    ? 'text-amber-500'
+                    : 'text-muted-foreground',
+              )}
+            />
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Daily Canary — Known Answers</h2>
+              <p className="text-xs text-muted-foreground">
+                Refreshes the catalogue, then sends a rotating slice of six graded prompts to every free arm once a day.
+                Catches a model that 404s, returns empty content, or quietly started charging. Never calls a paid arm, and
+                only runs when the app has been idle.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1.5 border-border"
+              onClick={handleRunCanary}
+              disabled={canaryRunning || !canary?.config.enabled}
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', canaryRunning && 'animate-spin')} />
+              {canaryRunning ? 'Checking…' : 'Run now'}
+            </Button>
+            <Button
+              variant={canary?.config.enabled ? 'default' : 'outline'}
+              size="sm"
+              className={cn(
+                'h-7 text-xs gap-1.5',
+                canary?.config.enabled
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'border-border',
+              )}
+              onClick={() => handleCanaryToggle(!canary?.config.enabled)}
+              disabled={canarySaving || !canary}
+            >
+              {canary?.config.enabled ? (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {canary?.config.enabled ? 'Enabled' : 'Disabled'}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+          <label className="flex items-center gap-2">
+            Cadence
+            <select
+              aria-label="Canary interval"
+              value={canary?.config.interval_seconds ?? 86400}
+              onChange={(e) => handleCanaryInterval(Number(e.target.value))}
+              disabled={canarySaving}
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+            >
+              <option value={3600}>every hour</option>
+              <option value={21600}>every 6 hours</option>
+              <option value={43200}>every 12 hours</option>
+              <option value={86400}>every 24 hours</option>
+            </select>
+          </label>
+          <span>
+            Last run:{' '}
+            <span className="font-mono">
+              {canary?.config.last_run
+                ? new Date(canary.config.last_run).toLocaleString()
+                : 'never'}
+            </span>
+          </span>
+          {canary?.last_report && (
+            <span>
+              {canary.last_report.correct}/{canary.last_report.calls} correct (
+              {canary.last_report.accuracy_pct}%)
+            </span>
+          )}
+        </div>
+
+        {canary?.last_report && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {canary.last_report.models.map((m) => {
+              const ok = m.status === 'ok'
+              const dead = m.status === 'unreachable'
+              return (
+                <div
+                  key={m.model}
+                  className={cn(
+                    'rounded-lg border p-2.5 text-xs space-y-1',
+                    ok
+                      ? 'border-emerald-500/30 bg-emerald-500/5'
+                      : dead
+                        ? 'border-destructive/40 bg-destructive/5'
+                        : 'border-amber-500/40 bg-amber-500/5',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11px] text-foreground truncate">{m.model}</span>
+                    <span
+                      className={cn(
+                        'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                        ok
+                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                          : dead
+                            ? 'bg-destructive/15 text-destructive'
+                            : 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+                      )}
+                    >
+                      {ok ? (
+                        <CheckCircle2 className="h-3 w-3" />
+                      ) : (
+                        <AlertCircle className="h-3 w-3" />
+                      )}
+                      {m.status}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground font-mono">
+                    {m.correct}/{m.measured} correct
+                    {m.p50_ms != null && <span> · {Math.round(m.p50_ms)}ms</span>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {!canary?.last_report && (
+          <p className="text-[11px] text-muted-foreground italic">
+            No canary run yet. It first runs about ten minutes after the server starts, then daily.
+            {canary?.config.source === 'default' &&
+              ' Enabled automatically because a provider key is configured.'}
+          </p>
         )}
       </div>
 
