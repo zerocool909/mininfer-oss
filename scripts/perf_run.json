@@ -1,0 +1,11 @@
+{
+  "base": "http://100.104.167.28:8765",
+  "sequential_ms": 1387,
+  "concurrent_wall_s": 2.04,
+  "concurrent_each_ms_med": 1886,
+  "all_calls_ms_p50": 1865,
+  "all_calls_ms_p95": 1984,
+  "arms_used": [
+    "openrouter:recursive/flint-v1.0:free"
+  ]
+}
