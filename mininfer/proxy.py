@@ -42,6 +42,7 @@ from . import agent_activity as agents_mod
 from . import intent as intent_mod
 from . import complexity as comp_mod
 from . import probe as probe_mod
+from . import canary as canary_mod
 from . import env as env_mod
 from .env import load_env
 from .execute import (CallResult, Runner, classify_error_payload, key_env_for,
@@ -95,13 +96,16 @@ async def _lifespan(_app: FastAPI):
     toggle from the portal takes effect within one tick and needs no restart. It
     is inert (a bare sleep) until an operator enables it.
     """
-    task = asyncio.create_task(_probe_loop())
+    tasks = [asyncio.create_task(_probe_loop()),
+             asyncio.create_task(_canary_loop())]
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 app = FastAPI(title="min(Infer)", version="0.1.0",
@@ -1515,6 +1519,120 @@ async def _probe_loop() -> None:
             # Reported on the next `/v1/probe`; never fatal to the web process.
             pass
         await asyncio.sleep(_PROBE_TICK_SECONDS)
+
+
+# --------------------------------------------------------------------------- #
+# daily known-answer canary
+# --------------------------------------------------------------------------- #
+# The probe above proves a provider is reachable. This proves a *model* still
+# answers, and catches the failure the probe cannot see: `/models` returns 200
+# while the arm 404s, returns empty content, or silently started charging.
+# Free arms only, so a scheduled run cannot spend money.
+_CANARY_TICK_SECONDS = 30.0
+#: When this process started, for the startup grace period. A canary that fires
+#: during the first-run ingest competes with it for the same SQLite writer.
+_CANARY_STARTED = time.monotonic()
+
+
+async def _canary_loop() -> None:
+    """Run the known-answer canary when it is enabled and due, forever."""
+    while True:
+        try:
+            store = _store()
+            try:
+                cfg = canary_mod.config(store)
+            finally:
+                store.close()
+            warmed_up = (time.monotonic() - _CANARY_STARTED) >= cfg["startup_delay"]
+            # The idle gate is the quota protection: a run that starts while the
+            # user is mid-conversation competes for the same free-tier requests.
+            # `last_run` is left untouched when idle-gated, so the next tick
+            # retries instead of skipping a whole day.
+            if cfg["enabled"] and warmed_up and canary_mod.is_due(cfg):
+                store = _store()
+                try:
+                    idle = canary_mod.is_idle(store, cfg["idle_minutes"])
+                finally:
+                    store.close()
+                if idle:
+                    await asyncio.to_thread(
+                        canary_mod.run_canary_db, _db(),
+                        refresh=cfg["refresh"],
+                        prompts_per_arm=cfg["prompts_per_arm"],
+                        max_stale_days=cfg["max_stale_days"],
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never fatal; the next `/v1/canary` shows the last good report.
+            pass
+        await asyncio.sleep(_CANARY_TICK_SECONDS)
+
+
+@app.get("/v1/canary", tags=["operator"])
+def canary_status() -> dict:
+    """Settings, the last run, and the bounded history (newest last)."""
+    store = _store()
+    try:
+        return {
+            "config": canary_mod.config(store),
+            "last_report": canary_mod.last_report(store),
+            "history": canary_mod.history(store),
+            "dataset": [{"id": it["id"], "task": it["task"]} for it in canary_mod.DATASET],
+        }
+    finally:
+        store.close()
+
+
+@app.post("/v1/canary/config", openapi_extra=_api_schema.PROBE_CONFIG, tags=["operator"])
+async def canary_configure(request: Request) -> dict:
+    """Turn the canary on/off and set its cadence. Persisted in the registry."""
+    payload = await request.json()
+    store = _store()
+    try:
+        if "enabled" in payload:
+            store.set_setting(canary_mod.ENABLED_KEY, "1" if payload["enabled"] else "0")
+        if payload.get("interval_seconds") is not None:
+            try:
+                seconds = float(payload["interval_seconds"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="interval_seconds must be a number")
+            if seconds < canary_mod.MIN_INTERVAL:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"interval_seconds must be >= {canary_mod.MIN_INTERVAL:.0f}")
+            store.set_setting(canary_mod.INTERVAL_KEY, str(seconds))
+        store.commit()
+    finally:
+        store.close()
+    return canary_status()
+
+
+@app.post("/v1/canary/run", openapi_extra=_api_schema.PROBE_RUN, tags=["operator"])
+async def canary_run_now(request: Request) -> dict:
+    """Run the canary once, off-schedule. Returns the report it wrote."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    kwargs: dict = {"refresh": True}
+    if isinstance(payload, dict):
+        if payload.get("max_arms") is not None:
+            try:
+                kwargs["max_arms"] = max(1, int(payload["max_arms"]))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="max_arms must be an integer")
+        if payload.get("prompts_per_arm") is not None:
+            try:
+                kwargs["prompts_per_arm"] = max(1, int(payload["prompts_per_arm"]))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="prompts_per_arm must be an integer")
+        if "refresh" in payload:
+            kwargs["refresh"] = bool(payload["refresh"])
+    # An operator asking for a run *now* is not idle-gated; the schedule is.
+    return await asyncio.to_thread(canary_mod.run_canary_db, _db(), **kwargs)
 
 
 @app.get("/v1/probe", tags=["operator"])

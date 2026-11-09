@@ -94,6 +94,14 @@ _AMBIENT_ENV = (
     # into a test that asserts an exact chain.
     "MI_AGENT_MODEL", "MI_AGENT_MODELS", "MI_INTENT_MODEL",
     "MI_SESSION_TOKEN_LIMIT", "MI_SESSION_COST_LIMIT",
+    # Access control and limits are per-deployment; tests switch them on
+    # explicitly when they need them (test_auth.py, test_profiles.py). A
+    # developer's `.env` turning them on would flip every assertion about an
+    # open surface into a 401 — the failure looks like a broken app, not a
+    # shared environment.
+    "MI_API_KEYS", "MI_API_KEYS_FILE", "MI_ADMIN_TOKEN",
+    "MI_RATE_LIMIT_RPM", "MI_MAX_BODY_BYTES", "MI_REDIS_URL",
+    "MI_CORS_ORIGINS",
 )
 
 #: A whitespace value disables the reserve: `route()` strips and falls back to

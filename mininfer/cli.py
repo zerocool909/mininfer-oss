@@ -1840,6 +1840,68 @@ def cmd_recommend(args) -> int:
     return 0
 
 
+def cmd_canary(args) -> int:
+    """Daily known-answer check: can every free arm still answer?
+
+    `--now` runs it; without it, prints the settings, the last report and the
+    bounded history. Exit is non-zero only when the run found no answer at all,
+    so a scheduler can distinguish "degraded" from "broken".
+    """
+    from . import canary as canary_mod
+
+    store = _open(args)
+    try:
+        if args.enable or args.disable:
+            store.set_setting(canary_mod.ENABLED_KEY, "1" if args.enable else "0")
+            store.commit()
+        cfg = canary_mod.config(store)
+        if not args.now:
+            rep = canary_mod.last_report(store)
+            hist = canary_mod.history(store)
+            if args.json:
+                print(json.dumps({"config": cfg, "last_report": rep,
+                                  "history": hist}, indent=2))
+                return 0
+            state = "on" if cfg["enabled"] else "off"
+            print(f"canary {state} — every {cfg['interval_seconds']:.0f}s "
+                  f"(source: {cfg['source']})")
+            if not rep:
+                print("no run yet; use `mi canary --now`")
+                return 0
+            print(f"last run {rep.get('ran_at')}  verdict={rep.get('verdict')}  "
+                  f"{rep.get('correct')}/{rep.get('calls')} correct  "
+                  f"({rep.get('accuracy_pct')}%)  "
+                  f"registry_age_days={rep.get('registry_age_days')}")
+            for m in rep.get("models", []):
+                print(f"  {m['status']:11s} {m['model']:52s} "
+                      f"{m['correct']}/{m['measured']}  p50={m['p50_ms']}")
+            return 0
+        rep = canary_mod.run_canary(
+            store,
+            max_arms=args.max_arms or canary_mod.DEFAULT_MAX_ARMS,
+            prompts_per_arm=args.prompts_per_arm or canary_mod.DEFAULT_PROMPTS_PER_ARM,
+            budget_s=args.budget,
+            refresh=not args.no_refresh,
+        )
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(f"canary run {rep['ran_at']} — verdict={rep['verdict']}  "
+                  f"{rep['correct']}/{rep['calls']} correct ({rep['accuracy_pct']}%)  "
+                  f"{rep['duration_s']}s  items={','.join(rep.get('items') or [])}")
+            ref = rep.get("refreshed") or {}
+            if ref:
+                print(f"  refresh: ok={ref.get('ok')} failed={ref.get('failed')}")
+            print(f"  registry_age_days={rep.get('registry_age_days')} "
+                  f"tiers={','.join(rep.get('tiers') or [])}")
+            for m in rep.get("models", []):
+                print(f"  {m['status']:11s} {m['model']:52s} "
+                      f"{m['correct']}/{m['measured']}  p50={m['p50_ms']}")
+        return 0 if rep["verdict"] in ("ok", "degraded", "no_data") else 1
+    finally:
+        store.close()
+
+
 def cmd_metrics(args) -> int:
     """Enrich deployments with provider performance metrics (throughput / TTFT)."""
     store = _open(args)
@@ -2201,6 +2263,20 @@ def main(argv: list[str] | None = None) -> int:
     mt.add_argument("--force", action="store_true", help="ignore the raw cache")
     mt.add_argument("--dry-run", action="store_true", help="parse and report, write nothing")
     mt.set_defaults(fn=cmd_metrics)
+
+    c = sub.add_parser("canary", help="daily known-answer check of free arms")
+    c.add_argument("--now", action="store_true", help="run it now instead of reporting")
+    c.add_argument("--json", action="store_true")
+    c.add_argument("--enable", action="store_true")
+    c.add_argument("--disable", action="store_true")
+    c.add_argument("--max-arms", type=int)
+    c.add_argument("--prompts-per-arm", type=int,
+                   help="how many prompts each arm gets (default: rotating 2 of 6)")
+    c.add_argument("--no-refresh", action="store_true",
+                   help="do not refresh the catalogue before grading")
+    c.add_argument("--budget", type=float, default=600.0,
+                   help="wall-clock cap for the whole run (seconds)")
+    c.set_defaults(fn=cmd_canary)
 
     o = sub.add_parser("observe", help="record an outcome observation")
     o.add_argument("deploy_id")

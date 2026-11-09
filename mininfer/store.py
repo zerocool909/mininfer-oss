@@ -996,6 +996,25 @@ _INIT_GUARD = threading.Lock()
 # AUTOINCREMENT).
 _PG_SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "supabase" / "schema.sql"
 
+
+def _postgres_ddl() -> str:
+    """`supabase/schema.sql` as found on *this* install.
+
+    The wheel installs `mininfer/` under site-packages, but `supabase/` stays a
+    sibling of the *checkout* — the file is not package data. The container
+    carries it at `/app/supabase/schema.sql` and the entrypoint runs from /app,
+    so the second candidate covers the installed case; the first covers every
+    source checkout. Missing at both is fatal and must say so loudly: a
+    Postgres registry without its schema is not a smaller registry.
+    """
+    candidates = (_PG_SCHEMA, pathlib.Path.cwd() / "supabase" / "schema.sql")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    raise FileNotFoundError(
+        "supabase/schema.sql not found at any of: "
+        + ", ".join(str(c) for c in candidates))
+
 #: The objects the router cannot work without. A registry missing one of these is
 #: not a registry with fewer models — it is a registry that cannot answer, and
 #: every request against it fails with `no such table`.
@@ -1086,7 +1105,7 @@ class Store:
     def _ensure_schema(self) -> None:
         """Create or repair the schema. Idempotent by construction."""
         ddl = (DDL if not db.is_postgres(self.target)
-               else _PG_SCHEMA.read_text(encoding="utf-8"))
+               else _postgres_ddl())
         try:
             self.conn.executescript(ddl)
             self._migrate()
@@ -2665,6 +2684,29 @@ class Store:
             q += ' AND "window"=?'
             args.append(window)
         return self.conn.execute(q, args).rowcount
+
+    def latest_deployment_seen(self) -> str | None:
+        """Newest `last_seen` across the catalogue, or None for an empty registry.
+
+        The canary uses this to decide whether a "free" label can still be
+        trusted. `last_seen` is stamped by every ingest upsert, so the maximum is
+        the last time *any* source refreshed the catalogue.
+        """
+        row = self.conn.execute("SELECT MAX(last_seen) FROM deployments").fetchone()
+        return row[0] if row else None
+
+    def latest_served_observation_ts(self) -> str | None:
+        """Last time *user* traffic produced an observation.
+
+        Background work is excluded: canary and shadow-trial rows are ours, and
+        counting them would let the canary keep itself awake forever instead of
+        yielding the free tier to the caller.
+        """
+        row = self.conn.execute(
+            "SELECT MAX(ts) FROM observations"
+            " WHERE COALESCE(signal_kind,'') NOT IN ('canary','judge_trial')"
+        ).fetchone()
+        return row[0] if row else None
 
     def headroom(self, deploy_id: str) -> tuple[float | None, str]:
         """Fraction of the tightest bucket still available, and its source.
